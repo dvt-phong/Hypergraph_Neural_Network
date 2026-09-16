@@ -13,15 +13,16 @@ Xem [hướng dẫn XuetangX](docs/xuetangx.md).
 
 Dữ liệu: `data/raw/xuetangx/`. Báo cáo: `outputs/reports/xuetangx/statistics.md`.
 
-Project nghi?n c?u d? ?o?n b? h?c MOOC v? t?i l?p graph/hypergraph baselines.
+Project nghiên cứu dự đoán bỏ học MOOC và tái lập graph/hypergraph baselines.
 
-## Tr?ng th?i
+## Trạng thái
 
-?? d?ng c?u tr?c. Ch?a tri?n khai preprocessing, model ho?c training;
-?? clone s?u repo t?c gi? trong `third_party/`; ch?a c?i dependency GPU.
-CLI hi?n ch? cung c?p tr? gi?p v? b?o r? c?c ch?c n?ng ch?a tri?n khai.
+Đã dựng cấu trúc, bổ sung script tải và thống kê XuetangX.
+Chưa triển khai preprocessing cho mô hình, model hoặc training;
+đã clone bảy repo tác giả trong `third_party/`; chưa cài dependency GPU.
+CLI hiện chỉ cung cấp trợ giúp và báo rõ các chức năng chưa triển khai.
 
-## M?i tr??ng ri?ng
+## Môi trường riêng
 
 Windows PowerShell:
 
@@ -30,36 +31,36 @@ python -m venv .venv
 .\.venv\Scripts\python.exe run.py --help
 ```
 
-Ubuntu / WSL (t?o l?i m?i tr??ng t?i m?y ??ch):
+Ubuntu / WSL (tạo lại môi trường tại máy đích):
 
 ```bash
 bash scripts/setup.sh
 .venv/bin/python run.py --help
 ```
 
-Kh?ng copy `.venv` gi?a c?c m?y. Kh?ng d?ng `sudo pip` ho?c
-`--system-site-packages`. Lu?n c?i b?ng Python trong `.venv`.
-Python hi?n c? tr?n laptop l? 3.13; phi?n b?n m?i tr??ng benchmark cu?i c?ng
-s? ???c ch?n sau khi ki?m tra t??ng th?ch PyTorch/PyG/DGL v? GPU.
-Kh?ng thay ??i driver NVIDIA c?a server trong script setup.
+Không copy `.venv` giữa các máy. Không dùng `sudo pip` hoặc
+`--system-site-packages`. Luôn cài bằng Python trong `.venv`.
+Python hiện có trên laptop là 3.13; phiên bản môi trường benchmark cuối cùng
+sẽ được chọn sau khi kiểm tra tương thích PyTorch/PyG/DGL và GPU.
+Không thay đổi driver NVIDIA của server trong script setup.
 
-## C?u tr?c
+## Cấu trúc
 
 - `run.py`: CLI chung.
-- `configs/`: c?u h?nh m?y, dataset v? b? th? nghi?m.
-- `src/`: x? l? d? li?u, c?u tr?c, training, evaluation d?ng chung.
-- `models/`: implementation/adapter do project qu?n l?.
-- `third_party/`: repo g?c; URL v? commit ???c l?u trong `manifest.json`.
-- `scripts/`: setup, t?i l?p v? ch?y server.
-- `data/raw`, `data/processed`: d? li?u g?c v? cache ?? x? l?.
-- `outputs/runs`: m?i run ch?a config, metadata, log, metrics v? checkpoint.
-- `outputs/reports`: b?ng v? h?nh t?ng h?p.
-- `docs/`, `notebooks/`, `tests/`: protocol, ph?n t?ch v? ki?m tra.
+- `configs/`: cấu hình máy, dataset và bộ thí nghiệm.
+- `src/`: xử lý dữ liệu, cấu trúc, training, evaluation dùng chung.
+- `models/`: implementation/adapter do project quản lý.
+- `third_party/`: repo gốc; URL và commit được lưu trong `manifest.json`.
+- `scripts/`: setup, tái lập và chạy server.
+- `data/raw`, `data/processed`: dữ liệu gốc và cache đã xử lý.
+- `outputs/runs`: mỗi run chứa config, metadata, log, metrics và checkpoint.
+- `outputs/reports`: bảng và hình tổng hợp.
+- `docs/`, `notebooks/`, `tests/`: protocol, phân tích và kiểm tra.
 
-Ch? th?m file model khi b?t ??u tri?n khai. `pyproject.toml` khai b?o package;
-`requirements.txt` d?nh cho dependency ???c kh?a sau khi ki?m tra m?i tr??ng.
-C?u h?nh GPU m?c ??nh l? `cuda`; training t??ng lai ph?i b?o l?i n?u ng??i d?ng
-ch?n CUDA nh?ng CUDA kh?ng kh? d?ng. LR v?n s? d?ng CPU.
+Chỉ thêm file model khi bắt đầu triển khai. `pyproject.toml` khai báo package;
+`requirements.txt` dành cho dependency được khóa sau khi kiểm tra môi trường.
+Cấu hình GPU mặc định là `cuda`; training tương lai phải báo lỗi nếu người dùng
+chọn CUDA nhưng CUDA không khả dụng. LR vẫn sử dụng CPU.
 
 ## Environment audit
 
