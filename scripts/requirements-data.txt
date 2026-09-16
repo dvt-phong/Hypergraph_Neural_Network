@@ -1,0 +1,2 @@
+# Chỉ cần cho thống kê CSV; script tải không cần dependency ngoài.
+duckdb==1.5.5

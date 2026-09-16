@@ -1,0 +1,83 @@
+{
+  "cloned_at_utc": "2026-09-13T13:16:01.624180+00:00",
+  "repositories": [
+    {
+      "name": "SIG-Net",
+      "url": "https://github.com/Noverse0/SIG-Net.git",
+      "commit": "87bc320f04cc949347515d5f4c671a152e481e7e",
+      "branch": "main",
+      "clean": true,
+      "license_files": [
+        "LICENSE"
+      ],
+      "dependency_files": [
+        "Dockerfile",
+        "requirements.txt"
+      ]
+    },
+    {
+      "name": "MST-GCN",
+      "url": "https://github.com/wudongze9/MST-GCN.git",
+      "commit": "7350a7e9f3e9f042cc393997ade5921a2863c990",
+      "branch": "main",
+      "clean": true,
+      "license_files": [],
+      "dependency_files": []
+    },
+    {
+      "name": "HGNN",
+      "url": "https://github.com/iMoonLab/HGNN.git",
+      "commit": "6212e8a43e75105b7fda7b169fc0063070861bb5",
+      "branch": "master",
+      "clean": true,
+      "license_files": [
+        "LICENSE"
+      ],
+      "dependency_files": []
+    },
+    {
+      "name": "HyperGCN",
+      "url": "https://github.com/malllabiisc/HyperGCN.git",
+      "commit": "de049387d8d8c9fe6ebab83cb4b49cacfd4ed534",
+      "branch": "master",
+      "clean": true,
+      "license_files": [
+        "LICENSE"
+      ],
+      "dependency_files": []
+    },
+    {
+      "name": "UniGNN",
+      "url": "https://github.com/OneForward/UniGNN.git",
+      "commit": "bea1fb5e8d0858302334c0e07c0bbe2a2d731234",
+      "branch": "master",
+      "clean": true,
+      "license_files": [
+        "LICENSE"
+      ],
+      "dependency_files": []
+    },
+    {
+      "name": "AllSet",
+      "url": "https://github.com/jianhao2016/AllSet.git",
+      "commit": "6281a2f1a91f6f26040777bb0b2578fc035dc57a",
+      "branch": "main",
+      "clean": true,
+      "license_files": [
+        "LICENSE"
+      ],
+      "dependency_files": []
+    },
+    {
+      "name": "CA-TFHN",
+      "url": "https://github.com/codeds27/CA-TFHN.git",
+      "commit": "f8ef659450458085603652e822285c6f2be5afca",
+      "branch": "main",
+      "clean": true,
+      "license_files": [],
+      "dependency_files": [],
+      "cloned_at_utc": "2026-09-16T02:36:10.945200+00:00",
+      "shallow": true
+    }
+  ]
+}

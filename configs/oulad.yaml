@@ -1,0 +1,6 @@
+dataset: oulad
+raw_dir: data/raw/oulad
+processed_dir: data/processed/oulad
+# Paths are relative to project root. Protocol must be defined before use.
+observation_days: null
+split_protocol: null

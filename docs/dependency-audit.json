@@ -1,0 +1,531 @@
+{
+  "AllSet": {
+    "imports_including_local_modules": {
+      "torch": [
+        "third_party\\AllSet\\src\\convert_datasets_to_pygDataset.py:7",
+        "third_party\\AllSet\\src\\layers.py:14",
+        "third_party\\AllSet\\src\\layers.py:16",
+        "third_party\\AllSet\\src\\layers.py:17",
+        "third_party\\AllSet\\src\\layers.py:19",
+        "third_party\\AllSet\\src\\layers.py:20",
+        "third_party\\AllSet\\src\\layers.py:21",
+        "third_party\\AllSet\\src\\load_other_datasets.py:17",
+        "third_party\\AllSet\\src\\models.py:13",
+        "third_party\\AllSet\\src\\models.py:16",
+        "third_party\\AllSet\\src\\models.py:17",
+        "third_party\\AllSet\\src\\preprocessing.py:13",
+        "third_party\\AllSet\\src\\print_dataset_statistics.py:14",
+        "third_party\\AllSet\\src\\train.py:7",
+        "third_party\\AllSet\\src\\train.py:15",
+        "third_party\\AllSet\\src\\train.py:16",
+        "third_party\\AllSet\\src\\utils.py:1",
+        "third_party\\AllSet\\src\\utils.py:2",
+        "third_party\\AllSet\\src\\utils.py:2",
+        "third_party\\AllSet\\src\\utils.py:2",
+        "third_party\\AllSet\\src\\utils.py:5",
+        "third_party\\AllSet\\src\\utils.py:6",
+        "third_party\\AllSet\\src\\utils.py:7",
+        "third_party\\AllSet\\src\\DGL_HAN\\allset_utils.py:1",
+        "third_party\\AllSet\\src\\DGL_HAN\\allset_utils.py:2",
+        "third_party\\AllSet\\src\\DGL_HAN\\allset_utils.py:2",
+        "third_party\\AllSet\\src\\DGL_HAN\\allset_utils.py:2",
+        "third_party\\AllSet\\src\\DGL_HAN\\allset_utils.py:5",
+        "third_party\\AllSet\\src\\DGL_HAN\\allset_utils.py:6",
+        "third_party\\AllSet\\src\\DGL_HAN\\allset_utils.py:7",
+        "third_party\\AllSet\\src\\DGL_HAN\\convert_datasets_to_pygDataset.py:7",
+        "third_party\\AllSet\\src\\DGL_HAN\\load_other_datasets.py:17",
+        "third_party\\AllSet\\src\\DGL_HAN\\main.py:2",
+        "third_party\\AllSet\\src\\DGL_HAN\\model.py:1",
+        "third_party\\AllSet\\src\\DGL_HAN\\model.py:2",
+        "third_party\\AllSet\\src\\DGL_HAN\\model.py:3",
+        "third_party\\AllSet\\src\\DGL_HAN\\model_hetero.py:10",
+        "third_party\\AllSet\\src\\DGL_HAN\\model_hetero.py:11",
+        "third_party\\AllSet\\src\\DGL_HAN\\model_hetero.py:12",
+        "third_party\\AllSet\\src\\DGL_HAN\\preprocessing.py:12",
+        "third_party\\AllSet\\src\\DGL_HAN\\print_dataset_statistics.py:14",
+        "third_party\\AllSet\\src\\DGL_HAN\\print_dataset_statistics.py:23",
+        "third_party\\AllSet\\src\\DGL_HAN\\train_sampling.py:11",
+        "third_party\\AllSet\\src\\DGL_HAN\\train_sampling.py:13",
+        "third_party\\AllSet\\src\\DGL_HAN\\train_sampling.py:14",
+        "third_party\\AllSet\\src\\DGL_HAN\\train_sampling.py:21",
+        "third_party\\AllSet\\src\\DGL_HAN\\utils.py:9"
+      ],
+      "ipdb": [
+        "third_party\\AllSet\\src\\convert_datasets_to_pygDataset.py:10",
+        "third_party\\AllSet\\src\\load_other_datasets.py:20",
+        "third_party\\AllSet\\src\\load_other_datasets.py:389",
+        "third_party\\AllSet\\src\\print_dataset_statistics.py:17",
+        "third_party\\AllSet\\src\\utils.py:3",
+        "third_party\\AllSet\\src\\DGL_HAN\\allset_utils.py:3",
+        "third_party\\AllSet\\src\\DGL_HAN\\convert_datasets_to_pygDataset.py:10",
+        "third_party\\AllSet\\src\\DGL_HAN\\load_other_datasets.py:20",
+        "third_party\\AllSet\\src\\DGL_HAN\\load_other_datasets.py:389",
+        "third_party\\AllSet\\src\\DGL_HAN\\main.py:3",
+        "third_party\\AllSet\\src\\DGL_HAN\\print_dataset_statistics.py:17",
+        "third_party\\AllSet\\src\\DGL_HAN\\train_sampling.py:12",
+        "third_party\\AllSet\\src\\DGL_HAN\\utils.py:3"
+      ],
+      "torch_geometric": [
+        "third_party\\AllSet\\src\\convert_datasets_to_pygDataset.py:14",
+        "third_party\\AllSet\\src\\convert_datasets_to_pygDataset.py:15",
+        "third_party\\AllSet\\src\\layers.py:22",
+        "third_party\\AllSet\\src\\layers.py:23",
+        "third_party\\AllSet\\src\\layers.py:25",
+        "third_party\\AllSet\\src\\load_other_datasets.py:27",
+        "third_party\\AllSet\\src\\models.py:19",
+        "third_party\\AllSet\\src\\models.py:25",
+        "third_party\\AllSet\\src\\preprocessing.py:20",
+        "third_party\\AllSet\\src\\DGL_HAN\\convert_datasets_to_pygDataset.py:14",
+        "third_party\\AllSet\\src\\DGL_HAN\\convert_datasets_to_pygDataset.py:15",
+        "third_party\\AllSet\\src\\DGL_HAN\\load_other_datasets.py:26",
+        "third_party\\AllSet\\src\\DGL_HAN\\preprocessing.py:19"
+      ],
+      "load_other_datasets": [
+        "third_party\\AllSet\\src\\convert_datasets_to_pygDataset.py:17",
+        "third_party\\AllSet\\src\\DGL_HAN\\convert_datasets_to_pygDataset.py:17"
+      ],
+      "torch_scatter": [
+        "third_party\\AllSet\\src\\layers.py:24",
+        "third_party\\AllSet\\src\\models.py:24",
+        "third_party\\AllSet\\src\\preprocessing.py:19",
+        "third_party\\AllSet\\src\\print_dataset_statistics.py:20",
+        "third_party\\AllSet\\src\\train.py:406",
+        "third_party\\AllSet\\src\\DGL_HAN\\preprocessing.py:18",
+        "third_party\\AllSet\\src\\DGL_HAN\\print_dataset_statistics.py:22"
+      ],
+      "numpy": [
+        "third_party\\AllSet\\src\\load_other_datasets.py:23",
+        "third_party\\AllSet\\src\\preprocessing.py:15",
+        "third_party\\AllSet\\src\\print_dataset_statistics.py:13",
+        "third_party\\AllSet\\src\\train.py:11",
+        "third_party\\AllSet\\src\\utils.py:1",
+        "third_party\\AllSet\\src\\DGL_HAN\\allset_utils.py:1",
+        "third_party\\AllSet\\src\\DGL_HAN\\load_other_datasets.py:23",
+        "third_party\\AllSet\\src\\DGL_HAN\\main.py:4",
+        "third_party\\AllSet\\src\\DGL_HAN\\preprocessing.py:14",
+        "third_party\\AllSet\\src\\DGL_HAN\\print_dataset_statistics.py:13",
+        "third_party\\AllSet\\src\\DGL_HAN\\train_sampling.py:9",
+        "third_party\\AllSet\\src\\DGL_HAN\\train_sampling.py:15",
+        "third_party\\AllSet\\src\\DGL_HAN\\utils.py:5"
+      ],
+      "pandas": [
+        "third_party\\AllSet\\src\\load_other_datasets.py:24",
+        "third_party\\AllSet\\src\\print_dataset_statistics.py:15",
+        "third_party\\AllSet\\src\\DGL_HAN\\load_other_datasets.py:24",
+        "third_party\\AllSet\\src\\DGL_HAN\\print_dataset_statistics.py:15"
+      ],
+      "scipy": [
+        "third_party\\AllSet\\src\\load_other_datasets.py:25",
+        "third_party\\AllSet\\src\\train.py:13",
+        "third_party\\AllSet\\src\\utils.py:1",
+        "third_party\\AllSet\\src\\DGL_HAN\\allset_utils.py:1",
+        "third_party\\AllSet\\src\\DGL_HAN\\print_dataset_statistics.py:24",
+        "third_party\\AllSet\\src\\DGL_HAN\\utils.py:13",
+        "third_party\\AllSet\\src\\DGL_HAN\\utils.py:14"
+      ],
+      "torch_sparse": [
+        "third_party\\AllSet\\src\\load_other_datasets.py:28",
+        "third_party\\AllSet\\src\\train.py:14",
+        "third_party\\AllSet\\src\\DGL_HAN\\load_other_datasets.py:27"
+      ],
+      "sklearn": [
+        "third_party\\AllSet\\src\\load_other_datasets.py:30",
+        "third_party\\AllSet\\src\\DGL_HAN\\load_other_datasets.py:29",
+        "third_party\\AllSet\\src\\DGL_HAN\\main.py:6",
+        "third_party\\AllSet\\src\\DGL_HAN\\train_sampling.py:20"
+      ],
+      "utils": [
+        "third_party\\AllSet\\src\\models.py:14",
+        "third_party\\AllSet\\src\\DGL_HAN\\main.py:9",
+        "third_party\\AllSet\\src\\DGL_HAN\\main.py:182",
+        "third_party\\AllSet\\src\\DGL_HAN\\train_sampling.py:24",
+        "third_party\\AllSet\\src\\DGL_HAN\\train_sampling.py:25"
+      ],
+      "layers": [
+        "third_party\\AllSet\\src\\models.py:20",
+        "third_party\\AllSet\\src\\train.py:21"
+      ],
+      "tqdm": [
+        "third_party\\AllSet\\src\\print_dataset_statistics.py:16",
+        "third_party\\AllSet\\src\\train.py:19",
+        "third_party\\AllSet\\src\\DGL_HAN\\print_dataset_statistics.py:16",
+        "third_party\\AllSet\\src\\DGL_HAN\\train_sampling.py:16"
+      ],
+      "convert_datasets_to_pygDataset": [
+        "third_party\\AllSet\\src\\print_dataset_statistics.py:19",
+        "third_party\\AllSet\\src\\train.py:25",
+        "third_party\\AllSet\\src\\DGL_HAN\\print_dataset_statistics.py:21"
+      ],
+      "matplotlib": [
+        "third_party\\AllSet\\src\\train.py:17"
+      ],
+      "models": [
+        "third_party\\AllSet\\src\\train.py:22"
+      ],
+      "preprocessing": [
+        "third_party\\AllSet\\src\\train.py:23"
+      ],
+      "model_hetero": [
+        "third_party\\AllSet\\src\\DGL_HAN\\main.py:119",
+        "third_party\\AllSet\\src\\DGL_HAN\\train_sampling.py:23"
+      ],
+      "model": [
+        "third_party\\AllSet\\src\\DGL_HAN\\main.py:128"
+      ],
+      "dgl": [
+        "third_party\\AllSet\\src\\DGL_HAN\\model.py:5",
+        "third_party\\AllSet\\src\\DGL_HAN\\model_hetero.py:14",
+        "third_party\\AllSet\\src\\DGL_HAN\\model_hetero.py:15",
+        "third_party\\AllSet\\src\\DGL_HAN\\train_sampling.py:7",
+        "third_party\\AllSet\\src\\DGL_HAN\\train_sampling.py:17",
+        "third_party\\AllSet\\src\\DGL_HAN\\train_sampling.py:19",
+        "third_party\\AllSet\\src\\DGL_HAN\\utils.py:2",
+        "third_party\\AllSet\\src\\DGL_HAN\\utils.py:11"
+      ]
+    },
+    "parse_errors": []
+  },
+  "HGNN": {
+    "imports_including_local_modules": {
+      "torch": [
+        "third_party\\HGNN\\train.py:4",
+        "third_party\\HGNN\\train.py:5",
+        "third_party\\HGNN\\models\\HGNN.py:1",
+        "third_party\\HGNN\\models\\HGNN.py:3",
+        "third_party\\HGNN\\models\\layers.py:2",
+        "third_party\\HGNN\\models\\layers.py:3",
+        "third_party\\HGNN\\models\\layers.py:4",
+        "third_party\\HGNN\\models\\layers.py:5"
+      ],
+      "utils": [
+        "third_party\\HGNN\\train.py:7",
+        "third_party\\HGNN\\datasets\\visual_data.py:2"
+      ],
+      "models": [
+        "third_party\\HGNN\\train.py:8",
+        "third_party\\HGNN\\models\\HGNN.py:2"
+      ],
+      "config": [
+        "third_party\\HGNN\\train.py:9"
+      ],
+      "datasets": [
+        "third_party\\HGNN\\train.py:10",
+        "third_party\\HGNN\\datasets\\visual_data.py:1"
+      ],
+      "yaml": [
+        "third_party\\HGNN\\config\\config.py:2"
+      ],
+      "scipy": [
+        "third_party\\HGNN\\datasets\\data_helper.py:1"
+      ],
+      "numpy": [
+        "third_party\\HGNN\\datasets\\data_helper.py:2",
+        "third_party\\HGNN\\utils\\hypergraph_utils.py:7"
+      ]
+    },
+    "parse_errors": []
+  },
+  "HyperGCN": {
+    "imports_including_local_modules": {
+      "config": [
+        "third_party\\HyperGCN\\hypergcn.py:2"
+      ],
+      "torch": [
+        "third_party\\HyperGCN\\hypergcn.py:8",
+        "third_party\\HyperGCN\\model\\model.py:2",
+        "third_party\\HyperGCN\\model\\model.py:3",
+        "third_party\\HyperGCN\\model\\model.py:3",
+        "third_party\\HyperGCN\\model\\model.py:5",
+        "third_party\\HyperGCN\\model\\networks.py:1",
+        "third_party\\HyperGCN\\model\\networks.py:2",
+        "third_party\\HyperGCN\\model\\networks.py:2",
+        "third_party\\HyperGCN\\model\\networks.py:4",
+        "third_party\\HyperGCN\\model\\utils.py:1",
+        "third_party\\HyperGCN\\model\\utils.py:2",
+        "third_party\\HyperGCN\\model\\utils.py:2",
+        "third_party\\HyperGCN\\model\\utils.py:2",
+        "third_party\\HyperGCN\\model\\utils.py:4",
+        "third_party\\HyperGCN\\model\\utils.py:5",
+        "third_party\\HyperGCN\\model\\utils.py:6"
+      ],
+      "numpy": [
+        "third_party\\HyperGCN\\hypergcn.py:8",
+        "third_party\\HyperGCN\\data\\data.py:2",
+        "third_party\\HyperGCN\\model\\model.py:2",
+        "third_party\\HyperGCN\\model\\networks.py:1",
+        "third_party\\HyperGCN\\model\\utils.py:1"
+      ],
+      "data": [
+        "third_party\\HyperGCN\\hypergcn.py:22"
+      ],
+      "model": [
+        "third_party\\HyperGCN\\hypergcn.py:29",
+        "third_party\\HyperGCN\\model\\model.py:1",
+        "third_party\\HyperGCN\\model\\model.py:7",
+        "third_party\\HyperGCN\\model\\networks.py:5"
+      ],
+      "configargparse": [
+        "third_party\\HyperGCN\\config\\config.py:54",
+        "third_party\\HyperGCN\\config\\config.py:55"
+      ],
+      "scipy": [
+        "third_party\\HyperGCN\\data\\data.py:2",
+        "third_party\\HyperGCN\\model\\model.py:2",
+        "third_party\\HyperGCN\\model\\utils.py:1"
+      ],
+      "tqdm": [
+        "third_party\\HyperGCN\\data\\data.py:3",
+        "third_party\\HyperGCN\\model\\model.py:6"
+      ]
+    },
+    "parse_errors": []
+  },
+  "MST-GCN": {
+    "imports_including_local_modules": {
+      "pandas": [
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\graph_builder.py:1",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\trainer.py:3",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\utils.py:3",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\graph_builder.py:1",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\trainer.py:1",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\utils.py:3",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\xuetangx_graph_builder.py:2"
+      ],
+      "numpy": [
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\graph_builder.py:2",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\trainer.py:4",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\graph_builder.py:2",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\main.py:4",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\trainer.py:2",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\xuetangx_graph_builder.py:3"
+      ],
+      "dgl": [
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\graph_builder.py:3",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\graph_builder.py:4",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\model.py:6",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\model.py:7",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\trainer.py:8",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\utils.py:2",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\graph_builder.py:3",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\graph_builder.py:4",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\main.py:6",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\model.py:4",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\model.py:5",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\trainer.py:6",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\utils.py:2",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\xuetangx_graph_builder.py:4",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\xuetangx_graph_builder.py:6",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\xuetangx_graph_builder.py:7"
+      ],
+      "torch": [
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\graph_builder.py:5",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\model.py:3",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\model.py:4",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\model.py:5",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\trainer.py:6",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\trainer.py:7",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\trainer.py:9",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\trainer.py:13",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\utils.py:5",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\graph_builder.py:5",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\main.py:3",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\model.py:1",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\model.py:2",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\model.py:3",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\trainer.py:4",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\trainer.py:5",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\trainer.py:7",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\trainer.py:12",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\utils.py:5",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\xuetangx_graph_builder.py:5"
+      ],
+      "tqdm": [
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\graph_builder.py:6",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\trainer.py:12",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\graph_builder.py:6",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\trainer.py:11",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\xuetangx_graph_builder.py:9"
+      ],
+      "sklearn": [
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\graph_builder.py:9",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\trainer.py:11",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\trainer.py:18",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\graph_builder.py:9",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\trainer.py:10",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\trainer.py:16",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\xuetangx_graph_builder.py:8"
+      ],
+      "utils": [
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\graph_builder.py:12",
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\main.py:3",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\graph_builder.py:12",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\main.py:7",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\trainer.py:9"
+      ],
+      "graph_builder": [
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\main.py:2",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\main.py:10"
+      ],
+      "trainer": [
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\main.py:4",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\main.py:8"
+      ],
+      "model": [
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\trainer.py:10",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\trainer.py:8"
+      ],
+      "matplotlib": [
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\trainer.py:15",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\trainer.py:14"
+      ],
+      "seaborn": [
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\trainer.py:16",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\trainer.py:15"
+      ],
+      "scipy": [
+        "third_party\\MST-GCN\\MST-GCN\\src_kdd\\trainer.py:17",
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\trainer.py:17"
+      ],
+      "xuetangx_graph_builder": [
+        "third_party\\MST-GCN\\MST-GCN\\src_xuet\\main.py:11"
+      ]
+    },
+    "parse_errors": []
+  },
+  "SIG-Net": {
+    "imports_including_local_modules": {
+      "pandas": [
+        "third_party\\SIG-Net\\src\\graph_builder.py:1",
+        "third_party\\SIG-Net\\src\\trainer.py:1",
+        "third_party\\SIG-Net\\src\\utils.py:2"
+      ],
+      "numpy": [
+        "third_party\\SIG-Net\\src\\graph_builder.py:2",
+        "third_party\\SIG-Net\\src\\trainer.py:2"
+      ],
+      "dgl": [
+        "third_party\\SIG-Net\\src\\graph_builder.py:3",
+        "third_party\\SIG-Net\\src\\graph_builder.py:4",
+        "third_party\\SIG-Net\\src\\model.py:4",
+        "third_party\\SIG-Net\\src\\trainer.py:5",
+        "third_party\\SIG-Net\\src\\utils.py:1"
+      ],
+      "torch": [
+        "third_party\\SIG-Net\\src\\graph_builder.py:5",
+        "third_party\\SIG-Net\\src\\model.py:1",
+        "third_party\\SIG-Net\\src\\model.py:2",
+        "third_party\\SIG-Net\\src\\model.py:3",
+        "third_party\\SIG-Net\\src\\model.py:5",
+        "third_party\\SIG-Net\\src\\trainer.py:4",
+        "third_party\\SIG-Net\\src\\trainer.py:6",
+        "third_party\\SIG-Net\\src\\trainer.py:11",
+        "third_party\\SIG-Net\\src\\utils.py:4"
+      ],
+      "tqdm": [
+        "third_party\\SIG-Net\\src\\graph_builder.py:6",
+        "third_party\\SIG-Net\\src\\trainer.py:10"
+      ],
+      "sklearn": [
+        "third_party\\SIG-Net\\src\\graph_builder.py:9",
+        "third_party\\SIG-Net\\src\\graph_builder.py:10",
+        "third_party\\SIG-Net\\src\\trainer.py:9"
+      ],
+      "utils": [
+        "third_party\\SIG-Net\\src\\graph_builder.py:11",
+        "third_party\\SIG-Net\\src\\main.py:3",
+        "third_party\\SIG-Net\\src\\trainer.py:8"
+      ],
+      "graph_builder": [
+        "third_party\\SIG-Net\\src\\main.py:2"
+      ],
+      "trainer": [
+        "third_party\\SIG-Net\\src\\main.py:4"
+      ],
+      "model": [
+        "third_party\\SIG-Net\\src\\trainer.py:7"
+      ]
+    },
+    "parse_errors": []
+  },
+  "UniGNN": {
+    "imports_including_local_modules": {
+      "model": [
+        "third_party\\UniGNN\\prepare.py:1"
+      ],
+      "torch": [
+        "third_party\\UniGNN\\prepare.py:2",
+        "third_party\\UniGNN\\prepare.py:3",
+        "third_party\\UniGNN\\prepare.py:3",
+        "third_party\\UniGNN\\train.py:1",
+        "third_party\\UniGNN\\train.py:2",
+        "third_party\\UniGNN\\train.py:3",
+        "third_party\\UniGNN\\train.py:4",
+        "third_party\\UniGNN\\train_evolving.py:1",
+        "third_party\\UniGNN\\train_evolving.py:2",
+        "third_party\\UniGNN\\train_evolving.py:3",
+        "third_party\\UniGNN\\train_evolving.py:4",
+        "third_party\\UniGNN\\train_val.py:1",
+        "third_party\\UniGNN\\train_val.py:2",
+        "third_party\\UniGNN\\train_val.py:3",
+        "third_party\\UniGNN\\train_val.py:4",
+        "third_party\\UniGNN\\model\\HyperGCN.py:1",
+        "third_party\\UniGNN\\model\\HyperGCN.py:2",
+        "third_party\\UniGNN\\model\\HyperGCN.py:2",
+        "third_party\\UniGNN\\model\\HyperGCN.py:2",
+        "third_party\\UniGNN\\model\\HyperGCN.py:4",
+        "third_party\\UniGNN\\model\\HyperGCN.py:5",
+        "third_party\\UniGNN\\model\\HyperGCN.py:6",
+        "third_party\\UniGNN\\model\\UniGNN.py:1",
+        "third_party\\UniGNN\\model\\UniGNN.py:2",
+        "third_party\\UniGNN\\model\\UniGNN.py:2"
+      ],
+      "numpy": [
+        "third_party\\UniGNN\\prepare.py:2",
+        "third_party\\UniGNN\\train.py:7",
+        "third_party\\UniGNN\\train_evolving.py:7",
+        "third_party\\UniGNN\\train_val.py:7",
+        "third_party\\UniGNN\\model\\HyperGCN.py:1"
+      ],
+      "scipy": [
+        "third_party\\UniGNN\\prepare.py:2",
+        "third_party\\UniGNN\\model\\HyperGCN.py:1"
+      ],
+      "torch_sparse": [
+        "third_party\\UniGNN\\prepare.py:11"
+      ],
+      "data": [
+        "third_party\\UniGNN\\prepare.py:14",
+        "third_party\\UniGNN\\train.py:57",
+        "third_party\\UniGNN\\train_val.py:56"
+      ],
+      "torch_scatter": [
+        "third_party\\UniGNN\\prepare.py:78",
+        "third_party\\UniGNN\\model\\UniGNN.py:7"
+      ],
+      "path": [
+        "third_party\\UniGNN\\train.py:10",
+        "third_party\\UniGNN\\train_evolving.py:10",
+        "third_party\\UniGNN\\train_val.py:10"
+      ],
+      "config": [
+        "third_party\\UniGNN\\train.py:13",
+        "third_party\\UniGNN\\train_evolving.py:13",
+        "third_party\\UniGNN\\train_val.py:13"
+      ],
+      "logger": [
+        "third_party\\UniGNN\\train.py:48",
+        "third_party\\UniGNN\\train_evolving.py:48",
+        "third_party\\UniGNN\\train_val.py:48"
+      ],
+      "prepare": [
+        "third_party\\UniGNN\\train.py:58",
+        "third_party\\UniGNN\\train_evolving.py:57",
+        "third_party\\UniGNN\\train_val.py:57"
+      ],
+      "torch_geometric": [
+        "third_party\\UniGNN\\model\\UniGNN.py:8"
+      ]
+    },
+    "parse_errors": []
+  }
+}

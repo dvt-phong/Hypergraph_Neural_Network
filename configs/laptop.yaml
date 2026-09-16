@@ -1,0 +1,6 @@
+machine: laptop
+device: cuda
+batch_size: 8
+num_workers: 0
+precision: float32
+# Initial development defaults, not tuned experiment settings.

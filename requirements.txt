@@ -1,0 +1,2 @@
+# Scaffold only: GPU dependencies will be pinned after compatibility checks.
+# Do not install arbitrary latest versions for reproducing original repositories.
