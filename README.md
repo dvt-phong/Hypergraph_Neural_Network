@@ -40,8 +40,8 @@ bộ được Git ignore và không được import vào mô hình đề xuất.
 
 ## Trạng thái
 
-Phase 0 và Phase 1 đã hoàn thành. Phase 1 đã audit toàn bộ 42.110.402 event và tạo
-canonical dataset ngày 0–34 tại `data/processed/xuetangx_247/`.
+Phase 0–2 đã hoàn thành. Dữ liệu đã được audit, chuẩn hóa về ngày 0–34 và chia
+user-disjoint train/validation/test tại `data/processed/xuetangx_247/`.
 
 Phase 0 đã khóa:
 
@@ -59,6 +59,7 @@ Kiểm tra contract và cấu trúc:
 .\.venv\Scripts\python.exe run.py structure
 .\.venv\Scripts\python.exe run.py audit-data
 .\.venv\Scripts\python.exe run.py prepare-data
+.\.venv\Scripts\python.exe run.py split-data
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
@@ -69,4 +70,4 @@ Hai script full activity được giữ riêng để tải và chuyển JSON th�
 .\.venv\Scripts\python.exe scripts\convert_xuetangx_full.py
 ```
 
-Phase tiếp theo là chia train/validation/test theo user-disjoint.
+Phase tiếp theo là feature engineering.

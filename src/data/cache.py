@@ -7,8 +7,32 @@ import json
 from pathlib import Path
 from typing import Any
 
+import duckdb
+
 
 BUFFER_SIZE = 8 * 1024 * 1024
+
+
+def sql_path(path: Path) -> str:
+    """Return an absolute path safe for embedding in a DuckDB SQL literal."""
+
+    return path.resolve().as_posix().replace("'", "''")
+
+
+def copy_parquet_atomic(
+    connection: duckdb.DuckDBPyConnection,
+    query: str,
+    destination: Path,
+) -> None:
+    """Write a Parquet query result without exposing an incomplete artifact."""
+
+    temporary = destination.with_name(destination.name + ".part")
+    temporary.unlink(missing_ok=True)
+    connection.execute(
+        f"COPY ({query}) TO '{sql_path(temporary)}' "
+        "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 1000000)"
+    )
+    temporary.replace(destination)
 
 
 def sha256(path: Path) -> str:

@@ -52,6 +52,14 @@ def _prepare_data(*, force: bool) -> int:
     return 0
 
 
+def _split_data(*, force: bool) -> int:
+    from data.split import build_splits
+
+    manifest = build_splits(force=force)
+    print(json.dumps(manifest, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="XuetangX-247 hypergraph structure learning pipeline"
@@ -66,6 +74,12 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument(
         "--force", action="store_true", help="Rebuild artifacts even when the cache is valid."
     )
+    split = subparsers.add_parser(
+        "split-data", help="Build the locked user-disjoint experiment split."
+    )
+    split.add_argument(
+        "--force", action="store_true", help="Rebuild the split even when the cache is valid."
+    )
     return parser
 
 
@@ -79,6 +93,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _audit_data()
     if args.command == "prepare-data":
         return _prepare_data(force=args.force)
+    if args.command == "split-data":
+        return _split_data(force=args.force)
     raise AssertionError(f"Unhandled command: {args.command}")
 
 

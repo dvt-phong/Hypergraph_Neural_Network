@@ -15,7 +15,14 @@ from data.audit import (
     truths_sql,
     validate_source_files,
 )
-from data.cache import signatures_match, source_signature, utc_now, write_json_atomic
+from data.cache import (
+    copy_parquet_atomic,
+    signatures_match,
+    source_signature,
+    sql_path,
+    utc_now,
+    write_json_atomic,
+)
 from data.schema import DATASET_CONTRACT, SCHEMA_VERSION
 from paths import PROCESSED_DATA_DIR, RAW_DATA_DIR, require_project_path
 
@@ -26,24 +33,6 @@ PARQUET_ARTIFACTS = (
     "users.parquet",
     "courses.parquet",
 )
-
-
-def _sql_path(path: Path) -> str:
-    return path.resolve().as_posix().replace("'", "''")
-
-
-def _copy_parquet(
-    connection: duckdb.DuckDBPyConnection,
-    query: str,
-    destination: Path,
-) -> None:
-    temporary = destination.with_name(destination.name + ".part")
-    temporary.unlink(missing_ok=True)
-    connection.execute(
-        f"COPY ({query}) TO '{_sql_path(temporary)}' "
-        "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 1000000)"
-    )
-    temporary.replace(destination)
 
 
 def _cache_hit(raw_dir: Path, output_dir: Path) -> dict[str, Any] | None:
@@ -79,7 +68,7 @@ def _artifact_record(
     path: Path,
 ) -> dict[str, Any]:
     rows = connection.execute(
-        f"SELECT count(*) FROM read_parquet('{_sql_path(path)}')"
+        f"SELECT count(*) FROM read_parquet('{sql_path(path)}')"
     ).fetchone()[0]
     return {"path": path.name, "rows": rows, "size_bytes": path.stat().st_size}
 
@@ -128,12 +117,12 @@ def prepare_dataset(
             FROM enrollment_meta e JOIN labels l USING(enroll_id, source_partition)
             ORDER BY e.enroll_id
         """
-        _copy_parquet(connection, nodes_query, output_dir / "nodes.parquet")
+        copy_parquet_atomic(connection, nodes_query, output_dir / "nodes.parquet")
 
         users_query = f"""
             WITH selected AS (
                 SELECT DISTINCT user_id
-                FROM read_parquet('{_sql_path(output_dir / 'nodes.parquet')}')
+                FROM read_parquet('{sql_path(output_dir / 'nodes.parquet')}')
             ), users AS (
                 SELECT try_cast(user_id AS BIGINT) AS user_id,
                        nullif(trim(gender), '') AS gender,
@@ -145,12 +134,12 @@ def prepare_dataset(
             FROM users u JOIN selected s USING(user_id)
             ORDER BY u.user_id
         """
-        _copy_parquet(connection, users_query, output_dir / "users.parquet")
+        copy_parquet_atomic(connection, users_query, output_dir / "users.parquet")
 
         courses_query = f"""
             WITH selected AS (
                 SELECT DISTINCT course_id
-                FROM read_parquet('{_sql_path(output_dir / 'nodes.parquet')}')
+                FROM read_parquet('{sql_path(output_dir / 'nodes.parquet')}')
             ), courses AS (
                 SELECT try_cast(id AS BIGINT) AS metadata_id,
                        course_id,
@@ -163,7 +152,7 @@ def prepare_dataset(
             SELECT c.* FROM courses c JOIN selected s USING(course_id)
             ORDER BY c.course_id
         """
-        _copy_parquet(connection, courses_query, output_dir / "courses.parquet")
+        copy_parquet_atomic(connection, courses_query, output_dir / "courses.parquet")
 
         events_query = f"""
             WITH logs AS ({logs}), parsed AS (
@@ -179,14 +168,14 @@ def prepare_dataset(
                        date_diff('day', cast(c.course_start AS DATE),
                                         cast(p.event_time AS DATE)) AS course_day
                 FROM parsed p
-                JOIN read_parquet('{_sql_path(output_dir / 'nodes.parquet')}') n
+                JOIN read_parquet('{sql_path(output_dir / 'nodes.parquet')}') n
                   USING(enroll_id)
-                JOIN read_parquet('{_sql_path(output_dir / 'courses.parquet')}') c
+                JOIN read_parquet('{sql_path(output_dir / 'courses.parquet')}') c
                   USING(course_id)
             )
             SELECT * FROM canonical WHERE course_day BETWEEN 0 AND 34
         """
-        _copy_parquet(connection, events_query, output_dir / "events_35d.parquet")
+        copy_parquet_atomic(connection, events_query, output_dir / "events_35d.parquet")
 
         artifacts = [
             _artifact_record(connection, output_dir / name) for name in PARQUET_ARTIFACTS

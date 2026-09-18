@@ -7,7 +7,7 @@ from typing import Any
 
 import duckdb
 
-from data.cache import utc_now, write_json_atomic
+from data.cache import sql_path, utc_now, write_json_atomic
 from data.schema import (
     ACTIONS,
     COURSE_COLUMNS,
@@ -67,13 +67,9 @@ def validate_source_files(raw_dir: Path = RAW_DATA_DIR) -> dict[str, dict[str, A
     return results
 
 
-def _sql_path(path: Path) -> str:
-    return path.resolve().as_posix().replace("'", "''")
-
-
 def csv_source(path: Path) -> str:
     return (
-        f"read_csv_auto('{_sql_path(path)}', header=true, "
+        f"read_csv_auto('{sql_path(path)}', header=true, "
         "all_varchar=true, nullstr='')"
     )
 

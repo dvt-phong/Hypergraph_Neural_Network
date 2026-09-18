@@ -79,6 +79,14 @@ seed 42:
 | Validation | 16% | Chọn siêu tham số và early stopping |
 | Test | 20% | Báo cáo kết quả cuối cùng |
 
+Kết quả đã khóa với seed 42:
+
+| Tập | User | Enrollment | Dropout | Dropout rate |
+|---|---:|---:|---:|---:|
+| Train | 49.333 | 144.543 | 109.625 | 75,84% |
+| Validation | 12.333 | 36.028 | 27.374 | 75,98% |
+| Test | 15.417 | 45.071 | 34.134 | 75,73% |
+
 Ràng buộc bắt buộc:
 
 - Một user chỉ thuộc một tập; user overlap giữa ba tập phải bằng 0.

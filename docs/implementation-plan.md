@@ -1,7 +1,7 @@
 # Kế hoạch triển khai mô hình HGSL trên XuetangX
 
-> Trạng thái: Phase 0 và Phase 1 đã hoàn thành. Phase tiếp theo là Phase 2 —
-> user-disjoint split.
+> Trạng thái: Phase 0–2 đã hoàn thành. Phase tiếp theo là Phase 3 — feature
+> engineering.
 
 ## 1. Phạm vi đã chốt
 
@@ -63,6 +63,7 @@ src/
 ```text
 python run.py audit-data
 python run.py prepare-data
+python run.py split-data
 python run.py build-features
 python run.py build-hypergraph
 python run.py train
@@ -182,6 +183,16 @@ node_id, enroll_id, user_id, source_partition, experiment_split
 - User overlap giữa mọi cặp split bằng 0.
 - Tổng node của ba split bằng 225.642.
 - Báo cáo số user, enrollment và label của từng split.
+
+### Kết quả đã khóa với seed 42
+
+| Split | User | Enrollment | Dropout | Dropout rate |
+|---|---:|---:|---:|---:|
+| Train | 49.333 | 144.543 | 109.625 | 75,84% |
+| Validation | 12.333 | 36.028 | 27.374 | 75,98% |
+| Test | 15.417 | 45.071 | 34.134 | 75,73% |
+
+User overlap bằng 0; tổng cộng 77.083 user và 225.642 enrollment.
 
 ## Phase 3 — Feature engineering
 
