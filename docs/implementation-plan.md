@@ -1,7 +1,7 @@
 # Kế hoạch triển khai mô hình HGSL trên XuetangX
 
-> Trạng thái: Phase 0–2 đã hoàn thành. Phase tiếp theo là Phase 3 — feature
-> engineering.
+> Trạng thái: Phase 0–3 đã hoàn thành. Phase tiếp theo là Phase 4 — xác định các
+> nhóm hyperedge.
 
 ## 1. Phạm vi đã chốt
 
@@ -84,7 +84,7 @@ data/processed/xuetangx_247/
   courses.parquet
   splits.parquet
   features_raw.parquet
-  X_all.npy
+  X_base.npy
   feature_transform.joblib
   H0_train.npz
   validation_memberships.parquet
@@ -238,13 +238,13 @@ unknown_action_count = 0
 
 ```text
 features_raw.parquet
-X_all.npy
-X_train.npy
-X_validation.npy
-X_test.npy
+X_base.npy
 feature_transform.joblib
 feature_manifest.json
 ```
+
+`X_base.npy` có layout `[seed_index, node_id, feature_index]`. Không lưu thêm ba
+bản sao train/validation/test; dùng `splits.parquet` để lấy node index tương ứng.
 
 Canonical event 35 ngày được dùng lại để tạo `X^(7)`, `X^(14)`, `X^(21)` và
 `X^(28)`; không đọc lại raw CSV.
@@ -370,7 +370,7 @@ Không sử dụng validation/test label khi xây graph.
 
 - Số hàng của train `H0` khớp train node index.
 - Mỗi local evaluation graph có đúng một target mask; thứ tự feature lấy từ
-  `X_all.npy` theo global `node_id`.
+  `X_base.npy` theo `seed_index` và global `node_id`.
 - Không có hyperedge rỗng hoặc singleton trong main `H0`.
 - Mọi incidence và feature đều có manifest/hash để cache có thể tái sử dụng.
 
@@ -513,7 +513,7 @@ hoàn thành của phase trước chưa đạt.
 | A09 | `src/features/engineering.py` | Hỗ trợ cắt cửa sổ 7/14/21/28/35 từ canonical event | Không đọc lại raw CSV |
 | A10 | `src/data/cache.py` | Ghi manifest, hash và kiểm tra khả năng reuse | Chạy lại không đổi input phải cache hit |
 
-Milestone A hoàn thành khi `python run.py build-features` tạo được `X_all.npy`,
+Milestone A hoàn thành khi `python run.py build-features` tạo được `X_base.npy`,
 split cố định và báo cáo audit mà không cần code mô hình.
 
 ### Milestone B — Initial hypergraph `H0`

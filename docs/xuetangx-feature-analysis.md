@@ -156,18 +156,23 @@ hiện tại vẫn dùng `object` toàn cục và cần được tạo lại tr�
 | `day_00..day_34` | 35 | Không có event → 0 | `log1p`, rồi standardize bằng train | Dùng |
 | `action_*` | 23 | Action không xảy ra → 0 | `log1p`, rồi standardize bằng train | Dùng |
 | `session_count` | 1 | Không có event → 0 | `log1p`, rồi standardize bằng train | Dùng |
-| `distinct_objects` | 1 | Không có object → 0 | `log1p`, rồi standardize bằng train | Dùng |
+| `distinct_observed_objects` | 1 | Không có object → 0 | `log1p`, rồi standardize bằng train | Dùng |
 | **Tổng** | **60** | | | |
 
 `event_count` không đưa vào `X_base` vì bằng tổng `day_*` và cũng bằng tổng
 `action_*`. Hai khối daily/action vẫn cùng được giữ: một khối mô tả thời gian, một
 khối mô tả loại hành vi.
 
+Kết quả Phase 3 có 3.305 node không phát sinh activity trong ngày 0–34; các count
+của chúng bằng 0. `action_close_info` không xuất hiện trong dữ liệu có nhãn nên là
+cột zero-variance, vẫn được giữ để cố định vocabulary 23 action. Mỗi seed có scaler
+riêng, chỉ fit trên train của seed đó.
+
 ### Feature dùng cho ablation hoặc phân tích
 
 | Feature | Xử lý NA và encoding | Quyết định |
 |---|---|---|
-| 8 activity summary: `event_count`, `active_days`, `active_span_days`, `first_active_day`, `last_active_day`, `days_since_last_activity`, `active_day_ratio`, `has_activity` | Node rỗng: các day field điền 0 và `has_activity=0`; count dùng `log1p`; day chia 34; số ngày chia 35 | `X_augmented = X_base + 8`, chạy ablation |
+| 8 activity summary: `event_count`, `active_days`, `active_span_days`, `first_active_day`, `last_active_day`, `days_since_last_activity`, `active_day_ratio`, `has_activity` | Node rỗng: first/last/span bằng 0, `days_since_last_activity=35`, `has_activity=0`; count dùng `log1p`; day chia 34; số ngày chia 35 | `X_augmented = X_base + 8`, chạy ablation |
 | `object_missing_ratio` | Node rỗng → NA; train-median + cột missing | Audit/ablation, không vào input chính |
 | `gender` | Null → `missing`; unseen → `other`; one-hot fit trên train | Context/fairness ablation |
 | `education` | Null → `missing`; unseen → `other`; one-hot fit trên train | Context/fairness ablation |

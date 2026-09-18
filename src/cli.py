@@ -78,6 +78,22 @@ def _split_data(*, force: bool) -> int:
     return 0
 
 
+def _build_features(*, force: bool) -> int:
+    from features.transform import build_features
+
+    manifest = build_features(force=force)
+    output = {
+        "artifact": str(PROCESSED_DATA_DIR / "X_base.npy"),
+        "cache_hit": manifest["cache_hit"],
+        "seeds": manifest["seeds"],
+        "shape": manifest["array_shape"],
+        "dtype": manifest["array_dtype"],
+        "raw_feature_audit": manifest["raw_feature_audit"],
+    }
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="XuetangX-247 hypergraph structure learning pipeline"
@@ -98,6 +114,12 @@ def build_parser() -> argparse.ArgumentParser:
     split.add_argument(
         "--force", action="store_true", help="Rebuild the split even when the cache is valid."
     )
+    features = subparsers.add_parser(
+        "build-features", help="Build leakage-safe X_base for all experiment seeds."
+    )
+    features.add_argument(
+        "--force", action="store_true", help="Rebuild features even when the cache is valid."
+    )
     return parser
 
 
@@ -113,6 +135,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _prepare_data(force=args.force)
     if args.command == "split-data":
         return _split_data(force=args.force)
+    if args.command == "build-features":
+        return _build_features(force=args.force)
     raise AssertionError(f"Unhandled command: {args.command}")
 
 
