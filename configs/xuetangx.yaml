@@ -1,6 +1,0 @@
-dataset: xuetangx
-raw_dir: data/raw/xuetangx
-processed_dir: data/processed/xuetangx
-# Paths are relative to project root. Protocol must be defined before use.
-observation_days: null
-split_protocol: null

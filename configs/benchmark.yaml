@@ -1,4 +1,0 @@
-# Planned baseline suite; implementations are not yet available.
-models: [logistic, xgboost, mlp, bilstm, rgcn, sig_net, mst_gcn, hgnn, unignn, allset]
-seeds: [0, 1, 2, 3, 4]
-metrics: [roc_auc, average_precision, f1, precision, recall]

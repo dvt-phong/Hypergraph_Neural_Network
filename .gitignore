@@ -17,3 +17,4 @@ dist/
 /outputs/reports/*
 !/outputs/reports/.gitkeep
 /third_party/*/
+/baseline/*/

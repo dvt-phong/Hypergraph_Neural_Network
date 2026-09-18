@@ -1,6 +1,0 @@
-dataset: kdd2015
-raw_dir: data/raw/kdd2015
-processed_dir: data/processed/kdd2015
-# Paths are relative to project root. Protocol must be defined before use.
-observation_days: null
-split_protocol: null

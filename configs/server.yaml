@@ -1,6 +1,0 @@
-machine: server
-device: cuda
-batch_size: 8
-num_workers: 0
-precision: float32
-# Tune only after inspecting server GPU and memory.

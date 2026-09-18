@@ -1,2 +1,3 @@
-# Scaffold only: GPU dependencies will be pinned after compatibility checks.
-# Do not install arbitrary latest versions for reproducing original repositories.
+# Data pipeline dependencies. GPU packages will be pinned separately.
+duckdb>=1.1
+ijson>=3.3
