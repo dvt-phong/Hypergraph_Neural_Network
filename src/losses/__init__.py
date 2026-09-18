@@ -1,1 +1,1 @@
-"""Training objectives are implemented in Phase 8."""
+"""Classification and structure-learning objectives."""

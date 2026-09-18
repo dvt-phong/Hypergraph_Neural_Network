@@ -1,7 +1,7 @@
 # Kế hoạch triển khai mô hình HGSL trên XuetangX
 
-> Trạng thái: Phase 0–5 đã hoàn thành. Phase tiếp theo là Phase 6 — HGNN baseline
-> trên initial hypergraph `H0`.
+> Trạng thái: Phase 0–6 đã hoàn thành. Phase tiếp theo là Phase 7 — Hypergraph
+> Structure Learning.
 
 ## 1. Phạm vi đã chốt
 
@@ -70,6 +70,7 @@ python run.py split-data
 python run.py build-features
 python run.py build-hyperedges
 python run.py build-hypergraph
+python run.py train-baseline --seed 1 --epochs 1
 python run.py train
 python run.py evaluate
 ```
@@ -431,6 +432,21 @@ loss = BCE
 Mục tiêu phase này là xác nhận data, incidence normalization, forward/backward và
 metric hoạt động đúng. Đây cũng là baseline trực tiếp để đo contribution của HSL.
 
+### Kết quả triển khai Phase 6
+
+- Cài sparse propagation đúng công thức
+  `Dv^-1/2 H W De^-1 H^T Dv^-1/2`; không materialize ma trận truyền dense.
+- Baseline gồm hai HGNN layer, ReLU/dropout và linear dropout classifier.
+- `pos_weight=negative/positive` chỉ tính từ train label.
+- Validation local graph được batch block-diagonal; các target trong cùng batch
+  không truyền message cho nhau.
+- Có AUC, AUPRC, F1, precision, recall; early stopping theo validation AUC và
+  checkpoint chứa hash `hypergraph_manifest.json`.
+- Smoke run một epoch trên toàn bộ train graph seed 1 đã đạt loss/gradient hữu
+  hạn. Validation 128 target chỉ dùng kiểm tra kỹ thuật, không phải kết quả nghiên cứu.
+- Full validation dùng `--validation-limit 0`; thí nghiệm đủ năm seed và tuning
+  hyperparameter vẫn thực hiện ở Phase 9.
+
 ## Phase 7 — Hypergraph Structure Learning
 
 Theo flowchart:
@@ -583,7 +599,7 @@ và local memberships, đồng thời toàn bộ audit hyperedge đạt invarian
 | ID | File chính | Công việc | Đầu ra/kiểm tra |
 |---|---|---|---|
 | C01 | `src/models/hgnn.py` | Cài sparse hypergraph convolution và degree normalization | So khớp phép tính trên graph đồ chơi |
-| C02 | `src/models/classifier.py` | MLP head tạo dropout logit | Output shape `[batch]` |
+| C02 | `src/models/classifier.py` | Linear head tạo dropout logit | Output shape `[batch]` |
 | C03 | `src/models/model.py` | Ghép `X`, `H0`, HGNN và classifier | Forward không dùng label |
 | C04 | `src/losses/objective.py` | BCEWithLogitsLoss; `pos_weight` chỉ tính từ train | Loss hữu hạn và có gradient |
 | C05 | `src/training/trainer.py` | Train/validation loop, early stopping và checkpoint | Chạy được một epoch CPU/GPU |

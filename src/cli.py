@@ -136,6 +136,39 @@ def _build_hypergraph(*, force: bool, behavioral_k: int) -> int:
     return 0
 
 
+def _train_baseline(
+    *,
+    seed: int,
+    epochs: int,
+    hidden_dim: int,
+    dropout: float,
+    learning_rate: float,
+    weight_decay: float,
+    device: str,
+    validation_limit: int,
+    validation_batch_size: int,
+    patience: int,
+) -> int:
+    from training.trainer import BaselineConfig, run_baseline_smoke
+
+    report = run_baseline_smoke(
+        BaselineConfig(
+            seed=seed,
+            epochs=epochs,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            device=device,
+            validation_limit=validation_limit,
+            validation_batch_size=validation_batch_size,
+            patience=patience,
+        )
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="XuetangX-247 hypergraph structure learning pipeline"
@@ -183,6 +216,27 @@ def build_parser() -> argparse.ArgumentParser:
     graph.add_argument(
         "--force", action="store_true", help="Rebuild H0 even when cached."
     )
+    baseline = subparsers.add_parser(
+        "train-baseline",
+        help="Run the Phase 6 full-batch HGNN smoke training.",
+    )
+    baseline.add_argument("--seed", type=int, choices=(1, 11, 111, 1111, 11111), default=1)
+    baseline.add_argument("--epochs", type=int, default=1)
+    baseline.add_argument("--hidden-dim", type=int, default=64)
+    baseline.add_argument("--dropout", type=float, default=0.5)
+    baseline.add_argument("--learning-rate", type=float, default=0.01)
+    baseline.add_argument("--weight-decay", type=float, default=5e-4)
+    baseline.add_argument(
+        "--device", choices=("auto", "cpu", "cuda"), default="auto"
+    )
+    baseline.add_argument(
+        "--validation-limit",
+        type=int,
+        default=128,
+        help="Validation targets for a smoke run; zero uses all targets.",
+    )
+    baseline.add_argument("--validation-batch-size", type=int, default=16)
+    baseline.add_argument("--patience", type=int, default=5)
     return parser
 
 
@@ -205,6 +259,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "build-hypergraph":
         return _build_hypergraph(
             force=args.force, behavioral_k=args.behavioral_k
+        )
+    if args.command == "train-baseline":
+        return _train_baseline(
+            seed=args.seed,
+            epochs=args.epochs,
+            hidden_dim=args.hidden_dim,
+            dropout=args.dropout,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            device=args.device,
+            validation_limit=args.validation_limit,
+            validation_batch_size=args.validation_batch_size,
+            patience=args.patience,
         )
     raise AssertionError(f"Unhandled command: {args.command}")
 
