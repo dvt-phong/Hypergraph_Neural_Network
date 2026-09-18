@@ -1,4 +1,4 @@
-"""Phase 4 orchestration for Course, Object and Behavioral hyperedges."""
+"""Phase 4–5 orchestration for hyperedge candidates and sparse H0 artifacts."""
 from __future__ import annotations
 
 import json
@@ -7,6 +7,7 @@ from typing import Any
 
 import duckdb
 import numpy as np
+from scipy import sparse
 
 from data.cache import (
     copy_parquet_atomic,
@@ -15,10 +16,16 @@ from data.cache import (
     utc_now,
     write_json_atomic,
 )
-from data.schema import DATASET_CONTRACT, EXPERIMENT_SEEDS, SCHEMA_VERSION
+from data.schema import (
+    DATASET_CONTRACT,
+    EXPERIMENT_SEEDS,
+    SCHEMA_VERSION,
+    base_feature_columns,
+)
 from features.transform import build_features
 from hypergraph.audit import audit_behavioral, audit_structural
 from hypergraph.behavioral import (
+    DEFAULT_K,
     HNSW_EF_CONSTRUCTION,
     HNSW_EF_SEARCH,
     HNSW_M,
@@ -37,6 +44,13 @@ STRUCTURAL_ARTIFACT = "structural_memberships.parquet"
 BEHAVIORAL_ARTIFACT = "behavioral_neighbors.npz"
 AUDIT_ARTIFACT = "hyperedge_audit.json"
 MANIFEST_ARTIFACT = "hyperedge_manifest.json"
+GRAPH_VERSION = "initial-hypergraph-v1"
+TRAIN_NODE_INDEX_ARTIFACT = "train_node_index.parquet"
+HYPEREDGE_METADATA_ARTIFACT = "hyperedges.parquet"
+VALIDATION_MEMBERSHIPS_ARTIFACT = "validation_memberships.parquet"
+TEST_MEMBERSHIPS_ARTIFACT = "test_memberships.parquet"
+GRAPH_AUDIT_ARTIFACT = "hypergraph_audit.json"
+GRAPH_MANIFEST_ARTIFACT = "hypergraph_manifest.json"
 
 
 def _signatures(paths: tuple[Path, ...]) -> dict[str, dict[str, Any]]:
@@ -196,4 +210,578 @@ def build_hyperedges(
         "artifacts": _signatures(artifact_paths),
     }
     write_json_atomic(output_dir / MANIFEST_ARTIFACT, manifest)
+    return manifest
+
+
+def train_matrix_name(seed: int) -> str:
+    return f"H0_train_seed_{seed}.npz"
+
+
+def _graph_artifact_names() -> tuple[str, ...]:
+    matrices = tuple(train_matrix_name(seed) for seed in EXPERIMENT_SEEDS)
+    return matrices + (
+        TRAIN_NODE_INDEX_ARTIFACT,
+        HYPEREDGE_METADATA_ARTIFACT,
+        VALIDATION_MEMBERSHIPS_ARTIFACT,
+        TEST_MEMBERSHIPS_ARTIFACT,
+        GRAPH_AUDIT_ARTIFACT,
+    )
+
+
+def _graph_cache_hit(
+    output_dir: Path,
+    inputs: dict[str, dict[str, Any]],
+    behavioral_k: int,
+) -> dict[str, Any] | None:
+    path = output_dir / GRAPH_MANIFEST_ARTIFACT
+    if not path.is_file():
+        return None
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if (
+        manifest.get("schema_version") != SCHEMA_VERSION
+        or manifest.get("graph_version") != GRAPH_VERSION
+        or manifest.get("seeds") != list(EXPERIMENT_SEEDS)
+        or manifest.get("behavioral_k") != behavioral_k
+        or manifest.get("inputs") != inputs
+    ):
+        return None
+    artifacts = manifest.get("artifacts", {})
+    for name in _graph_artifact_names():
+        path = output_dir / name
+        if not path.is_file() or artifacts.get(name) != source_signature(
+            path, include_hash=True
+        ):
+            return None
+    return manifest
+
+
+def _write_sparse_atomic(path: Path, matrix: sparse.csr_matrix) -> None:
+    temporary = path.with_name(path.name + ".part")
+    temporary.unlink(missing_ok=True)
+    with temporary.open("wb") as destination:
+        sparse.save_npz(destination, matrix, compressed=True)
+    temporary.replace(path)
+
+
+def _create_metadata_table(connection: duckdb.DuckDBPyConnection) -> None:
+    connection.execute(
+        """
+        CREATE TEMP TABLE hyperedge_metadata (
+            seed INTEGER,
+            hyperedge_id BIGINT,
+            family VARCHAR,
+            source_key VARCHAR,
+            object_type VARCHAR,
+            course_id VARCHAR,
+            object_id VARCHAR,
+            anchor_node_id BIGINT,
+            size INTEGER,
+            weight FLOAT
+        )
+        """
+    )
+
+
+def _insert_metadata(
+    connection: duckdb.DuckDBPyConnection,
+    rows: list[tuple[Any, ...]],
+) -> None:
+    batch_size = 50_000
+    casts = (
+        "INTEGER[]",
+        "BIGINT[]",
+        "VARCHAR[]",
+        "VARCHAR[]",
+        "VARCHAR[]",
+        "VARCHAR[]",
+        "VARCHAR[]",
+        "BIGINT[]",
+        "INTEGER[]",
+        "FLOAT[]",
+    )
+    expressions = ", ".join(f"unnest(?::{cast})" for cast in casts)
+    for start in range(0, len(rows), batch_size):
+        batch = rows[start : start + batch_size]
+        columns = [list(values) for values in zip(*batch, strict=True)]
+        connection.execute(
+            f"INSERT INTO hyperedge_metadata SELECT {expressions}", columns
+        )
+
+
+def _structural_groups(
+    connection: duckdb.DuckDBPyConnection,
+    memberships_path: Path,
+    splits_path: Path,
+    seed: int,
+) -> list[tuple[Any, ...]]:
+    return connection.execute(
+        f"""
+        SELECT
+            m.family,
+            m.course_id,
+            m.object_id,
+            m.object_type,
+            list(m.node_id ORDER BY m.node_id) AS node_ids
+        FROM read_parquet('{sql_path(memberships_path)}') m
+        JOIN read_parquet('{sql_path(splits_path)}') s USING (node_id)
+        WHERE s.seed=? AND s.experiment_split='train'
+        GROUP BY m.family, m.course_id, m.object_id, m.object_type
+        HAVING count(*) >= 2
+        ORDER BY
+            CASE m.family WHEN 'course' THEN 0 ELSE 1 END,
+            m.course_id, m.object_type, m.object_id
+        """,
+        [seed],
+    ).fetchall()
+
+
+def _source_key(family: str, course_id: str, object_id: str | None) -> str:
+    if family == "course":
+        return course_id
+    return json.dumps([course_id, object_id], ensure_ascii=False, separators=(",", ":"))
+
+
+def _materialize_seed(
+    connection: duckdb.DuckDBPyConnection,
+    output_dir: Path,
+    memberships_path: Path,
+    splits_path: Path,
+    neighbors: np.ndarray,
+    seed_index: int,
+    seed: int,
+    behavioral_k: int,
+) -> dict[str, Any]:
+    train_ids = _train_ids(connection, splits_path, seed)
+    global_to_local = np.full(DATASET_CONTRACT.enrollments, -1, dtype=np.int32)
+    global_to_local[train_ids] = np.arange(train_ids.size, dtype=np.int32)
+
+    row_parts: list[np.ndarray] = []
+    column_parts: list[np.ndarray] = []
+    metadata: list[tuple[Any, ...]] = []
+    family_counts = {"course": 0, "object": 0, "behavioral": 0}
+    edge_id = 0
+    for family, course_id, object_id, object_type, node_ids in _structural_groups(
+        connection, memberships_path, splits_path, seed
+    ):
+        global_ids = np.asarray(node_ids, dtype=np.int64)
+        local_ids = global_to_local[global_ids]
+        if np.any(local_ids < 0):
+            raise RuntimeError("A structural train edge contains a non-train node")
+        row_parts.append(local_ids)
+        column_parts.append(np.full(local_ids.size, edge_id, dtype=np.int64))
+        metadata.append(
+            (
+                seed,
+                edge_id,
+                family,
+                _source_key(family, course_id, object_id),
+                object_type,
+                course_id,
+                object_id,
+                None,
+                int(local_ids.size),
+                1.0,
+            )
+        )
+        family_counts[family] += 1
+        edge_id += 1
+
+    behavioral_edges = np.concatenate(
+        (
+            train_ids[:, None],
+            neighbors[seed_index, train_ids, :behavioral_k],
+        ),
+        axis=1,
+    )
+    behavioral_edges.sort(axis=1)
+    unique_edges, representative_indices = np.unique(
+        behavioral_edges, axis=0, return_index=True
+    )
+    behavioral_local = global_to_local[unique_edges]
+    if np.any(behavioral_local < 0):
+        raise RuntimeError("A behavioral train edge contains a non-train node")
+    behavioral_ids = np.arange(
+        edge_id, edge_id + unique_edges.shape[0], dtype=np.int64
+    )
+    row_parts.append(behavioral_local.reshape(-1))
+    column_parts.append(
+        np.repeat(behavioral_ids, behavioral_k + 1)
+    )
+    representative_anchors = train_ids[representative_indices]
+    metadata.extend(
+        (
+            seed,
+            int(current_id),
+            "behavioral",
+            f"anchor:{int(anchor)}",
+            None,
+            None,
+            None,
+            int(anchor),
+            behavioral_k + 1,
+            1.0,
+        )
+        for current_id, anchor in zip(
+            behavioral_ids, representative_anchors, strict=True
+        )
+    )
+    family_counts["behavioral"] = int(unique_edges.shape[0])
+    edge_id += int(unique_edges.shape[0])
+
+    rows = np.concatenate(row_parts)
+    columns = np.concatenate(column_parts)
+    matrix = sparse.coo_matrix(
+        (np.ones(rows.size, dtype=np.uint8), (rows, columns)),
+        shape=(train_ids.size, edge_id),
+        dtype=np.uint8,
+    ).tocsr()
+    matrix.sum_duplicates()
+    matrix.sort_indices()
+    if matrix.nnz != rows.size or matrix.data.min(initial=1) != 1:
+        raise RuntimeError("H0 must contain unique binary incidences")
+    column_sizes = np.asarray(matrix.sum(axis=0)).reshape(-1)
+    if column_sizes.size != edge_id or np.any(column_sizes < 2):
+        raise RuntimeError("H0 contains an empty or singleton hyperedge")
+    _write_sparse_atomic(output_dir / train_matrix_name(seed), matrix)
+    _insert_metadata(connection, metadata)
+    return {
+        "shape": [int(matrix.shape[0]), int(matrix.shape[1])],
+        "nnz": int(matrix.nnz),
+        "density": float(matrix.nnz / (matrix.shape[0] * matrix.shape[1])),
+        "families": family_counts,
+        "minimum_edge_size": int(column_sizes.min()),
+        "maximum_edge_size": int(column_sizes.max()),
+        "train_nodes": int(train_ids.size),
+    }
+
+
+def _write_train_node_index(
+    connection: duckdb.DuckDBPyConnection,
+    splits_path: Path,
+    destination: Path,
+) -> None:
+    seeds = ", ".join(str(seed) for seed in EXPERIMENT_SEEDS)
+    query = f"""
+        SELECT
+            seed,
+            (row_number() OVER (PARTITION BY seed ORDER BY node_id) - 1)::BIGINT
+                AS local_node_id,
+            node_id
+        FROM read_parquet('{sql_path(splits_path)}')
+        WHERE experiment_split='train' AND seed IN ({seeds})
+        ORDER BY seed, local_node_id
+    """
+    copy_parquet_atomic(connection, query, destination)
+
+
+def _write_hyperedge_metadata(
+    connection: duckdb.DuckDBPyConnection, destination: Path
+) -> None:
+    copy_parquet_atomic(
+        connection,
+        "SELECT * FROM hyperedge_metadata ORDER BY seed, hyperedge_id",
+        destination,
+    )
+
+
+def _local_membership_query(
+    memberships_path: Path,
+    splits_path: Path,
+    experiment_split: str,
+    behavioral_k: int,
+) -> str:
+    if experiment_split not in {"validation", "test"}:
+        raise ValueError("Local memberships are only defined for validation/test")
+    memberships = sql_path(memberships_path)
+    splits = sql_path(splits_path)
+    return f"""
+        WITH train_groups AS (
+            SELECT
+                s.seed,
+                m.family,
+                m.course_id,
+                m.object_id,
+                m.object_type,
+                count(*)::INTEGER AS reference_size,
+                min(m.node_id)::BIGINT AS singleton_reference_node_id
+            FROM read_parquet('{memberships}') m
+            JOIN read_parquet('{splits}') s USING (node_id)
+            WHERE s.experiment_split='train'
+            GROUP BY s.seed, m.family, m.course_id, m.object_id, m.object_type
+        ),
+        target_structural AS (
+            SELECT
+                s.seed,
+                s.node_id AS target_node_id,
+                m.family,
+                CASE
+                    WHEN m.family='course' THEN m.course_id::VARCHAR
+                    ELSE to_json([m.course_id, m.object_id])::VARCHAR
+                END::VARCHAR AS source_key,
+                m.object_type,
+                h.hyperedge_id AS train_hyperedge_id,
+                CASE WHEN g.reference_size=1
+                    THEN g.singleton_reference_node_id END
+                    AS singleton_reference_node_id,
+                NULL::BIGINT AS behavioral_anchor_node_id,
+                (g.reference_size + 1)::INTEGER AS size,
+                1.0::FLOAT AS weight
+            FROM read_parquet('{memberships}') m
+            JOIN read_parquet('{splits}') s USING (node_id)
+            JOIN train_groups g
+              ON g.seed=s.seed AND g.family=m.family
+             AND g.course_id=m.course_id
+             AND g.object_id IS NOT DISTINCT FROM m.object_id
+             AND g.object_type IS NOT DISTINCT FROM m.object_type
+            LEFT JOIN hyperedge_metadata h
+              ON h.seed=s.seed AND h.family=m.family
+             AND h.course_id=m.course_id
+             AND h.object_id IS NOT DISTINCT FROM m.object_id
+             AND h.object_type IS NOT DISTINCT FROM m.object_type
+            WHERE s.experiment_split='{experiment_split}'
+              AND m.family IN ('course', 'object')
+        ),
+        target_behavioral AS (
+            SELECT
+                seed,
+                node_id AS target_node_id,
+                'behavioral'::VARCHAR AS family,
+                'anchor:' || node_id::VARCHAR AS source_key,
+                NULL::VARCHAR AS object_type,
+                NULL::BIGINT AS train_hyperedge_id,
+                NULL::BIGINT AS singleton_reference_node_id,
+                node_id::BIGINT AS behavioral_anchor_node_id,
+                {behavioral_k + 1}::INTEGER AS size,
+                1.0::FLOAT AS weight
+            FROM read_parquet('{splits}')
+            WHERE experiment_split='{experiment_split}'
+        ),
+        combined AS (
+            SELECT * FROM target_structural
+            UNION ALL
+            SELECT * FROM target_behavioral
+        )
+        SELECT
+            seed,
+            '{experiment_split}'::VARCHAR AS experiment_split,
+            target_node_id,
+            (row_number() OVER (
+                PARTITION BY seed, target_node_id
+                ORDER BY CASE family
+                    WHEN 'course' THEN 0 WHEN 'object' THEN 1 ELSE 2 END,
+                    source_key
+            ) - 1)::BIGINT AS local_hyperedge_id,
+            family,
+            source_key,
+            object_type,
+            train_hyperedge_id,
+            singleton_reference_node_id,
+            behavioral_anchor_node_id,
+            size,
+            weight
+        FROM combined
+        ORDER BY seed, target_node_id, local_hyperedge_id
+    """
+
+
+def _audit_local_memberships(
+    connection: duckdb.DuckDBPyConnection,
+    path: Path,
+    splits_path: Path,
+) -> dict[str, Any]:
+    memberships = sql_path(path)
+    splits = sql_path(splits_path)
+    rows = connection.execute(
+        f"""
+        SELECT
+            seed,
+            experiment_split,
+            count(*) AS local_hyperedges,
+            count(DISTINCT target_node_id) AS targets,
+            count(*) FILTER (WHERE family='course') AS course,
+            count(*) FILTER (WHERE family='object') AS object,
+            count(*) FILTER (WHERE family='behavioral') AS behavioral,
+            count(*) FILTER (
+                WHERE singleton_reference_node_id IS NOT NULL
+            ) AS singleton_reference_edges,
+            min(size) AS minimum_size,
+            max(size) AS maximum_size
+        FROM read_parquet('{memberships}')
+        GROUP BY seed, experiment_split
+        ORDER BY seed
+        """
+    ).fetchall()
+    invalid = connection.execute(
+        f"""
+        SELECT count(*)
+        FROM read_parquet('{memberships}') m
+        LEFT JOIN read_parquet('{splits}') target
+          ON target.seed=m.seed AND target.node_id=m.target_node_id
+        LEFT JOIN read_parquet('{splits}') reference
+          ON reference.seed=m.seed
+         AND reference.node_id=m.singleton_reference_node_id
+        LEFT JOIN hyperedge_metadata h
+          ON h.seed=m.seed AND h.hyperedge_id=m.train_hyperedge_id
+        WHERE target.experiment_split IS DISTINCT FROM m.experiment_split
+           OR m.size < 2
+           OR (m.family='behavioral'
+               AND m.behavioral_anchor_node_id != m.target_node_id)
+           OR (m.singleton_reference_node_id IS NOT NULL
+               AND reference.experiment_split IS DISTINCT FROM 'train')
+           OR (m.train_hyperedge_id IS NOT NULL
+               AND (h.hyperedge_id IS NULL
+                    OR h.family IS DISTINCT FROM m.family
+                    OR h.family='behavioral'))
+           OR (m.family IN ('course', 'object')
+               AND ((m.train_hyperedge_id IS NULL)
+                    = (m.singleton_reference_node_id IS NULL)))
+        """
+    ).fetchone()[0]
+    if invalid:
+        raise RuntimeError(f"Found {invalid} invalid local hyperedges")
+    keys = (
+        "seed",
+        "experiment_split",
+        "local_hyperedges",
+        "targets",
+        "course",
+        "object",
+        "behavioral",
+        "singleton_reference_edges",
+        "minimum_size",
+        "maximum_size",
+    )
+    return {
+        str(row[0]): dict(zip(keys[1:], row[1:], strict=True)) for row in rows
+    }
+
+
+def build_initial_hypergraph(
+    output_dir: Path = PROCESSED_DATA_DIR,
+    *,
+    behavioral_k: int = DEFAULT_K,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Materialize train H0 and compact inductive evaluation memberships."""
+
+    if behavioral_k not in K_CANDIDATES:
+        raise ValueError(f"behavioral_k must be one of {K_CANDIDATES}")
+    output_dir = require_project_path(output_dir)
+    build_hyperedges(output_dir=output_dir)
+    memberships_path = output_dir / STRUCTURAL_ARTIFACT
+    neighbors_path = output_dir / BEHAVIORAL_ARTIFACT
+    splits_path = output_dir / "splits.parquet"
+    features_path = output_dir / "X_base.npy"
+    input_paths = (memberships_path, neighbors_path, splits_path, features_path)
+    inputs = _signatures(input_paths)
+    if not force and (
+        cached := _graph_cache_hit(output_dir, inputs, behavioral_k)
+    ) is not None:
+        return {**cached, "cache_hit": True}
+
+    with np.load(neighbors_path, allow_pickle=False) as archive:
+        neighbors = archive["neighbors"]
+    features = np.load(features_path, mmap_mode="r")
+    expected_feature_shape = (
+        len(EXPERIMENT_SEEDS),
+        DATASET_CONTRACT.enrollments,
+        len(base_feature_columns()),
+    )
+    if features.shape != expected_feature_shape:
+        raise RuntimeError(f"Unexpected X_base shape: {features.shape}")
+
+    connection = duckdb.connect()
+    connection.execute("PRAGMA threads=8")
+    _create_metadata_table(connection)
+    train_audit: dict[str, Any] = {}
+    try:
+        for seed_index, seed in enumerate(EXPERIMENT_SEEDS):
+            train_audit[str(seed)] = _materialize_seed(
+                connection,
+                output_dir,
+                memberships_path,
+                splits_path,
+                neighbors,
+                seed_index,
+                seed,
+                behavioral_k,
+            )
+        _write_train_node_index(
+            connection, splits_path, output_dir / TRAIN_NODE_INDEX_ARTIFACT
+        )
+        _write_hyperedge_metadata(
+            connection, output_dir / HYPEREDGE_METADATA_ARTIFACT
+        )
+        for split, name in (
+            ("validation", VALIDATION_MEMBERSHIPS_ARTIFACT),
+            ("test", TEST_MEMBERSHIPS_ARTIFACT),
+        ):
+            copy_parquet_atomic(
+                connection,
+                _local_membership_query(
+                    memberships_path, splits_path, split, behavioral_k
+                ),
+                output_dir / name,
+            )
+        local_audit = {
+            "validation": _audit_local_memberships(
+                connection,
+                output_dir / VALIDATION_MEMBERSHIPS_ARTIFACT,
+                splits_path,
+            ),
+            "test": _audit_local_memberships(
+                connection,
+                output_dir / TEST_MEMBERSHIPS_ARTIFACT,
+                splits_path,
+            ),
+        }
+    finally:
+        connection.close()
+
+    audit = {
+        "schema_version": SCHEMA_VERSION,
+        "graph_version": GRAPH_VERSION,
+        "behavioral_k": behavioral_k,
+        "train_by_seed": train_audit,
+        "local_evaluation": local_audit,
+        "rules": {
+            "incidence": "binary CSR",
+            "hyperedge_weight": 1.0,
+            "minimum_hyperedge_size": 2,
+            "evaluation_mode": "one target with train references only",
+            "feature_layout": "X_base[seed_index, global_node_id, feature]",
+        },
+    }
+    write_json_atomic(output_dir / GRAPH_AUDIT_ARTIFACT, audit)
+    if _signatures(input_paths) != inputs:
+        raise RuntimeError("A Phase 4 artifact changed during Phase 5")
+
+    artifact_paths = tuple(output_dir / name for name in _graph_artifact_names())
+    manifest = {
+        "schema_version": SCHEMA_VERSION,
+        "graph_version": GRAPH_VERSION,
+        "dataset": DATASET_CONTRACT.dataset,
+        "generated_utc": utc_now(),
+        "cache_hit": False,
+        "seeds": list(EXPERIMENT_SEEDS),
+        "behavioral_k": behavioral_k,
+        "behavioral_k_status": "default candidate; final choice requires validation",
+        "families": ["course", "object", "behavioral"],
+        "matrix_format": "SciPy CSR uint8 saved with save_npz",
+        "local_membership_encoding": {
+            "structural": (
+                "train_hyperedge_id, or singleton_reference_node_id when the "
+                "object has exactly one train reference"
+            ),
+            "behavioral": (
+                "behavioral_anchor_node_id indexes behavioral_neighbors.npz"
+            ),
+        },
+        "inputs": inputs,
+        "artifacts": _signatures(artifact_paths),
+    }
+    write_json_atomic(output_dir / GRAPH_MANIFEST_ARTIFACT, manifest)
     return manifest

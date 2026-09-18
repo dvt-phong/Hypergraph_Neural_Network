@@ -111,6 +111,31 @@ def _build_hyperedges(*, force: bool) -> int:
     return 0
 
 
+def _build_hypergraph(*, force: bool, behavioral_k: int) -> int:
+    from hypergraph.construction import build_initial_hypergraph
+
+    manifest = build_initial_hypergraph(
+        force=force, behavioral_k=behavioral_k
+    )
+    output = {
+        "artifacts": [
+            str(PROCESSED_DATA_DIR / f"H0_train_seed_{seed}.npz")
+            for seed in manifest["seeds"]
+        ],
+        "metadata": str(PROCESSED_DATA_DIR / "hyperedges.parquet"),
+        "validation_memberships": str(
+            PROCESSED_DATA_DIR / "validation_memberships.parquet"
+        ),
+        "test_memberships": str(
+            PROCESSED_DATA_DIR / "test_memberships.parquet"
+        ),
+        "cache_hit": manifest["cache_hit"],
+        "behavioral_k": manifest["behavioral_k"],
+    }
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="XuetangX-247 hypergraph structure learning pipeline"
@@ -144,6 +169,20 @@ def build_parser() -> argparse.ArgumentParser:
     hyperedges.add_argument(
         "--force", action="store_true", help="Rebuild hyperedges even when cached."
     )
+    graph = subparsers.add_parser(
+        "build-hypergraph",
+        help="Materialize sparse train H0 and inductive evaluation memberships.",
+    )
+    graph.add_argument(
+        "--behavioral-k",
+        type=int,
+        choices=(5, 10, 20),
+        default=10,
+        help="Behavioral neighbors per anchor (default: 10).",
+    )
+    graph.add_argument(
+        "--force", action="store_true", help="Rebuild H0 even when cached."
+    )
     return parser
 
 
@@ -163,6 +202,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _build_features(force=args.force)
     if args.command == "build-hyperedges":
         return _build_hyperedges(force=args.force)
+    if args.command == "build-hypergraph":
+        return _build_hypergraph(
+            force=args.force, behavioral_k=args.behavioral_k
+        )
     raise AssertionError(f"Unhandled command: {args.command}")
 
 

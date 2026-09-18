@@ -7,6 +7,7 @@ import numpy as np
 
 
 K_CANDIDATES = (5, 10, 20)
+DEFAULT_K = 10
 K_MAX = max(K_CANDIDATES)
 HNSW_M = 32
 HNSW_EF_CONSTRUCTION = 100

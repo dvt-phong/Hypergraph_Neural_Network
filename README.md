@@ -40,8 +40,8 @@ bộ được Git ignore và không được import vào mô hình đề xuất.
 
 ## Trạng thái
 
-Phase 0–4 đã hoàn thành. Dữ liệu đã được audit, chia user-disjoint, chuyển thành
-`X_base` 60 chiều và xây dựng ba nhóm hyperedge Course, Object, Behavioral tại
+Phase 0–5 đã hoàn thành. Dữ liệu đã được audit, chia user-disjoint, chuyển thành
+`X_base` 60 chiều, xây dựng ba nhóm hyperedge và materialize sparse `H0` tại
 `data/processed/xuetangx_247/`.
 
 Phase 0 đã khóa:
@@ -63,6 +63,7 @@ Kiểm tra contract và cấu trúc:
 .\.venv\Scripts\python.exe run.py split-data
 .\.venv\Scripts\python.exe run.py build-features
 .\.venv\Scripts\python.exe run.py build-hyperedges
+.\.venv\Scripts\python.exe run.py build-hypergraph --behavioral-k 10
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
@@ -73,5 +74,4 @@ Hai script full activity được giữ riêng để tải và chuyển JSON th�
 .\.venv\Scripts\python.exe scripts\convert_xuetangx_full.py
 ```
 
-Phase tiếp theo là materialize sparse initial hypergraph `H0` và local memberships
-cho validation/test.
+Phase tiếp theo là xây dựng HGNN baseline trên `H0`.

@@ -194,6 +194,11 @@ Không one-hot `enroll_id`, `node_id`, `user_id`, `course_id`, `object` hoặc
 | Object | Các enrollment cùng `object_key`; bỏ singleton | Khóa phải gồm cả course; thống kê cardinality trên train |
 | Behavioral | kNN trên `X_base` đã transform | Scaler và neighbor search chỉ fit trên train; chọn `k` bằng validation |
 
+Phase 5 đã materialize `H0` dạng CSR riêng cho năm seed. `k=10` hiện chỉ là
+candidate mặc định; lựa chọn cuối giữa `{5,10,20}` sẽ dựa trên validation ở phase
+huấn luyện. Local graph của mỗi validation/test target chỉ chứa target đó và các
+train-reference node, không có cạnh target–target.
+
 Audit theo khóa ghép hiện có:
 
 | Object type | Số khóa | Singleton | Tỷ lệ singleton | Median enrollment/khóa | Max |

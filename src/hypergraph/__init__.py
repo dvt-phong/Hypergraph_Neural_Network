@@ -1,1 +1,1 @@
-"""Hypergraph construction modules are implemented in Phases 4 and 5."""
+"""Leakage-safe hyperedge construction, sparse materialization and graph I/O."""

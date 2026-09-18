@@ -1,7 +1,7 @@
 # Kế hoạch triển khai mô hình HGSL trên XuetangX
 
-> Trạng thái: Phase 0–4 đã hoàn thành. Phase tiếp theo là Phase 5 — materialize
-> node features và initial hypergraph `H0`.
+> Trạng thái: Phase 0–5 đã hoàn thành. Phase tiếp theo là Phase 6 — HGNN baseline
+> trên initial hypergraph `H0`.
 
 ## 1. Phạm vi đã chốt
 
@@ -42,6 +42,7 @@ src/
     user.py
     construction.py
     audit.py
+    io.py
   models/
     __init__.py
     hgnn.py
@@ -91,9 +92,17 @@ data/processed/xuetangx_247/
   behavioral_neighbors.npz
   hyperedge_audit.json
   hyperedge_manifest.json
-  H0_train.npz
+  H0_train_seed_1.npz
+  H0_train_seed_11.npz
+  H0_train_seed_111.npz
+  H0_train_seed_1111.npz
+  H0_train_seed_11111.npz
+  train_node_index.parquet
   validation_memberships.parquet
   test_memberships.parquet
+  hyperedges.parquet
+  hypergraph_audit.json
+  hypergraph_manifest.json
   audit.json
   manifest.json
 ```
@@ -361,15 +370,17 @@ H0 = [H_course | H_object | H_behavior]
 H0[i,e] = 1 nếu node i thuộc hyperedge e, ngược lại 0
 ```
 
-Không tạo dense `H`. Lưu:
+Không tạo dense `H`. Lưu trực tiếp trong cùng thư mục processed:
 
 ```text
-artifacts/hypergraph/
-  train_H0.npz
+data/processed/xuetangx_247/
+  H0_train_seed_<seed>.npz
+  train_node_index.parquet
   validation_memberships.parquet
   test_memberships.parquet
   hyperedges.parquet
   hypergraph_audit.json
+  hypergraph_manifest.json
 ```
 
 `hyperedges.parquet` chứa `hyperedge_id`, `family`, `source_key`, `object_type`,
@@ -392,6 +403,20 @@ Không sử dụng validation/test label khi xây graph.
   `X_base.npy` theo `seed_index` và global `node_id`.
 - Không có hyperedge rỗng hoặc singleton trong main `H0`.
 - Mọi incidence và feature đều có manifest/hash để cache có thể tái sử dụng.
+
+### Kết quả triển khai Phase 5
+
+- Mỗi seed có 144.543 train node và một ma trận CSR `uint8`; số hyperedge nằm
+  trong khoảng 152.572–154.592, số incidence khoảng 3,36–3,38 triệu.
+- `behavioral_k=10` là candidate mặc định để materialize, chưa phải kết quả tuning.
+  CLI cho phép dựng lại với `k=5` hoặc `k=20`; quyết định cuối dựa trên validation.
+- `hyperedges.parquet` lưu metadata và weight `1.0`; `train_node_index.parquet`
+  ánh xạ chính xác hàng local của `H0` về global `node_id` trong `X_base`.
+- Local membership không nhân bản toàn bộ train incidence. Course/Object trỏ tới
+  train hyperedge; object chỉ có một train reference lưu trực tiếp node đó;
+  Behavioral trỏ tới anchor trong `behavioral_neighbors.npz`.
+- `src/hypergraph/io.py` đọc trực tiếp `(X_train, H0_train)` và dựng local graph
+  có đúng một target mask. Mọi reference trong local graph đều thuộc train.
 
 ## Phase 6 — Baseline HGNN trên `H0`
 
