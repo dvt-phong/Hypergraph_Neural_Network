@@ -40,8 +40,8 @@ bộ được Git ignore và không được import vào mô hình đề xuất.
 
 ## Trạng thái
 
-Phase 0–6 đã hoàn thành. Pipeline đã tạo `X_base`, sparse `H0` và chạy được HGNN
-baseline full-batch với validation local graph, early stopping và checkpoint.
+Phase 0–7 đã hoàn thành. Pipeline đã tạo `X_base`, sparse `H0`, chạy HGNN baseline
+và refine membership thành sparse `H*` có gradient.
 
 Phase 0 đã khóa:
 
@@ -64,6 +64,7 @@ Kiểm tra contract và cấu trúc:
 .\.venv\Scripts\python.exe run.py build-hyperedges
 .\.venv\Scripts\python.exe run.py build-hypergraph --behavioral-k 10
 .\.venv\Scripts\python.exe run.py train-baseline --seed 1 --epochs 1
+.\.venv\Scripts\python.exe run.py check-hgsl --seed 1
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
@@ -74,4 +75,4 @@ Hai script full activity được giữ riêng để tải và chuyển JSON th�
 .\.venv\Scripts\python.exe scripts\convert_xuetangx_full.py
 ```
 
-Phase tiếp theo là Hypergraph Structure Learning.
+Phase tiếp theo là hoàn thiện loss và protocol huấn luyện HGSL.

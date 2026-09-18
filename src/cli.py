@@ -169,6 +169,37 @@ def _train_baseline(
     return 0
 
 
+def _check_hgsl(
+    *,
+    seed: int,
+    sampled_hyperedges: int,
+    positive_nodes: int,
+    negative_nodes: int,
+    mode: str,
+    top_r: int,
+    threshold: float,
+    contrastive_weight: float,
+    device: str,
+) -> int:
+    from training.hgsl import HGSLSmokeConfig, run_hgsl_smoke
+
+    report = run_hgsl_smoke(
+        HGSLSmokeConfig(
+            seed=seed,
+            sampled_hyperedges=sampled_hyperedges,
+            positive_nodes=positive_nodes,
+            negative_nodes=negative_nodes,
+            mode=mode,
+            top_r=top_r,
+            threshold=threshold,
+            contrastive_weight=contrastive_weight,
+            device=device,
+        )
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="XuetangX-247 hypergraph structure learning pipeline"
@@ -237,6 +268,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     baseline.add_argument("--validation-batch-size", type=int, default=16)
     baseline.add_argument("--patience", type=int, default=5)
+    hgsl = subparsers.add_parser(
+        "check-hgsl",
+        help="Run one end-to-end Phase 7 sparse-refinement optimizer step.",
+    )
+    hgsl.add_argument("--seed", type=int, choices=(1, 11, 111, 1111, 11111), default=1)
+    hgsl.add_argument("--sampled-hyperedges", type=int, default=96)
+    hgsl.add_argument("--positive-nodes", type=int, default=16)
+    hgsl.add_argument("--negative-nodes", type=int, default=16)
+    hgsl.add_argument("--mode", choices=("top_r", "threshold"), default="top_r")
+    hgsl.add_argument("--top-r", type=int, default=8)
+    hgsl.add_argument("--threshold", type=float, default=0.5)
+    hgsl.add_argument("--contrastive-weight", type=float, default=0.1)
+    hgsl.add_argument(
+        "--device", choices=("auto", "cpu", "cuda"), default="auto"
+    )
     return parser
 
 
@@ -272,6 +318,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             validation_limit=args.validation_limit,
             validation_batch_size=args.validation_batch_size,
             patience=args.patience,
+        )
+    if args.command == "check-hgsl":
+        return _check_hgsl(
+            seed=args.seed,
+            sampled_hyperedges=args.sampled_hyperedges,
+            positive_nodes=args.positive_nodes,
+            negative_nodes=args.negative_nodes,
+            mode=args.mode,
+            top_r=args.top_r,
+            threshold=args.threshold,
+            contrastive_weight=args.contrastive_weight,
+            device=args.device,
         )
     raise AssertionError(f"Unhandled command: {args.command}")
 

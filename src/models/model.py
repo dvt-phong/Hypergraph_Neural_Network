@@ -1,12 +1,21 @@
 """End-to-end baseline HGNN model."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+import numpy as np
+from scipy import sparse
 import torch
 from torch import nn
 from torch.nn import functional as functional
 
 from models.classifier import DropoutClassifier
 from models.hgnn import HGNNLayer, HypergraphOperator
+from models.refinement import (
+    HypergraphRefiner,
+    RefinementConfig,
+    RefinementResult,
+)
 
 
 class HGNNBaseline(nn.Module):
@@ -40,3 +49,43 @@ class HGNNBaseline(nn.Module):
     ) -> tuple[torch.Tensor, torch.Tensor]:
         embeddings = self.encode(node_features, operator)
         return self.classifier(embeddings), embeddings
+
+
+@dataclass(frozen=True)
+class HGSLForward:
+    logits: torch.Tensor
+    z0: torch.Tensor
+    z_star: torch.Tensor
+    refinement: RefinementResult
+
+
+class HGSLModel(nn.Module):
+    """HGNN -> sparse membership refinement -> HGNN."""
+
+    def __init__(
+        self,
+        input_dim: int,
+        hidden_dim: int = 64,
+        dropout: float = 0.5,
+        refinement: RefinementConfig = RefinementConfig(),
+    ) -> None:
+        super().__init__()
+        self.backbone = HGNNBaseline(input_dim, hidden_dim, dropout)
+        self.refiner = HypergraphRefiner(hidden_dim, refinement)
+
+    def forward(
+        self,
+        node_features: torch.Tensor,
+        initial_operator: HypergraphOperator,
+        initial_incidence: sparse.spmatrix,
+        families: np.ndarray,
+        sizes: np.ndarray,
+        generator: np.random.Generator,
+    ) -> HGSLForward:
+        z0 = self.backbone.encode(node_features, initial_operator)
+        refinement = self.refiner(
+            z0, initial_incidence, families, sizes, generator
+        )
+        z_star = self.backbone.encode(node_features, refinement.operator)
+        logits = self.backbone.classifier(z_star)
+        return HGSLForward(logits, z0, z_star, refinement)

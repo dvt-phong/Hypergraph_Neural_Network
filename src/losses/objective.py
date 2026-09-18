@@ -4,6 +4,8 @@ from __future__ import annotations
 import torch
 from torch.nn import functional as functional
 
+from losses.contrastive import contrastive_alignment_loss
+
 
 def train_pos_weight(labels: torch.Tensor) -> torch.Tensor:
     """Return negative/positive count using only the supplied train labels."""
@@ -30,3 +32,33 @@ def classification_loss(
     return functional.binary_cross_entropy_with_logits(
         logits, labels, pos_weight=pos_weight
     )
+
+
+def hgsl_objective(
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    z0: torch.Tensor,
+    z_star: torch.Tensor,
+    pos_weight: torch.Tensor,
+    *,
+    contrastive_weight: float,
+    temperature: float = 0.2,
+    contrastive_node_indices: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """Return BCE + lambda*InfoNCE and its detached-friendly components."""
+
+    if contrastive_weight < 0:
+        raise ValueError("contrastive_weight must be non-negative")
+    bce = classification_loss(logits, labels, pos_weight)
+    if contrastive_weight == 0:
+        contrastive = bce.new_zeros(())
+        total = bce
+    else:
+        contrastive = contrastive_alignment_loss(
+            z0,
+            z_star,
+            temperature=temperature,
+            node_indices=contrastive_node_indices,
+        )
+        total = bce + contrastive_weight * contrastive
+    return total, {"bce": bce, "contrastive": contrastive}

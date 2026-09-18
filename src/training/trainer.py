@@ -55,7 +55,7 @@ class BaselineConfig:
             raise ValueError("device must be auto, cpu or cuda")
 
 
-def _resolve_device(name: str) -> torch.device:
+def resolve_device(name: str) -> torch.device:
     if name == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if name == "cuda" and not torch.cuda.is_available():
@@ -63,7 +63,7 @@ def _resolve_device(name: str) -> torch.device:
     return torch.device(name)
 
 
-def _set_seed(seed: int) -> None:
+def set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -71,7 +71,7 @@ def _set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def _labels_for_nodes(nodes_path: Path, node_ids: np.ndarray) -> np.ndarray:
+def labels_for_nodes(nodes_path: Path, node_ids: np.ndarray) -> np.ndarray:
     connection = duckdb.connect()
     try:
         rows = connection.execute(
@@ -96,7 +96,7 @@ def _validation_targets(
     seed: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     targets = store.target_node_ids()
-    labels = _labels_for_nodes(nodes_path, targets)
+    labels = labels_for_nodes(nodes_path, targets)
     if limit and limit < targets.size:
         generator = np.random.default_rng(seed)
         selected = np.sort(generator.choice(targets.size, size=limit, replace=False))
@@ -182,10 +182,10 @@ def run_baseline_smoke(
     output_dir = require_project_path(output_dir)
     report_dir = require_project_path(report_dir)
     runs_dir = require_project_path(runs_dir)
-    _set_seed(config.seed)
-    device = _resolve_device(config.device)
+    set_seed(config.seed)
+    device = resolve_device(config.device)
     graph = load_train_hypergraph(config.seed, output_dir)
-    labels_numpy = _labels_for_nodes(output_dir / "nodes.parquet", graph.node_ids)
+    labels_numpy = labels_for_nodes(output_dir / "nodes.parquet", graph.node_ids)
     features = torch.as_tensor(graph.features, dtype=torch.float32, device=device)
     labels = torch.as_tensor(labels_numpy, dtype=torch.float32, device=device)
     operator = HypergraphOperator.from_scipy(graph.incidence, device=device)

@@ -9,6 +9,74 @@ import torch
 from torch import nn
 
 
+SPARSE_BACKWARD_CHUNK = 100_000
+
+
+class _SparseValuesMM(torch.autograd.Function):
+    """Sparse-dense matmul with O(nnz) gradients for sparse values."""
+
+    @staticmethod
+    def forward(
+        ctx: object,
+        indices: torch.Tensor,
+        values: torch.Tensor,
+        rows: int,
+        columns: int,
+        dense: torch.Tensor,
+    ) -> torch.Tensor:
+        ctx.save_for_backward(indices, values, dense)
+        ctx.shape = (rows, columns)
+        matrix = torch.sparse_coo_tensor(
+            indices,
+            values,
+            size=(rows, columns),
+            dtype=values.dtype,
+            device=values.device,
+            check_invariants=False,
+        ).coalesce()
+        return torch.sparse.mm(matrix, dense)
+
+    @staticmethod
+    def backward(
+        ctx: object, gradient: torch.Tensor
+    ) -> tuple[None, torch.Tensor, None, None, torch.Tensor]:
+        indices, values, dense = ctx.saved_tensors
+        rows, columns = ctx.shape
+        value_gradient = torch.empty_like(values)
+        for start in range(0, values.numel(), SPARSE_BACKWARD_CHUNK):
+            stop = min(start + SPARSE_BACKWARD_CHUNK, values.numel())
+            row = indices[0, start:stop]
+            column = indices[1, start:stop]
+            value_gradient[start:stop] = (
+                gradient[row] * dense[column]
+            ).sum(dim=1)
+        transpose = torch.sparse_coo_tensor(
+            indices.flip(0),
+            values.detach(),
+            size=(columns, rows),
+            dtype=values.dtype,
+            device=values.device,
+            check_invariants=False,
+        ).coalesce()
+        dense_gradient = torch.sparse.mm(transpose, gradient)
+        return None, value_gradient, None, None, dense_gradient
+
+
+def sparse_values_mm(matrix: torch.Tensor, dense: torch.Tensor) -> torch.Tensor:
+    """Use custom sparse-value autograd only when incidence is learnable."""
+
+    matrix = matrix.coalesce()
+    if matrix.values().requires_grad:
+        return _SparseValuesMM.apply(
+            matrix.indices(),
+            matrix.values(),
+            matrix.shape[0],
+            matrix.shape[1],
+            dense,
+        )
+    return torch.sparse.mm(matrix, dense)
+
+
 def scipy_to_torch_sparse(
     matrix: sparse.spmatrix,
     *,
@@ -39,6 +107,48 @@ class HypergraphOperator:
     incidence_t: torch.Tensor
     node_inverse_sqrt_degree: torch.Tensor
     edge_weight_over_degree: torch.Tensor
+
+    @classmethod
+    def from_torch_sparse(
+        cls,
+        incidence: torch.Tensor,
+        *,
+        edge_weights: torch.Tensor | None = None,
+    ) -> "HypergraphOperator":
+        """Build a differentiable operator from a sparse weighted incidence."""
+
+        if not incidence.is_sparse or incidence.ndim != 2:
+            raise ValueError("incidence must be a sparse COO tensor")
+        incidence = incidence.coalesce()
+        node_count, edge_count = incidence.shape
+        if node_count == 0 or edge_count == 0 or incidence._nnz() == 0:
+            raise ValueError("incidence must be non-empty")
+        indices = incidence.indices()
+        values = incidence.values()
+        if not torch.isfinite(values).all() or torch.any(values <= 0):
+            raise ValueError("incidence values must be finite and positive")
+        if edge_weights is None:
+            weights = torch.ones(
+                edge_count, dtype=values.dtype, device=values.device
+            )
+        else:
+            weights = edge_weights.to(device=values.device, dtype=values.dtype)
+        if weights.shape != (edge_count,) or torch.any(weights <= 0):
+            raise ValueError("edge_weights must be positive and match edge count")
+        edge_degree = torch.zeros(
+            edge_count, dtype=values.dtype, device=values.device
+        ).scatter_add(0, indices[1], values)
+        node_degree = torch.zeros(
+            node_count, dtype=values.dtype, device=values.device
+        ).scatter_add(0, indices[0], values * weights[indices[1]])
+        if torch.any(edge_degree <= 0) or torch.any(node_degree <= 0):
+            raise ValueError("incidence cannot contain empty nodes or hyperedges")
+        return cls(
+            incidence=incidence,
+            incidence_t=incidence.transpose(0, 1).coalesce(),
+            node_inverse_sqrt_degree=node_degree.rsqrt(),
+            edge_weight_over_degree=weights / edge_degree,
+        )
 
     @classmethod
     def from_scipy(
@@ -82,9 +192,9 @@ class HypergraphOperator:
         if node_features.shape[0] != self.incidence.shape[0]:
             raise ValueError("Feature rows must match incidence rows")
         scaled_nodes = node_features * self.node_inverse_sqrt_degree[:, None]
-        edge_messages = torch.sparse.mm(self.incidence_t, scaled_nodes)
+        edge_messages = sparse_values_mm(self.incidence_t, scaled_nodes)
         edge_messages = edge_messages * self.edge_weight_over_degree[:, None]
-        node_messages = torch.sparse.mm(self.incidence, edge_messages)
+        node_messages = sparse_values_mm(self.incidence, edge_messages)
         return node_messages * self.node_inverse_sqrt_degree[:, None]
 
 

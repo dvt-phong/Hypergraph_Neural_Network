@@ -1,7 +1,7 @@
 # Kế hoạch triển khai mô hình HGSL trên XuetangX
 
-> Trạng thái: Phase 0–6 đã hoàn thành. Phase tiếp theo là Phase 7 — Hypergraph
-> Structure Learning.
+> Trạng thái: Phase 0–7 đã hoàn thành. Phase tiếp theo là Phase 8 — hoàn thiện
+> loss và protocol huấn luyện HGSL.
 
 ## 1. Phạm vi đã chốt
 
@@ -59,6 +59,7 @@ src/
     __init__.py
     trainer.py
     evaluator.py
+    hgsl.py
 ```
 
 `run.py` là entry point duy nhất ở project root. Các lệnh dự kiến:
@@ -71,6 +72,7 @@ python run.py build-features
 python run.py build-hyperedges
 python run.py build-hypergraph
 python run.py train-baseline --seed 1 --epochs 1
+python run.py check-hgsl --seed 1
 python run.py train
 python run.py evaluate
 ```
@@ -470,6 +472,24 @@ Các bước triển khai:
 6. Sinh sparse `H*`, không materialize ma trận dense.
 
 Phase đầu chỉ refine membership của hyperedge đã có; chưa tự sinh family mới.
+
+### Kết quả triển khai Phase 7
+
+- Hyperedge được sample round-robin theo `(family, size_bucket)` để edge lớn hoặc
+  Behavioral edge đông số lượng không chiếm toàn bộ batch.
+- Mỗi edge sample positive incident nodes và negative non-incident nodes; hai tập
+  được kiểm tra không giao nhau.
+- Edge embedding là mean của sampled positive embeddings. Bilinear scorer tính
+  node-edge membership và refine bằng `top-r` hoặc threshold.
+- Edge chưa sample giữ nguyên. Edge đã sample luôn giữ ít nhất một positive;
+  node có nguy cơ cô lập được phục hồi một incidence gốc.
+- `H*` là sparse weighted incidence. Custom autograd chỉ tính gradient trên `nnz`,
+  tránh gradient dense có kích thước `N×E`.
+- Mô hình trả `Z0`, `Z*`, logits và refinement audit. InfoNCE đối xứng chỉ tạo
+  similarity matrix trên node sample, không trên toàn bộ 144.543 node.
+- Smoke run seed 1 đã chạy end-to-end trên graph thật: 96 hyperedge được refine,
+  loss/gradient hữu hạn và gradient đến membership scorer. Đây chưa phải cấu hình
+  được validation lựa chọn.
 
 ## Phase 8 — Loss và classifier
 
