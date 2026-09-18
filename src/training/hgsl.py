@@ -63,7 +63,7 @@ class HGSLSmokeConfig:
         )
 
 
-def _hyperedge_metadata(
+def hyperedge_metadata(
     output_dir: Path, seed: int
 ) -> tuple[np.ndarray, np.ndarray]:
     connection = duckdb.connect()
@@ -94,7 +94,7 @@ def run_hgsl_smoke(
     set_seed(config.seed)
     device = resolve_device(config.device)
     graph = load_train_hypergraph(config.seed, output_dir)
-    families, sizes = _hyperedge_metadata(output_dir, config.seed)
+    families, sizes = hyperedge_metadata(output_dir, config.seed)
     if families.size != graph.incidence.shape[1]:
         raise RuntimeError("Hyperedge metadata does not match H0 columns")
 

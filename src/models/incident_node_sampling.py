@@ -19,7 +19,18 @@ def _negative_nodes(
     incident_nodes: np.ndarray,
     count: int,
     generator: np.random.Generator,
+    allowed_nodes: np.ndarray | None = None,
 ) -> np.ndarray:
+    if allowed_nodes is not None:
+        candidates = np.setdiff1d(
+            np.asarray(allowed_nodes, dtype=np.int64),
+            incident_nodes,
+            assume_unique=False,
+        )
+        target = min(count, candidates.size)
+        if target == 0:
+            return np.empty(0, dtype=np.int64)
+        return np.sort(generator.choice(candidates, size=target, replace=False))
     available = node_count - incident_nodes.size
     target = min(count, available)
     if target == 0:
@@ -44,6 +55,8 @@ def sample_incident_nodes(
     positive_count: int,
     negative_count: int,
     generator: np.random.Generator,
+    node_groups: np.ndarray | None = None,
+    edge_groups: np.ndarray | None = None,
 ) -> SampledMemberships:
     """Sample incident positives and guaranteed non-incident negatives per edge."""
 
@@ -53,6 +66,13 @@ def sample_incident_nodes(
     edge_ids = np.asarray(edge_ids, dtype=np.int64).reshape(-1)
     if edge_ids.size == 0 or np.any(edge_ids < 0) or np.any(edge_ids >= matrix.shape[1]):
         raise ValueError("edge_ids contain an invalid hyperedge")
+    if (node_groups is None) != (edge_groups is None):
+        raise ValueError("node_groups and edge_groups must be provided together")
+    if node_groups is not None:
+        node_groups = np.asarray(node_groups).reshape(-1)
+        edge_groups = np.asarray(edge_groups).reshape(-1)
+        if node_groups.size != matrix.shape[0] or edge_groups.size != matrix.shape[1]:
+            raise ValueError("Group arrays must match incidence dimensions")
     positives: list[np.ndarray] = []
     negatives: list[np.ndarray] = []
     for edge_id in edge_ids:
@@ -62,8 +82,11 @@ def sample_incident_nodes(
             raise ValueError("Cannot sample an empty hyperedge")
         count = min(positive_count, incident.size)
         positive = np.sort(generator.choice(incident, size=count, replace=False))
+        allowed = None
+        if node_groups is not None and edge_groups is not None:
+            allowed = np.flatnonzero(node_groups == edge_groups[edge_id])
         negative = _negative_nodes(
-            matrix.shape[0], incident, negative_count, generator
+            matrix.shape[0], incident, negative_count, generator, allowed
         )
         if np.intersect1d(positive, negative).size:
             raise RuntimeError("Positive and negative samples overlap")

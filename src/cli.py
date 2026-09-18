@@ -200,6 +200,59 @@ def _check_hgsl(
     return 0
 
 
+def _train_hgsl(
+    *,
+    seed: int,
+    epochs: int,
+    patience: int,
+    validation_limit: int,
+    validation_batch_size: int,
+    hidden_dim: int,
+    dropout: float,
+    sampled_hyperedges: int,
+    positive_nodes: int,
+    negative_nodes: int,
+    mode: str,
+    top_r: int,
+    threshold: float,
+    contrastive_weight: float,
+    contrastive_temperature: float,
+    contrastive_nodes: int,
+    learning_rate: float,
+    weight_decay: float,
+    max_gradient_norm: float,
+    device: str,
+) -> int:
+    from training.hgsl_trainer import HGSLTrainingConfig, run_hgsl_training
+
+    report = run_hgsl_training(
+        HGSLTrainingConfig(
+            seed=seed,
+            epochs=epochs,
+            patience=patience,
+            validation_limit=validation_limit,
+            validation_batch_size=validation_batch_size,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+            sampled_hyperedges=sampled_hyperedges,
+            positive_nodes=positive_nodes,
+            negative_nodes=negative_nodes,
+            mode=mode,
+            top_r=top_r,
+            threshold=threshold,
+            contrastive_weight=contrastive_weight,
+            contrastive_temperature=contrastive_temperature,
+            contrastive_nodes=contrastive_nodes,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            max_gradient_norm=max_gradient_norm,
+            device=device,
+        )
+    )
+    print(json.dumps(report, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="XuetangX-247 hypergraph structure learning pipeline"
@@ -283,6 +336,39 @@ def build_parser() -> argparse.ArgumentParser:
     hgsl.add_argument(
         "--device", choices=("auto", "cpu", "cuda"), default="auto"
     )
+    training = subparsers.add_parser(
+        "train-hgsl",
+        help="Train Phase 8 HGSL with validation-based checkpoint selection.",
+    )
+    training.add_argument(
+        "--seed", type=int, choices=(1, 11, 111, 1111, 11111), default=1
+    )
+    training.add_argument("--epochs", type=int, default=1)
+    training.add_argument("--patience", type=int, default=5)
+    training.add_argument(
+        "--validation-limit",
+        type=int,
+        default=32,
+        help="Validation targets for a smoke run; zero uses all targets.",
+    )
+    training.add_argument("--validation-batch-size", type=int, default=4)
+    training.add_argument("--hidden-dim", type=int, default=64)
+    training.add_argument("--dropout", type=float, default=0.5)
+    training.add_argument("--sampled-hyperedges", type=int, default=96)
+    training.add_argument("--positive-nodes", type=int, default=16)
+    training.add_argument("--negative-nodes", type=int, default=16)
+    training.add_argument("--mode", choices=("top_r", "threshold"), default="top_r")
+    training.add_argument("--top-r", type=int, default=8)
+    training.add_argument("--threshold", type=float, default=0.5)
+    training.add_argument("--contrastive-weight", type=float, default=0.1)
+    training.add_argument("--contrastive-temperature", type=float, default=0.2)
+    training.add_argument("--contrastive-nodes", type=int, default=512)
+    training.add_argument("--learning-rate", type=float, default=0.001)
+    training.add_argument("--weight-decay", type=float, default=5e-4)
+    training.add_argument("--max-gradient-norm", type=float, default=5.0)
+    training.add_argument(
+        "--device", choices=("auto", "cpu", "cuda"), default="auto"
+    )
     return parser
 
 
@@ -329,6 +415,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             top_r=args.top_r,
             threshold=args.threshold,
             contrastive_weight=args.contrastive_weight,
+            device=args.device,
+        )
+    if args.command == "train-hgsl":
+        return _train_hgsl(
+            seed=args.seed,
+            epochs=args.epochs,
+            patience=args.patience,
+            validation_limit=args.validation_limit,
+            validation_batch_size=args.validation_batch_size,
+            hidden_dim=args.hidden_dim,
+            dropout=args.dropout,
+            sampled_hyperedges=args.sampled_hyperedges,
+            positive_nodes=args.positive_nodes,
+            negative_nodes=args.negative_nodes,
+            mode=args.mode,
+            top_r=args.top_r,
+            threshold=args.threshold,
+            contrastive_weight=args.contrastive_weight,
+            contrastive_temperature=args.contrastive_temperature,
+            contrastive_nodes=args.contrastive_nodes,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            max_gradient_norm=args.max_gradient_norm,
             device=args.device,
         )
     raise AssertionError(f"Unhandled command: {args.command}")

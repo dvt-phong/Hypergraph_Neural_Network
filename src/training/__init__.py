@@ -1,1 +1,1 @@
-"""Baseline training, evaluation and experiment orchestration."""
+"""Baseline and HGSL training, evaluation, and experiment orchestration."""

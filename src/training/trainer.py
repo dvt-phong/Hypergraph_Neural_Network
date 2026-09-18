@@ -88,7 +88,7 @@ def labels_for_nodes(nodes_path: Path, node_ids: np.ndarray) -> np.ndarray:
     return labels
 
 
-def _validation_targets(
+def validation_targets(
     store: LocalGraphStore,
     nodes_path: Path,
     *,
@@ -210,7 +210,7 @@ def run_baseline_smoke(
     checkpoint_path = runs_dir / f"hgnn_baseline_seed_{config.seed}.pt"
     graph_manifest_path = output_dir / GRAPH_MANIFEST_ARTIFACT
     with LocalGraphStore(config.seed, "validation", output_dir) as validation_store:
-        validation_targets, validation_labels = _validation_targets(
+        validation_node_ids, validation_labels = validation_targets(
             validation_store,
             output_dir / "nodes.parquet",
             limit=config.validation_limit,
@@ -238,7 +238,7 @@ def run_baseline_smoke(
             validation_metrics = _evaluate_local(
                 model,
                 validation_store,
-                validation_targets,
+                validation_node_ids,
                 validation_labels,
                 batch_size=config.validation_batch_size,
                 device=device,
@@ -288,7 +288,7 @@ def run_baseline_smoke(
         "loss_by_epoch": losses,
         "gradient_norm_by_epoch": gradient_norms,
         "train_metrics": metrics,
-        "validation_targets": int(validation_targets.size),
+        "validation_targets": int(validation_node_ids.size),
         "validation_sampling": (
             "all" if config.validation_limit == 0 else "fixed random subset"
         ),

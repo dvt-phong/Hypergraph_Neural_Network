@@ -104,6 +104,8 @@ class HypergraphRefiner(nn.Module):
         families: np.ndarray,
         sizes: np.ndarray,
         generator: np.random.Generator,
+        node_groups: np.ndarray | None = None,
+        edge_groups: np.ndarray | None = None,
     ) -> RefinementResult:
         matrix = incidence.tocsr()
         families = np.asarray(families).astype(str).reshape(-1)
@@ -122,6 +124,8 @@ class HypergraphRefiner(nn.Module):
             positive_count=self.config.positive_nodes,
             negative_count=self.config.negative_nodes,
             generator=generator,
+            node_groups=node_groups,
+            edge_groups=edge_groups,
         )
         positive_tensors = [
             torch.as_tensor(nodes, dtype=torch.int64, device=embeddings.device)

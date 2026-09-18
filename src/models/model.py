@@ -81,10 +81,18 @@ class HGSLModel(nn.Module):
         families: np.ndarray,
         sizes: np.ndarray,
         generator: np.random.Generator,
+        node_groups: np.ndarray | None = None,
+        edge_groups: np.ndarray | None = None,
     ) -> HGSLForward:
         z0 = self.backbone.encode(node_features, initial_operator)
         refinement = self.refiner(
-            z0, initial_incidence, families, sizes, generator
+            z0,
+            initial_incidence,
+            families,
+            sizes,
+            generator,
+            node_groups,
+            edge_groups,
         )
         z_star = self.backbone.encode(node_features, refinement.operator)
         logits = self.backbone.classifier(z_star)

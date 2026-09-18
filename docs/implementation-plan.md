@@ -1,7 +1,7 @@
 # Kế hoạch triển khai mô hình HGSL trên XuetangX
 
-> Trạng thái: Phase 0–7 đã hoàn thành. Phase tiếp theo là Phase 8 — hoàn thiện
-> loss và protocol huấn luyện HGSL.
+> Trạng thái: Phase 0–8 đã hoàn thành. Phase tiếp theo là Phase 9 — chạy thí nghiệm,
+> đánh giá và ablation trên đủ năm seed.
 
 ## 1. Phạm vi đã chốt
 
@@ -60,6 +60,7 @@ src/
     trainer.py
     evaluator.py
     hgsl.py
+    hgsl_trainer.py
 ```
 
 `run.py` là entry point duy nhất ở project root. Các lệnh dự kiến:
@@ -73,7 +74,7 @@ python run.py build-hyperedges
 python run.py build-hypergraph
 python run.py train-baseline --seed 1 --epochs 1
 python run.py check-hgsl --seed 1
-python run.py train
+python run.py train-hgsl --seed 1 --epochs 1
 python run.py evaluate
 ```
 
@@ -491,7 +492,7 @@ Phase đầu chỉ refine membership của hyperedge đã có; chưa tự sinh f
   loss/gradient hữu hạn và gradient đến membership scorer. Đây chưa phải cấu hình
   được validation lựa chọn.
 
-## Phase 8 — Loss và classifier
+## Phase 8 — Loss và protocol huấn luyện HGSL
 
 ```text
 L_total = L_BCE + λ L_CL
@@ -503,12 +504,28 @@ L_total = L_BCE + λ L_CL
 - Class imbalance được xử lý bằng `pos_weight` tính từ train; không dùng phân bố
   validation/test.
 
-## Phase 9 — Training, evaluation và ablation
+### Kết quả triển khai Phase 8
 
-### Training
+- Objective được cố định là weighted BCE + `λ` InfoNCE đối xứng giữa `Z0` và `Z*`;
+  InfoNCE chỉ chạy trên node sample để giữ giới hạn bộ nhớ.
+- `pos_weight` chỉ được tính từ train label. Validation chỉ dùng để chọn checkpoint và
+  early stopping theo AUC; test không tham gia huấn luyện hoặc chọn mô hình.
+- Local validation graph được batch block-diagonal. Positive và negative membership
+  candidate đều bị giới hạn trong cùng local graph, nên không có trao đổi thông tin giữa
+  các target trong batch.
+- Có gradient clipping, kiểm tra loss/gradient hữu hạn, audit refinement theo epoch và
+  checkpoint chứa cấu hình, optimizer state cùng hash graph manifest.
+- Seed điều khiển split, khởi tạo mô hình, dropout, hyperedge/node sampling và validation
+  subset. Năm seed khóa là `1, 11, 111, 1111, 11111`.
+- Smoke run seed 1 trên full train graph đã hoàn tất một epoch và tạo checkpoint. Validation
+  32 target chỉ là kiểm tra kỹ thuật, không phải kết quả nghiên cứu.
 
-- Early stopping theo validation AUC.
-- Lưu checkpoint tốt nhất và đầy đủ seed/hyperparameter/hash artifact.
+## Phase 9 — Thí nghiệm, evaluation và ablation
+
+### Thí nghiệm
+
+- Chạy full validation, early stopping và đánh giá test đúng một lần từ checkpoint tốt nhất.
+- Tune `λ`, learning rate, dropout, `top_r`/threshold và sampling budget chỉ trên validation.
 - Chạy đúng năm seed `{1, 11, 111, 1111, 11111}` và báo cáo mean ± std.
 
 ### Metric

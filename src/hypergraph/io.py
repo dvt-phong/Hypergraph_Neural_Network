@@ -46,6 +46,10 @@ class BatchedLocalHypergraph:
     features: np.ndarray
     target_indices: np.ndarray
     incidence: sparse.csr_matrix
+    node_graph_ids: np.ndarray
+    edge_graph_ids: np.ndarray
+    families: np.ndarray
+    sizes: np.ndarray
 
 
 def _seed_index(seed: int) -> int:
@@ -256,13 +260,33 @@ def batch_local_hypergraphs(
     if not graphs:
         raise ValueError("At least one local graph is required")
     offsets = np.cumsum([0, *(graph.node_ids.size for graph in graphs[:-1])])
+    incidence = sparse.block_diag(
+        [graph.incidence for graph in graphs], format="csr", dtype=np.uint8
+    )
     return BatchedLocalHypergraph(
         node_ids=np.concatenate([graph.node_ids for graph in graphs]),
         features=np.concatenate([graph.features for graph in graphs]),
         target_indices=offsets.astype(np.int64, copy=False),
-        incidence=sparse.block_diag(
-            [graph.incidence for graph in graphs], format="csr", dtype=np.uint8
+        incidence=incidence,
+        node_graph_ids=np.concatenate(
+            [
+                np.full(graph.node_ids.size, index, dtype=np.int64)
+                for index, graph in enumerate(graphs)
+            ]
         ),
+        edge_graph_ids=np.concatenate(
+            [
+                np.full(graph.incidence.shape[1], index, dtype=np.int64)
+                for index, graph in enumerate(graphs)
+            ]
+        ),
+        families=np.concatenate(
+            [
+                np.asarray([edge["family"] for edge in graph.hyperedges])
+                for graph in graphs
+            ]
+        ),
+        sizes=np.asarray(incidence.sum(axis=0)).reshape(-1).astype(np.int64),
     )
 
 
