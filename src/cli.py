@@ -25,6 +25,33 @@ def _structure() -> int:
     return 0
 
 
+def _audit_data() -> int:
+    from data.audit import audit_dataset
+
+    audit = audit_dataset()
+    summary = {
+        "artifact": str(PROCESSED_DATA_DIR / "audit.json"),
+        "events": audit["logs"]["events"],
+        "enrollments": audit["logs"]["enrollments"],
+        "users": audit["logs"]["users"],
+        "courses": audit["logs"]["courses"],
+        "retained_events_35d": audit["temporal"]["retained_day_0_to_34"],
+        "duplicate_rows_beyond_first": audit["duplicates"][
+            "duplicate_rows_beyond_first"
+        ],
+    }
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0
+
+
+def _prepare_data(*, force: bool) -> int:
+    from data.preprocess import prepare_dataset
+
+    manifest = prepare_dataset(force=force)
+    print(json.dumps(manifest, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="XuetangX-247 hypergraph structure learning pipeline"
@@ -32,6 +59,13 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("contract", help="Print the locked dataset contract.")
     subparsers.add_parser("structure", help="Print the project paths used by the pipeline.")
+    subparsers.add_parser("audit-data", help="Audit all labeled XuetangX source files.")
+    prepare = subparsers.add_parser(
+        "prepare-data", help="Build the canonical Phase 1 Parquet artifacts."
+    )
+    prepare.add_argument(
+        "--force", action="store_true", help="Rebuild artifacts even when the cache is valid."
+    )
     return parser
 
 
@@ -41,6 +75,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _contract()
     if args.command == "structure":
         return _structure()
+    if args.command == "audit-data":
+        return _audit_data()
+    if args.command == "prepare-data":
+        return _prepare_data(force=args.force)
     raise AssertionError(f"Unhandled command: {args.command}")
 
 

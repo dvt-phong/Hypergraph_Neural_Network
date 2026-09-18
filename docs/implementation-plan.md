@@ -1,5 +1,8 @@
 # Kế hoạch triển khai mô hình HGSL trên XuetangX
 
+> Trạng thái: Phase 0 và Phase 1 đã hoàn thành. Phase tiếp theo là Phase 2 —
+> user-disjoint split.
+
 ## 1. Phạm vi đã chốt
 
 - Chỉ dùng phần XuetangX có nhãn: **225.642 enrollment, 77.083 user, 247 course**.

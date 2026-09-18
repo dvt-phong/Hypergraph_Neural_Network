@@ -33,7 +33,10 @@ class PhaseZeroTests(unittest.TestCase):
         self.assertEqual(DATASET_CONTRACT.enrollments, 225_642)
         self.assertEqual(DATASET_CONTRACT.users, 77_083)
         self.assertEqual(DATASET_CONTRACT.courses, 247)
-        self.assertEqual(DATASET_CONTRACT.main_hyperedge_families, ("course", "object", "behavioral"))
+        self.assertEqual(
+            DATASET_CONTRACT.main_hyperedge_families,
+            ("course", "object", "behavioral"),
+        )
 
     def test_action_vocabulary_is_unique_and_complete(self):
         grouped = tuple(action for group in ACTION_GROUPS.values() for action in group)
