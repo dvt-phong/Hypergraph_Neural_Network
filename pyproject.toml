@@ -10,11 +10,12 @@ requires-python = ">=3.11"
 dependencies = ["duckdb>=1.1", "ijson>=3.3"]
 
 [project.scripts]
-mooc-hgsl = "mooc_hgsl.cli:main"
+xuetangx-hgsl = "cli:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+py-modules = ["cli", "paths"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["mooc_hgsl*"]
+include = ["data*", "features*", "hypergraph*", "models*", "losses*", "training*"]

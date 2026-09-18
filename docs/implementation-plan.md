@@ -16,7 +16,6 @@
 
 ```text
 src/
-  __init__.py
   paths.py
   cli.py
   data/
