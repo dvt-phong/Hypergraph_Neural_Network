@@ -17,7 +17,9 @@ enrollment, 77.083 user và 247 course**.
 
 Chi tiết dữ liệu nằm tại
 [docs/xuetangx-feature-analysis.md](docs/xuetangx-feature-analysis.md). Kế hoạch
-triển khai nằm tại [docs/implementation-plan.md](docs/implementation-plan.md).
+triển khai nằm tại [docs/implementation-plan.md](docs/implementation-plan.md). Đặc tả
+đối chiếu giữa sơ đồ và code nằm tại
+[docs/hgsl-technical-specification.md](docs/hgsl-technical-specification.md).
 
 ## Cấu trúc code
 
