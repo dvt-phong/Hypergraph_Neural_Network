@@ -1,7 +1,7 @@
 # Kế hoạch triển khai mô hình HGSL trên XuetangX
 
-> Trạng thái: Phase 0–3 đã hoàn thành. Phase tiếp theo là Phase 4 — xác định các
-> nhóm hyperedge.
+> Trạng thái: Phase 0–4 đã hoàn thành. Phase tiếp theo là Phase 5 — materialize
+> node features và initial hypergraph `H0`.
 
 ## 1. Phạm vi đã chốt
 
@@ -67,6 +67,7 @@ python run.py audit-data
 python run.py prepare-data
 python run.py split-data
 python run.py build-features
+python run.py build-hyperedges
 python run.py build-hypergraph
 python run.py train
 python run.py evaluate
@@ -86,10 +87,13 @@ data/processed/xuetangx_247/
   features_raw.parquet
   X_base.npy
   feature_transform.joblib
+  structural_memberships.parquet
+  behavioral_neighbors.npz
+  hyperedge_audit.json
+  hyperedge_manifest.json
   H0_train.npz
   validation_memberships.parquet
   test_memberships.parquet
-  hyperedges.parquet
   audit.json
   manifest.json
 ```
@@ -317,6 +321,21 @@ family, hyperedges, median_size, p90, p95, p99, max_size, singletons
 ```
 
 Audit global dùng mô tả dataset; mọi threshold và quyết định model chỉ dựa trên train.
+
+### Kết quả triển khai Phase 4
+
+- `structural_memberships.parquet` lưu Course/Object incidence ứng viên; object
+  dùng khóa ghép `(course_id, object_id)` và metadata `object_type`.
+- Có 247 course; 80.745 object key gồm 12.239 video, 11.119 bài tập và 57.387
+  diễn đàn. Có 58.324 object singleton toàn cục.
+- Sau khi lọc `cardinality >= 2` trên train, mỗi seed còn khoảng 21,9 nghìn
+  Object hyperedge; cả 247 Course hyperedge đều được giữ.
+- `behavioral_neighbors.npz` lưu 20 train-neighbor gần nhất cho mọi anchor và cả
+  năm seed. Các cấu hình `k={5,10,20}` dùng prefix của cùng kết quả này.
+- Validation/test chỉ nhận train node làm neighbor. Label không được đọc khi tạo
+  Course, Object hoặc Behavioral candidates.
+- Hyperedge Behavioral trùng hoàn toàn đã được audit; việc khử trùng khi tạo ma
+  trận incidence thực hiện ở Phase 5.
 
 ## Phase 5 — Materialize node features và initial hypergraph
 

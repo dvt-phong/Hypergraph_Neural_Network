@@ -203,8 +203,9 @@ Audit theo khóa ghép hiện có:
 | Diễn đàn | 57.387 | 57.209 | 99,69% | 1 | 2 |
 | Tổng | 80.745 | 58.324 | 72,23% | 1 | 3.338 |
 
-Object diễn đàn gần như toàn singleton, nên vòng đầu chỉ dùng object hyperedge của
-video và bài tập. Hành vi diễn đàn vẫn được giữ trong `action_*`.
+Object diễn đàn gần như toàn singleton. Cấu hình chính vẫn giữ 178 khóa diễn đàn
+không singleton toàn cục; khi tạo graph cho từng seed, luật `cardinality >= 2`
+được áp dụng lại chỉ trên train. Hành vi diễn đàn vẫn được giữ trong `action_*`.
 
 ## 9. Kiểm tra bắt buộc trước khi train
 

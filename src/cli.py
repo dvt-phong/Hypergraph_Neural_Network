@@ -94,6 +94,23 @@ def _build_features(*, force: bool) -> int:
     return 0
 
 
+def _build_hyperedges(*, force: bool) -> int:
+    from hypergraph.construction import build_hyperedges
+
+    manifest = build_hyperedges(force=force)
+    output = {
+        "structural_artifact": str(PROCESSED_DATA_DIR / "structural_memberships.parquet"),
+        "behavioral_artifact": str(PROCESSED_DATA_DIR / "behavioral_neighbors.npz"),
+        "audit": str(PROCESSED_DATA_DIR / "hyperedge_audit.json"),
+        "cache_hit": manifest["cache_hit"],
+        "families": manifest["families"],
+        "k_candidates": manifest["k_candidates"],
+        "behavioral_shape": manifest["behavioral_array_shape"],
+    }
+    print(json.dumps(output, ensure_ascii=False, indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="XuetangX-247 hypergraph structure learning pipeline"
@@ -120,6 +137,13 @@ def build_parser() -> argparse.ArgumentParser:
     features.add_argument(
         "--force", action="store_true", help="Rebuild features even when the cache is valid."
     )
+    hyperedges = subparsers.add_parser(
+        "build-hyperedges",
+        help="Build Phase 4 Course, Object and Behavioral candidates.",
+    )
+    hyperedges.add_argument(
+        "--force", action="store_true", help="Rebuild hyperedges even when cached."
+    )
     return parser
 
 
@@ -137,6 +161,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _split_data(force=args.force)
     if args.command == "build-features":
         return _build_features(force=args.force)
+    if args.command == "build-hyperedges":
+        return _build_hyperedges(force=args.force)
     raise AssertionError(f"Unhandled command: {args.command}")
 
 
