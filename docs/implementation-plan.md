@@ -10,6 +10,8 @@
 - Nhãn lấy từ `train_truth.csv` và `test_truth.csv`.
 - Cửa sổ quan sát chuẩn là ngày 0–34. Pipeline cho phép tạo thêm cửa sổ
   7, 14, 21 và 28 ngày để chạy early-prediction ablation.
+- Chạy năm experiment seed cố định: `1, 11, 111, 1111, 11111`; mỗi seed điều khiển
+  cả user split và random state của training/sampling tương ứng.
 - Không dùng 351 triệu activity event cho thí nghiệm chính vòng đầu.
 - Không tạo package `mooc_hgsl`. Toàn bộ code đặt trực tiếp dưới `src/`.
 - `baseline/` chỉ để tham khảo và chạy đối chiếu; code trong đó không được import
@@ -94,7 +96,7 @@ data/processed/xuetangx_247/
 
 Nguyên tắc cache:
 
-- `manifest.json` lưu hash nguồn, schema version, feature version, split seed và
+- `manifest.json` lưu hash nguồn, schema version, feature version, experiment seed và
   tham số tạo hypergraph.
 - Chỉ rebuild artifact chịu ảnh hưởng khi input hoặc tham số của nó thay đổi.
 - File tạm dùng hậu tố `.part`; chỉ đổi thành tên chính thức sau khi kiểm tra xong.
@@ -158,7 +160,8 @@ data/processed/xuetangx_247/
 ### Việc thực hiện
 
 - Group toàn bộ enrollment theo `user_id`.
-- Chia user theo tỷ lệ mục tiêu 64/16/20, seed 42.
+- Chia user theo tỷ lệ mục tiêu 64/16/20 cho từng seed trong
+  `{1, 11, 111, 1111, 11111}`.
 - Dùng thuật toán gán group có ràng buộc để đồng thời giảm sai lệch:
   - số user;
   - số enrollment;
@@ -175,16 +178,16 @@ split_manifest.json
 `splits.parquet` gồm:
 
 ```text
-node_id, enroll_id, user_id, source_partition, experiment_split
+seed, node_id, enroll_id, user_id, source_partition, experiment_split
 ```
 
 ### Điều kiện hoàn thành
 
-- User overlap giữa mọi cặp split bằng 0.
-- Tổng node của ba split bằng 225.642.
+- Trong từng seed, user overlap giữa mọi cặp split bằng 0.
+- Trong từng seed, tổng node của ba split bằng 225.642.
 - Báo cáo số user, enrollment và label của từng split.
 
-### Kết quả đã khóa với seed 42
+### Kết quả đã khóa cho năm seed
 
 | Split | User | Enrollment | Dropout | Dropout rate |
 |---|---:|---:|---:|---:|
@@ -193,6 +196,7 @@ node_id, enroll_id, user_id, source_partition, experiment_split
 | Test | 15.417 | 45.071 | 34.134 | 75,73% |
 
 User overlap bằng 0; tổng cộng 77.083 user và 225.642 enrollment.
+Các seed có cùng số lượng và tỷ lệ nhãn nhưng khác thành viên trong từng tập.
 
 ## Phase 3 — Feature engineering
 
@@ -425,7 +429,7 @@ L_total = L_BCE + λ L_CL
 
 - Early stopping theo validation AUC.
 - Lưu checkpoint tốt nhất và đầy đủ seed/hyperparameter/hash artifact.
-- Chạy tối thiểu 5 seed sau khi pipeline ổn định.
+- Chạy đúng năm seed `{1, 11, 111, 1111, 11111}` và báo cáo mean ± std.
 
 ### Metric
 
@@ -502,8 +506,8 @@ hoàn thành của phase trước chưa đạt.
 | A02 | `src/data/schema.py` | Khai báo raw columns, 23 actions, observation days và schema version | Action không trùng; đủ 23 action |
 | A03 | `src/data/audit.py` | Kiểm tra file, hash, row count, schema, missing, duplicate và timestamp | `audit.json`; lỗi nghiêm trọng trả exit code khác 0 |
 | A04 | `src/data/preprocess.py` | Tạo node index, join truth/user/course, tạo canonical event ngày 0–34 | 225.642 node, 247 course, 40.558.640 event |
-| A05 | `src/data/split.py` | Tạo user summary và chia group 64/16/20 bằng seed 42 | User overlap bằng 0 |
-| A06 | `src/data/split.py` | Ghi `source_partition` và `experiment_split` thành hai cột riêng | Tổng node không đổi; split manifest cố định |
+| A05 | `src/data/split.py` | Tạo user summary và chia group 64/16/20 cho năm seed đã khóa | User overlap bằng 0 trong từng seed |
+| A06 | `src/data/split.py` | Ghi riêng `seed`, `source_partition` và `experiment_split` | Mỗi seed đủ node; split manifest cố định |
 | A07 | `src/features/engineering.py` | Aggregate 35 daily count, 23 action count, session và observed object | `features_raw.parquet`; invariant đúng |
 | A08 | `src/features/transform.py` | Fit `log1p`/standardization trên train; transform các split còn lại | Transformer không đọc val/test khi fit |
 | A09 | `src/features/engineering.py` | Hỗ trợ cắt cửa sổ 7/14/21/28/35 từ canonical event | Không đọc lại raw CSV |

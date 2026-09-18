@@ -71,7 +71,7 @@ là 48.664, 57.731 và 60.711. Trong 247 course được dùng, 2 course thiếu
 ### Chia tập chính
 
 Gộp toàn bộ 225.642 enrollment có nhãn, sau đó chia theo **nhóm `user_id`** với
-seed 42:
+năm seed cố định `1, 11, 111, 1111, 11111`:
 
 | Tập | Tỷ lệ user mục tiêu | Dùng để làm gì |
 |---|---:|---|
@@ -79,13 +79,16 @@ seed 42:
 | Validation | 16% | Chọn siêu tham số và early stopping |
 | Test | 20% | Báo cáo kết quả cuối cùng |
 
-Kết quả đã khóa với seed 42:
+Mỗi seed có cùng quy mô và tỷ lệ nhãn sau:
 
 | Tập | User | Enrollment | Dropout | Dropout rate |
 |---|---:|---:|---:|---:|
 | Train | 49.333 | 144.543 | 109.625 | 75,84% |
 | Validation | 12.333 | 36.028 | 27.374 | 75,98% |
 | Test | 15.417 | 45.071 | 34.134 | 75,73% |
+
+Thành viên của từng tập thay đổi theo seed; kết quả cuối báo cáo mean ± std trên
+năm seed.
 
 Ràng buộc bắt buộc:
 

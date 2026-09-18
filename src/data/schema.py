@@ -10,6 +10,7 @@ EARLY_OBSERVATION_DAYS = (7, 14, 21, 28, 35)
 
 SOURCE_PARTITIONS = ("train", "test")
 EXPERIMENT_SPLITS = ("train", "validation", "test")
+EXPERIMENT_SEEDS = (1, 11, 111, 1111, 11111)
 
 LOG_COLUMNS = (
     "enroll_id",
@@ -73,7 +74,7 @@ class DatasetContract:
     raw_events: int
     retained_events_35d: int
     observation_days: int
-    split_seed: int
+    experiment_seeds: tuple[int, ...]
     target_user_ratios: tuple[float, float, float]
     label_definition: str
     node_identity: str
@@ -92,7 +93,7 @@ DATASET_CONTRACT = DatasetContract(
     raw_events=42_110_402,
     retained_events_35d=40_558_640,
     observation_days=OBSERVATION_DAYS,
-    split_seed=42,
+    experiment_seeds=EXPERIMENT_SEEDS,
     target_user_ratios=(0.64, 0.16, 0.20),
     label_definition="truth=1 dropout; truth=0 non-dropout",
     node_identity="enroll_id",
@@ -120,6 +121,12 @@ def _validate_contract() -> None:
         raise RuntimeError("The 35-day X_base schema must contain 60 features.")
     if abs(sum(DATASET_CONTRACT.target_user_ratios) - 1.0) > 1e-12:
         raise RuntimeError("Target split ratios must sum to one.")
+    if (
+        len(EXPERIMENT_SEEDS) != 5
+        or len(set(EXPERIMENT_SEEDS)) != 5
+        or any(seed <= 0 for seed in EXPERIMENT_SEEDS)
+    ):
+        raise RuntimeError("The experiment must use five unique seeds.")
 
 
 _validate_contract()

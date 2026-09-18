@@ -56,7 +56,25 @@ def _split_data(*, force: bool) -> int:
     from data.split import build_splits
 
     manifest = build_splits(force=force)
-    print(json.dumps(manifest, ensure_ascii=False, indent=2))
+    summary = {
+        seed: {
+            split: {
+                "users": values["users"],
+                "enrollments": values["enrollments"],
+                "dropout_rate": values["dropout_rate"],
+            }
+            for split, values in split_summary.items()
+        }
+        for seed, split_summary in manifest["summary_by_seed"].items()
+    }
+    output = {
+        "artifact": str(PROCESSED_DATA_DIR / "splits.parquet"),
+        "cache_hit": manifest["cache_hit"],
+        "seeds": manifest["seeds"],
+        "sha256": manifest["artifact"]["sha256"],
+        "summary_by_seed": summary,
+    }
+    print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
 
 

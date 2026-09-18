@@ -50,7 +50,7 @@ Phase 0 đã khóa:
 - action vocabulary 23 chiều;
 - dataset contract XuetangX-247;
 - feature schema 60 chiều;
-- split seed và ba hyperedge family chính.
+- năm experiment seed `1, 11, 111, 1111, 11111` và ba hyperedge family chính.
 
 Kiểm tra contract và cấu trúc:
 

@@ -18,11 +18,16 @@ from data.cache import (
     write_json_atomic,
 )
 from data.preprocess import prepare_dataset
-from data.schema import DATASET_CONTRACT, EXPERIMENT_SPLITS, SCHEMA_VERSION
+from data.schema import (
+    DATASET_CONTRACT,
+    EXPERIMENT_SEEDS,
+    EXPERIMENT_SPLITS,
+    SCHEMA_VERSION,
+)
 from paths import PROCESSED_DATA_DIR, require_project_path
 
 
-SPLIT_VERSION = "user-disjoint-v1"
+SPLIT_VERSION = "user-disjoint-v2"
 SPLIT_ARTIFACT = "splits.parquet"
 SPLIT_MANIFEST = "split_manifest.json"
 SPLIT_ALGORITHM = "stratified weighted round-robin group assignment"
@@ -87,7 +92,7 @@ def assign_user_groups(
     groups: list[UserGroup],
     *,
     ratios: tuple[float, float, float] = DATASET_CONTRACT.target_user_ratios,
-    seed: int = DATASET_CONTRACT.split_seed,
+    seed: int = EXPERIMENT_SEEDS[0],
 ) -> tuple[dict[int, str], dict[str, dict[str, int]], dict[str, dict[str, int]]]:
     """Assign whole user groups while balancing users, enrollments and labels."""
 
@@ -164,7 +169,7 @@ def _split_cache_hit(
     output_dir: Path,
     nodes_signature: dict[str, Any],
     ratios: tuple[float, float, float],
-    seed: int,
+    seeds: tuple[int, ...],
 ) -> dict[str, Any] | None:
     artifact_path = output_dir / SPLIT_ARTIFACT
     manifest_path = output_dir / SPLIT_MANIFEST
@@ -178,7 +183,7 @@ def _split_cache_hit(
         manifest.get("schema_version") != SCHEMA_VERSION
         or manifest.get("split_version") != SPLIT_VERSION
         or manifest.get("algorithm") != SPLIT_ALGORITHM
-        or manifest.get("seed") != seed
+        or manifest.get("seeds") != list(seeds)
         or manifest.get("max_relative_deviation") != MAX_RELATIVE_DEVIATION
         or manifest.get("target_ratios")
         != dict(zip(EXPERIMENT_SPLITS, ratios, strict=True))
@@ -198,57 +203,78 @@ def _validate_and_summarize(
     nodes_path: Path,
     split_path: Path,
     targets: dict[str, dict[str, int]],
-) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
+    seeds: tuple[int, ...],
+) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, dict[str, int]]]:
     split_source = f"read_parquet('{sql_path(split_path)}')"
     nodes_source = f"read_parquet('{sql_path(nodes_path)}')"
-    invariant_row = connection.execute(
+    seed_values = ", ".join(str(seed) for seed in seeds)
+    invariant_rows = connection.execute(
         f"""
-        SELECT count(*) AS rows,
+        SELECT seed, count(*) AS rows,
                count(DISTINCT node_id) AS node_ids,
                count(DISTINCT enroll_id) AS enrollments,
                count(DISTINCT user_id) AS users,
                count(*) FILTER (
-                   WHERE node_id IS NULL OR enroll_id IS NULL OR user_id IS NULL
+                   WHERE seed IS NULL OR node_id IS NULL OR enroll_id IS NULL
+                      OR user_id IS NULL
                       OR source_partition IS NULL OR experiment_split IS NULL
                ) AS missing_required,
                count(*) FILTER (
                    WHERE experiment_split NOT IN ('train', 'validation', 'test')
                ) AS unknown_split
+        FROM {split_source} GROUP BY seed
+        """
+    ).fetchall()
+    overlap_rows = connection.execute(
+        f"""
+        SELECT seed, count(*) FROM (
+            SELECT seed, user_id FROM {split_source}
+            GROUP BY seed, user_id HAVING count(DISTINCT experiment_split)>1
+        ) GROUP BY seed
+        """
+    ).fetchall()
+    overlap_by_seed = {int(row[0]): int(row[1]) for row in overlap_rows}
+    row_by_seed = {int(row[0]): row for row in invariant_rows}
+    if set(row_by_seed) != set(seeds):
+        raise RuntimeError(f"Unexpected seeds in split artifact: {set(row_by_seed)}")
+
+    expected = DATASET_CONTRACT
+    invariants_by_seed: dict[str, dict[str, int]] = {}
+    for seed in seeds:
+        row = row_by_seed[seed]
+        invariants = {
+            "rows": int(row[1]),
+            "distinct_node_ids": int(row[2]),
+            "distinct_enrollments": int(row[3]),
+            "distinct_users": int(row[4]),
+            "missing_required": int(row[5]),
+            "unknown_split": int(row[6]),
+            "user_overlap": overlap_by_seed.get(seed, 0),
+        }
+        if invariants != {
+            "rows": expected.enrollments,
+            "distinct_node_ids": expected.enrollments,
+            "distinct_enrollments": expected.enrollments,
+            "distinct_users": expected.users,
+            "missing_required": 0,
+            "unknown_split": 0,
+            "user_overlap": 0,
+        }:
+            raise RuntimeError(f"Split invariant failed for seed {seed}: {invariants}")
+        invariants_by_seed[str(seed)] = invariants
+
+    overall = connection.execute(
+        f"""
+        SELECT count(*), count(*) FILTER (WHERE seed NOT IN ({seed_values}))
         FROM {split_source}
         """
     ).fetchone()
-    overlap = connection.execute(
-        f"""
-        SELECT count(*) FROM (
-            SELECT user_id FROM {split_source}
-            GROUP BY user_id HAVING count(DISTINCT experiment_split)>1
-        )
-        """
-    ).fetchone()[0]
-    invariants = {
-        "rows": int(invariant_row[0]),
-        "distinct_node_ids": int(invariant_row[1]),
-        "distinct_enrollments": int(invariant_row[2]),
-        "distinct_users": int(invariant_row[3]),
-        "missing_required": int(invariant_row[4]),
-        "unknown_split": int(invariant_row[5]),
-        "user_overlap": int(overlap),
-    }
-    expected = DATASET_CONTRACT
-    if invariants != {
-        "rows": expected.enrollments,
-        "distinct_node_ids": expected.enrollments,
-        "distinct_enrollments": expected.enrollments,
-        "distinct_users": expected.users,
-        "missing_required": 0,
-        "unknown_split": 0,
-        "user_overlap": 0,
-    }:
-        raise RuntimeError(f"Split invariant failed: {invariants}")
+    if int(overall[0]) != expected.enrollments * len(seeds) or int(overall[1]) != 0:
+        raise RuntimeError(f"Unexpected combined split rows or seed values: {overall}")
 
     rows = connection.execute(
         f"""
-        SELECT s.experiment_split,
+        SELECT s.seed, s.experiment_split,
                count(DISTINCT s.user_id) AS users,
                count(*) AS enrollments,
                sum(CASE WHEN n.label=1 THEN 1 ELSE 0 END) AS dropouts,
@@ -256,50 +282,55 @@ def _validate_and_summarize(
                count(*) FILTER (WHERE s.source_partition='train') AS source_train,
                count(*) FILTER (WHERE s.source_partition='test') AS source_test
         FROM {split_source} s JOIN {nodes_source} n USING(node_id)
-        GROUP BY s.experiment_split
+        GROUP BY s.seed, s.experiment_split
         """
     ).fetchall()
-    row_by_split = {row[0]: row for row in rows}
-    if set(row_by_split) != set(EXPERIMENT_SPLITS):
-        missing = set(EXPERIMENT_SPLITS) - set(row_by_split)
-        raise RuntimeError(f"Missing experiment split: {missing}")
+    row_by_seed_split = {(int(row[0]), row[1]): row for row in rows}
 
-    summary: dict[str, dict[str, Any]] = {}
-    for split in EXPERIMENT_SPLITS:
-        row = row_by_split[split]
-        users = int(row[1])
-        enrollments = int(row[2])
-        dropouts = int(row[3])
-        target = targets[split]
-        if users != target["users"]:
-            raise RuntimeError(f"Unexpected user count in {split}: {users}")
-        enrollment_deviation = enrollments - target["enrollments"]
-        dropout_deviation = dropouts - target["dropouts"]
-        if (
-            abs(enrollment_deviation) / target["enrollments"]
-            >= MAX_RELATIVE_DEVIATION
-            or abs(dropout_deviation) / target["dropouts"]
-            >= MAX_RELATIVE_DEVIATION
-        ):
-            raise RuntimeError(
-                f"Split balance tolerance exceeded in {split}: "
-                f"enrollments={enrollment_deviation}, dropouts={dropout_deviation}"
-            )
-        summary[split] = {
-            "users": users,
-            "target_users": target["users"],
-            "enrollments": enrollments,
-            "target_enrollments": target["enrollments"],
-            "enrollment_deviation": enrollment_deviation,
-            "dropouts": dropouts,
-            "target_dropouts": target["dropouts"],
-            "dropout_deviation": dropout_deviation,
-            "non_dropouts": int(row[4]),
-            "dropout_rate": dropouts / enrollments,
-            "source_train_enrollments": int(row[5]),
-            "source_test_enrollments": int(row[6]),
-        }
-    return summary, invariants
+    summary_by_seed: dict[str, dict[str, dict[str, Any]]] = {}
+    for seed in seeds:
+        summary: dict[str, dict[str, Any]] = {}
+        for split in EXPERIMENT_SPLITS:
+            row = row_by_seed_split.get((seed, split))
+            if row is None:
+                raise RuntimeError(f"Missing {split} split for seed {seed}")
+            users = int(row[2])
+            enrollments = int(row[3])
+            dropouts = int(row[4])
+            target = targets[split]
+            if users != target["users"]:
+                raise RuntimeError(
+                    f"Unexpected user count in seed {seed}/{split}: {users}"
+                )
+            enrollment_deviation = enrollments - target["enrollments"]
+            dropout_deviation = dropouts - target["dropouts"]
+            if (
+                abs(enrollment_deviation) / target["enrollments"]
+                >= MAX_RELATIVE_DEVIATION
+                or abs(dropout_deviation) / target["dropouts"]
+                >= MAX_RELATIVE_DEVIATION
+            ):
+                raise RuntimeError(
+                    f"Balance tolerance exceeded in seed {seed}/{split}: "
+                    f"enrollments={enrollment_deviation}, "
+                    f"dropouts={dropout_deviation}"
+                )
+            summary[split] = {
+                "users": users,
+                "target_users": target["users"],
+                "enrollments": enrollments,
+                "target_enrollments": target["enrollments"],
+                "enrollment_deviation": enrollment_deviation,
+                "dropouts": dropouts,
+                "target_dropouts": target["dropouts"],
+                "dropout_deviation": dropout_deviation,
+                "non_dropouts": int(row[5]),
+                "dropout_rate": dropouts / enrollments,
+                "source_train_enrollments": int(row[6]),
+                "source_test_enrollments": int(row[7]),
+            }
+        summary_by_seed[str(seed)] = summary
+    return summary_by_seed, invariants_by_seed
 
 
 def build_splits(
@@ -314,10 +345,10 @@ def build_splits(
     nodes_path = output_dir / "nodes.parquet"
     split_path = output_dir / SPLIT_ARTIFACT
     ratios = DATASET_CONTRACT.target_user_ratios
-    seed = DATASET_CONTRACT.split_seed
+    seeds = EXPERIMENT_SEEDS
     nodes_signature = source_signature(nodes_path, include_hash=True)
     if not force and (
-        cached := _split_cache_hit(output_dir, nodes_signature, ratios, seed)
+        cached := _split_cache_hit(output_dir, nodes_signature, ratios, seeds)
     ) is not None:
         return {**cached, "cache_hit": True}
 
@@ -325,55 +356,76 @@ def build_splits(
     connection.execute("PRAGMA threads=8")
     try:
         groups = _load_user_groups(connection, nodes_path)
-        assignments, targets, actual = assign_user_groups(
-            groups, ratios=ratios, seed=seed
-        )
-        assignment_rows = sorted(assignments.items())
+        assignment_rows: list[tuple[int, int, str]] = []
+        actual_by_seed: dict[int, dict[str, dict[str, int]]] = {}
+        targets: dict[str, dict[str, int]] | None = None
+        for seed in seeds:
+            assignments, seed_targets, actual = assign_user_groups(
+                groups, ratios=ratios, seed=seed
+            )
+            if targets is None:
+                targets = seed_targets
+            elif targets != seed_targets:
+                raise RuntimeError("Split targets changed between seeds")
+            actual_by_seed[seed] = actual
+            assignment_rows.extend(
+                (seed, user_id, split)
+                for user_id, split in sorted(assignments.items())
+            )
+        if targets is None:
+            raise RuntimeError("No split targets were generated")
         connection.execute(
             "CREATE TEMP TABLE user_splits "
-            "(user_id BIGINT PRIMARY KEY, experiment_split VARCHAR NOT NULL)"
+            "(seed INTEGER NOT NULL, user_id BIGINT NOT NULL, "
+            "experiment_split VARCHAR NOT NULL, PRIMARY KEY(seed, user_id))"
         )
         connection.executemany(
-            "INSERT INTO user_splits VALUES (?, ?)", assignment_rows
+            "INSERT INTO user_splits VALUES (?, ?, ?)", assignment_rows
         )
         query = f"""
-            SELECT n.node_id, n.enroll_id, n.user_id, n.source_partition,
+            SELECT s.seed, n.node_id, n.enroll_id, n.user_id, n.source_partition,
                    s.experiment_split
             FROM read_parquet('{sql_path(nodes_path)}') n
             JOIN user_splits s USING(user_id)
-            ORDER BY n.node_id
+            ORDER BY s.seed, n.node_id
         """
         copy_parquet_atomic(connection, query, split_path)
-        summary, invariants = _validate_and_summarize(
-            connection, nodes_path, split_path, targets
+        summary_by_seed, invariants_by_seed = _validate_and_summarize(
+            connection, nodes_path, split_path, targets, seeds
         )
     finally:
         connection.close()
 
     if source_signature(nodes_path, include_hash=True) != nodes_signature:
         raise RuntimeError("nodes.parquet changed while the split was being built")
-    objective = sum(
-        ((actual[split][metric] - targets[split][metric]) / targets[split][metric])
-        ** 2
-        for split in EXPERIMENT_SPLITS
-        for metric in ("users", "enrollments", "dropouts")
-    )
+    objective_by_seed = {
+        str(seed): sum(
+            (
+                (actual_by_seed[seed][split][metric] - targets[split][metric])
+                / targets[split][metric]
+            )
+            ** 2
+            for split in EXPERIMENT_SPLITS
+            for metric in ("users", "enrollments", "dropouts")
+        )
+        for seed in seeds
+    }
     manifest = {
         "schema_version": SCHEMA_VERSION,
         "split_version": SPLIT_VERSION,
         "dataset": DATASET_CONTRACT.dataset,
         "generated_utc": utc_now(),
         "cache_hit": False,
-        "seed": seed,
+        "seeds": list(seeds),
         "algorithm": SPLIT_ALGORITHM,
         "balanced_metrics": ["users", "enrollments", "dropouts"],
         "max_relative_deviation": MAX_RELATIVE_DEVIATION,
         "target_ratios": dict(zip(EXPERIMENT_SPLITS, ratios, strict=True)),
-        "objective": objective,
+        "objective_by_seed": objective_by_seed,
         "input_nodes": nodes_signature,
         "artifact": source_signature(split_path, include_hash=True),
-        "invariants": invariants,
-        "summary": summary,
+        "invariants_by_seed": invariants_by_seed,
+        "summary_by_seed": summary_by_seed,
     }
     write_json_atomic(output_dir / SPLIT_MANIFEST, manifest)
     return manifest
