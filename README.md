@@ -7,7 +7,8 @@ enrollment, 77.083 user và 247 course**.
 ## Quyết định chính
 
 - Node là enrollment; identity chuẩn là `enroll_id`.
-- Input chính `X_base` có 60 chiều.
+- Node input hỗ trợ bốn cấu hình 60/75/81/96 chiều; `full` ghép behavioral,
+  user demographic và course context.
 - Initial hypergraph gồm Course, Object và Behavioral hyperedge.
 - User hyperedge chưa dùng trong cấu hình chính vì nguy cơ temporal leakage.
 - Split chính là user-disjoint train/validation/test với tỷ lệ mục tiêu 64/16/20.
@@ -20,6 +21,12 @@ Chi tiết dữ liệu nằm tại
 triển khai nằm tại [docs/implementation-plan.md](docs/implementation-plan.md). Đặc tả
 đối chiếu giữa sơ đồ và code nằm tại
 [docs/hgsl-technical-specification.md](docs/hgsl-technical-specification.md).
+Diễn giải end-to-end cho từng khối và ánh xạ tới file code nằm tại
+[docs/hgsl-detailed-technical-design.md](docs/hgsl-detailed-technical-design.md).
+
+Bản nên đọc để double-check trực tiếp từng khối trong sơ đồ với công thức, tensor,
+hàm và file code tương ứng là
+[docs/hgsl-model-code-walkthrough.md](docs/hgsl-model-code-walkthrough.md).
 
 ## Cấu trúc code
 
@@ -27,23 +34,43 @@ Code đặt trực tiếp dưới `src/`, không có package trung gian `mooc_hg
 
 ```text
 src/
+  main.py          # pipeline end-to-end và CLI
+  config.py        # dataset contract và cấu hình thí nghiệm
+  artifacts.py     # cache, manifest và atomic write
   paths.py
-  cli.py
-  data/
-  features/
-  hypergraph/
-  models/
-  losses/
-  training/
+  model.py         # sparse HGNN
+  hsl.py           # sampling, HSL và loss
+  graph_data.py    # load train/validation/test graph
+  train.py         # train, validation, checkpoint và test
+  metrics.py
+  data/            # preprocessing và user-disjoint split
+  features/        # feature engineering và transform
+  hypergraph/      # xây hyperedge và H0
 ```
+
+`main.py` đặt hàm `run_pipeline()` ở đầu file để có thể đọc toàn bộ luồng từ raw
+data đến test report mà không phải lần theo CLI hoặc các lớp trung gian.
+Phần input/output của từng module được tóm tắt tại
+[docs/code-guide.md](docs/code-guide.md).
+Các hàm/class trong `src/` và script dữ liệu có comment `#` nêu mục đích, đầu
+vào, đầu ra và lưu ý khi cần; xem
+[docs/hgsl-model-code-walkthrough.md](docs/hgsl-model-code-walkthrough.md)
+để đọc comment theo thứ tự các khối trong sơ đồ.
 
 `baseline/` chứa manifest và hướng dẫn cho các repository tham khảo. Các clone cục
 bộ được Git ignore và không được import vào mô hình đề xuất.
 
 ## Trạng thái
 
-Phase 0–8 đã hoàn thành. Pipeline đã tạo `X_base`, sparse `H0`, chạy HGNN baseline,
-refine membership thành sparse `H*` có gradient và hoàn thiện protocol huấn luyện HGSL.
+Phase 0–10 đã có luồng thực thi và kiểm thử; chưa chạy đủ thí nghiệm 5 seed/ablation.
+Pipeline tạo `X_base`, `X_context`, sparse `H0`,
+huấn luyện HGNN/HGSL, chọn checkpoint bằng validation và chỉ sau đó mới đánh giá
+checkpoint trên test split.
+
+Validation mặc định dùng toàn bộ split. HGSL inference refine toàn bộ local edge
+theo cách deterministic, nên kết quả không đổi theo evaluation batch size.
+Checkpoint được tách theo experiment ID và chỉ được load khi hash graph/feature
+artifact còn khớp.
 
 Phase 0 đã khóa:
 
@@ -51,7 +78,7 @@ Phase 0 đã khóa:
 - schema raw data;
 - action vocabulary 23 chiều;
 - dataset contract XuetangX-247;
-- feature schema 60 chiều;
+- feature schema behavioral 60 chiều và context 36 chiều;
 - năm experiment seed `1, 11, 111, 1111, 11111` và ba hyperedge family chính.
 
 Kiểm tra contract và cấu trúc:
@@ -59,16 +86,24 @@ Kiểm tra contract và cấu trúc:
 ```powershell
 .\.venv\Scripts\python.exe run.py contract
 .\.venv\Scripts\python.exe run.py structure
-.\.venv\Scripts\python.exe run.py audit-data
 .\.venv\Scripts\python.exe run.py prepare-data
 .\.venv\Scripts\python.exe run.py split-data
 .\.venv\Scripts\python.exe run.py build-features
 .\.venv\Scripts\python.exe run.py build-hyperedges
 .\.venv\Scripts\python.exe run.py build-hypergraph --behavioral-k 10
-.\.venv\Scripts\python.exe run.py train-baseline --seed 1 --epochs 1
-.\.venv\Scripts\python.exe run.py check-hgsl --seed 1
-.\.venv\Scripts\python.exe run.py train-hgsl --seed 1 --epochs 1
+.\.venv\Scripts\python.exe run.py train-baseline --seed 1 --epochs 1 --feature-set full
+.\.venv\Scripts\python.exe run.py evaluate-baseline --seed 1 --feature-set full
+.\.venv\Scripts\python.exe run.py check-hgsl --seed 1 --feature-set full
+.\.venv\Scripts\python.exe run.py train-hgsl --seed 1 --epochs 1 --feature-set full
+.\.venv\Scripts\python.exe run.py evaluate --seed 1 --feature-set full
+.\.venv\Scripts\python.exe run.py run-experiments --feature-sets behavior full
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+Chạy toàn bộ pipeline từ raw data đến test trong một lệnh:
+
+```powershell
+.\.venv\Scripts\python.exe run.py run-pipeline --seed 1 --feature-set full --epochs 1
 ```
 
 Hai script full activity được giữ riêng để tải và chuyển JSON thành CSV.GZ:
@@ -78,5 +113,6 @@ Hai script full activity được giữ riêng để tải và chuyển JSON th�
 .\.venv\Scripts\python.exe scripts\convert_xuetangx_full.py
 ```
 
-Phase tiếp theo là chạy thí nghiệm trên đủ năm seed, tuning bằng validation và thực hiện
-evaluation/ablation của Phase 9.
+Việc còn lại của nghiên cứu là chạy đủ năm seed và các ablation mong muốn; lệnh
+`run-experiments` tự ghi mean và standard deviation vào
+`outputs/reports/experiment_summary.json`.

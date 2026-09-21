@@ -1,4 +1,4 @@
-"""Leakage-safe behavioral k-nearest-neighbor hyperedges."""
+# Tạo behavioral hyperedge bằng cosine kNN chỉ dùng train làm reference.
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,6 +15,10 @@ HNSW_EF_SEARCH = 128
 QUERY_BATCH_ROWS = 25_000
 
 
+# Mục đích: Tạo bản sao float32 đã chuẩn hóa L2 theo từng node.
+# Đầu vào: Matrix feature [nodes, features].
+# Đầu ra: Matrix cùng shape; mỗi hàng khác 0 có norm bằng 1.
+# Lưu ý: Hàng toàn 0 được giữ nguyên để tránh chia cho 0.
 def _normalized_copy(matrix: np.ndarray) -> np.ndarray:
     output = np.asarray(matrix, dtype=np.float32).copy()
     norms = np.linalg.norm(output, axis=1, keepdims=True)
@@ -22,14 +26,16 @@ def _normalized_copy(matrix: np.ndarray) -> np.ndarray:
     return output
 
 
+# Mục đích: Kiểm tra neighbor matrix không vi phạm train-reference contract.
+# Đầu vào: Matrix neighbor IDs, train mask và số neighbor kỳ vọng.
+# Đầu ra: Không trả dữ liệu nếu mọi invariant hợp lệ.
+# Lưu ý: Train anchor không được tự làm neighbor và một hàng không được trùng ID.
 def validate_neighbors(
     neighbors: np.ndarray,
     train_mask: np.ndarray,
     *,
     k_max: int = K_MAX,
 ) -> None:
-    """Validate the train-reference-only neighbor contract."""
-
     if neighbors.ndim != 2 or neighbors.shape[1] != k_max:
         raise RuntimeError(f"Expected neighbor shape [nodes, {k_max}]")
     if np.any(neighbors < 0) or np.any(neighbors >= neighbors.shape[0]):
@@ -43,14 +49,16 @@ def validate_neighbors(
         raise RuntimeError("A train anchor cannot be its own neighbor")
 
 
+# Mục đích: Tìm k cosine-nearest train nodes cho mọi node anchor.
+# Đầu vào: Feature toàn bộ node, train_ids và k_max.
+# Đầu ra: Matrix int32 [all_nodes, k_max] chứa global train node IDs.
+# Lưu ý: FAISS index chỉ fit trên train; label không tham gia tìm neighbor.
 def build_seed_neighbors(
     features: np.ndarray,
     train_ids: np.ndarray,
     *,
     k_max: int = K_MAX,
 ) -> np.ndarray:
-    """Find cosine kNN for all anchors using only train nodes as references."""
-
     try:
         import faiss
     except ImportError as exc:  # pragma: no cover - dependency failure path
@@ -95,6 +103,9 @@ def build_seed_neighbors(
     return output
 
 
+# Mục đích: Ghi neighbor matrix thành NPZ nén theo cách atomic.
+# Đầu vào: File đích và NumPy neighbor array.
+# Đầu ra: Không trả dữ liệu; tạo file chứa key "neighbors".
 def write_neighbors_atomic(path: Path, neighbors: np.ndarray) -> None:
     temporary = path.with_name(path.name + ".part")
     temporary.unlink(missing_ok=True)

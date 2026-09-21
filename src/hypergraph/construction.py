@@ -1,4 +1,4 @@
-"""Phase 4–5 orchestration for hyperedge candidates and sparse H0 artifacts."""
+# Điều phối Phase 4-5: tạo hyperedge candidates và sparse initial hypergraph H0.
 from __future__ import annotations
 
 import json
@@ -9,14 +9,14 @@ import duckdb
 import numpy as np
 from scipy import sparse
 
-from data.cache import (
+from artifacts import (
     copy_parquet_atomic,
     source_signature,
     sql_path,
     utc_now,
     write_json_atomic,
 )
-from data.schema import (
+from config import (
     DATASET_CONTRACT,
     EXPERIMENT_SEEDS,
     SCHEMA_VERSION,
@@ -53,10 +53,17 @@ GRAPH_AUDIT_ARTIFACT = "hypergraph_audit.json"
 GRAPH_MANIFEST_ARTIFACT = "hypergraph_manifest.json"
 
 
+# Mục đích: Tính SHA-256 signature cho nhóm input/artifact của hypergraph.
+# Đầu vào: Tuple đường dẫn file.
+# Đầu ra: Dictionary filename-to-signature.
 def _signatures(paths: tuple[Path, ...]) -> dict[str, dict[str, Any]]:
     return {path.name: source_signature(path, include_hash=True) for path in paths}
 
 
+# Mục đích: Kiểm tra cache Phase 4 còn khớp source và cấu hình hiện tại.
+# Đầu vào: Output directory và input signatures mới tính.
+# Đầu ra: Manifest hợp lệ hoặc None nếu cần rebuild.
+# Lưu ý: Kiểm tra hash của structural, behavioral và audit artifacts.
 def _cache_hit(
     output_dir: Path, inputs: dict[str, dict[str, Any]]
 ) -> dict[str, Any] | None:
@@ -85,6 +92,10 @@ def _cache_hit(
     return manifest
 
 
+# Mục đích: Ghép Course và Object candidate memberships vào một Parquet.
+# Đầu vào: Kết nối, nodes/events paths và file đích.
+# Đầu ra: Không trả dữ liệu; ghi structural_memberships.parquet.
+# Lưu ý: Chưa lọc theo split ở bước global candidate này.
 def _build_structural(
     connection: duckdb.DuckDBPyConnection,
     nodes_path: Path,
@@ -100,6 +111,9 @@ def _build_structural(
     copy_parquet_atomic(connection, query, destination)
 
 
+# Mục đích: Đọc global node_id thuộc train của một seed.
+# Đầu vào: Kết nối, splits.parquet và seed.
+# Đầu ra: Vector int64 node IDs đã sort.
 def _train_ids(
     connection: duckdb.DuckDBPyConnection, splits_path: Path, seed: int
 ) -> np.ndarray:
@@ -111,13 +125,15 @@ def _train_ids(
     return result["node_id"].astype(np.int64, copy=False)
 
 
+# Mục đích: Tạo toàn bộ candidate Course/Object/Behavioral dùng lại ở Phase 5.
+# Đầu vào: Output directory và cờ force rebuild.
+# Đầu ra: Manifest chứa audit, k candidates và artifact signatures.
+# Lưu ý: Behavioral kNN chỉ fit trên train X_base và không đọc label.
 def build_hyperedges(
     output_dir: Path = PROCESSED_DATA_DIR,
     *,
     force: bool = False,
 ) -> dict[str, Any]:
-    """Build reusable Phase 4 candidates without reading labels."""
-
     output_dir = require_project_path(output_dir)
     build_features(output_dir=output_dir)
     nodes_path = output_dir / "nodes.parquet"
@@ -173,6 +189,8 @@ def build_hyperedges(
             "object_types": ["video", "assignment", "forum"],
             "behavioral_reference_split": "train only",
             "behavioral_metric": "cosine on X_base",
+            "behavioral_similarity_feature_set": "behavior",
+            "behavioral_similarity_dimension": len(base_feature_columns()),
             "k_candidates": list(K_CANDIDATES),
         },
     }
@@ -198,6 +216,8 @@ def build_hyperedges(
             "neighbors[seed_index, anchor_node_id, neighbor_rank]"
         ),
         "behavioral_array_shape": list(neighbors.shape),
+        "behavioral_similarity_feature_set": "behavior",
+        "behavioral_similarity_dimension": len(base_feature_columns()),
         "behavioral_array_dtype": str(neighbors.dtype),
         "hnsw": {
             "metric": "cosine (L2-normalized inner product)",
@@ -213,10 +233,16 @@ def build_hyperedges(
     return manifest
 
 
+# Mục đích: Tạo tên file H0 train nhất quán cho một seed.
+# Đầu vào: Experiment seed.
+# Đầu ra: Tên file dạng H0_train_seed_<seed>.npz.
 def train_matrix_name(seed: int) -> str:
     return f"H0_train_seed_{seed}.npz"
 
 
+# Mục đích: Liệt kê tất cả artifact phải tồn tại để graph cache hợp lệ.
+# Đầu vào: Không có.
+# Đầu ra: Tuple tên năm H0 matrix và các bảng metadata/evaluation/audit.
 def _graph_artifact_names() -> tuple[str, ...]:
     matrices = tuple(train_matrix_name(seed) for seed in EXPERIMENT_SEEDS)
     return matrices + (
@@ -228,6 +254,10 @@ def _graph_artifact_names() -> tuple[str, ...]:
     )
 
 
+# Mục đích: Kiểm tra graph cache khớp input và behavioral_k được yêu cầu.
+# Đầu vào: Output directory, input signatures và behavioral_k.
+# Đầu ra: Graph manifest hợp lệ hoặc None.
+# Lưu ý: Mọi artifact đều được đối chiếu SHA-256 trước khi cache hit.
 def _graph_cache_hit(
     output_dir: Path,
     inputs: dict[str, dict[str, Any]],
@@ -258,6 +288,9 @@ def _graph_cache_hit(
     return manifest
 
 
+# Mục đích: Ghi SciPy CSR matrix thành NPZ nén theo cách atomic.
+# Đầu vào: File đích và sparse incidence matrix.
+# Đầu ra: Không trả dữ liệu; tạo file .npz hoàn chỉnh.
 def _write_sparse_atomic(path: Path, matrix: sparse.csr_matrix) -> None:
     temporary = path.with_name(path.name + ".part")
     temporary.unlink(missing_ok=True)
@@ -266,6 +299,9 @@ def _write_sparse_atomic(path: Path, matrix: sparse.csr_matrix) -> None:
     temporary.replace(path)
 
 
+# Mục đích: Tạo temporary DuckDB table chứa metadata theo đúng H0 column order.
+# Đầu vào: Kết nối DuckDB đang dùng để materialize graph.
+# Đầu ra: Không trả dữ liệu; tạo bảng tạm hyperedge_metadata.
 def _create_metadata_table(connection: duckdb.DuckDBPyConnection) -> None:
     connection.execute(
         """
@@ -285,6 +321,10 @@ def _create_metadata_table(connection: duckdb.DuckDBPyConnection) -> None:
     )
 
 
+# Mục đích: Chèn metadata hyperedge vào bảng tạm theo các batch nhỏ.
+# Đầu vào: Kết nối và list tuple đúng schema metadata.
+# Đầu ra: Không trả dữ liệu; cập nhật bảng tạm.
+# Lưu ý: Batch 50.000 dòng tránh truyền một parameter array quá lớn.
 def _insert_metadata(
     connection: duckdb.DuckDBPyConnection,
     rows: list[tuple[Any, ...]],
@@ -311,6 +351,10 @@ def _insert_metadata(
         )
 
 
+# Mục đích: Gom Course/Object memberships của train thành từng hyperedge.
+# Đầu vào: Kết nối, memberships path, splits path và seed.
+# Đầu ra: List tuple family/key/type/node_ids đã sort.
+# Lưu ý: Loại hyperedge có ít hơn hai train nodes.
 def _structural_groups(
     connection: duckdb.DuckDBPyConnection,
     memberships_path: Path,
@@ -338,12 +382,20 @@ def _structural_groups(
     ).fetchall()
 
 
+# Mục đích: Tạo khóa nguồn duy nhất cho Course hoặc Object hyperedge.
+# Đầu vào: Family, course_id và object_id tùy chọn.
+# Đầu ra: Course ID hoặc JSON composite key [course_id, object_id].
+# Lưu ý: Composite key ngăn object trùng tên ở hai course bị nối nhầm.
 def _source_key(family: str, course_id: str, object_id: str | None) -> str:
     if family == "course":
         return course_id
     return json.dumps([course_id, object_id], ensure_ascii=False, separators=(",", ":"))
 
 
+# Mục đích: Tạo sparse train H0 và metadata cho một seed.
+# Đầu vào: Kết nối, paths, neighbor tensor, seed index/seed và behavioral_k.
+# Đầu ra: Audit shape, nnz, density và family counts của H0.
+# Lưu ý: Row dùng local train index; metadata giữ mapping về global node IDs.
 def _materialize_seed(
     connection: duckdb.DuckDBPyConnection,
     output_dir: Path,
@@ -458,6 +510,9 @@ def _materialize_seed(
     }
 
 
+# Mục đích: Ghi mapping local H0 row sang global node_id cho mọi seed.
+# Đầu vào: Kết nối, split path và file Parquet đích.
+# Đầu ra: Không trả dữ liệu; tạo train_node_index.parquet.
 def _write_train_node_index(
     connection: duckdb.DuckDBPyConnection,
     splits_path: Path,
@@ -477,6 +532,9 @@ def _write_train_node_index(
     copy_parquet_atomic(connection, query, destination)
 
 
+# Mục đích: Ghi bảng metadata theo đúng seed và hyperedge_id column order.
+# Đầu vào: Kết nối có bảng tạm metadata và file đích.
+# Đầu ra: Không trả dữ liệu; tạo hyperedges.parquet.
 def _write_hyperedge_metadata(
     connection: duckdb.DuckDBPyConnection, destination: Path
 ) -> None:
@@ -487,6 +545,10 @@ def _write_hyperedge_metadata(
     )
 
 
+# Mục đích: Sinh SQL mô tả local graph cho từng validation/test target.
+# Đầu vào: Membership path, split path, tên split và behavioral_k.
+# Đầu ra: Chuỗi SQL tạo Course/Object/Behavioral local memberships.
+# Lưu ý: Reference node luôn thuộc train; không tạo cạnh giữa hai target.
 def _local_membership_query(
     memberships_path: Path,
     splits_path: Path,
@@ -587,6 +649,10 @@ def _local_membership_query(
     """
 
 
+# Mục đích: Kiểm tra local memberships đúng split và chỉ trỏ tới train reference.
+# Đầu vào: Kết nối, local membership path và split path.
+# Đầu ra: Dictionary audit theo seed.
+# Lưu ý: Phát hiện edge size <2, sai target split hoặc reference ngoài train.
 def _audit_local_memberships(
     connection: duckdb.DuckDBPyConnection,
     path: Path,
@@ -659,14 +725,16 @@ def _audit_local_memberships(
     }
 
 
+# Mục đích: Materialize H0 train và compact local memberships cho validation/test.
+# Đầu vào: Output directory, behavioral_k và cờ force rebuild.
+# Đầu ra: Graph manifest chứa artifact hashes và audit toàn bộ năm seed.
+# Lưu ý: H0 là binary CSR; evaluation graph được dựng lại khi cần để tiết kiệm đĩa.
 def build_initial_hypergraph(
     output_dir: Path = PROCESSED_DATA_DIR,
     *,
     behavioral_k: int = DEFAULT_K,
     force: bool = False,
 ) -> dict[str, Any]:
-    """Materialize train H0 and compact inductive evaluation memberships."""
-
     if behavioral_k not in K_CANDIDATES:
         raise ValueError(f"behavioral_k must be one of {K_CANDIDATES}")
     output_dir = require_project_path(output_dir)
@@ -753,6 +821,7 @@ def build_initial_hypergraph(
             "minimum_hyperedge_size": 2,
             "evaluation_mode": "one target with train references only",
             "feature_layout": "X_base[seed_index, global_node_id, feature]",
+            "behavioral_similarity_feature_set": "behavior",
         },
     }
     write_json_atomic(output_dir / GRAPH_AUDIT_ARTIFACT, audit)
@@ -769,6 +838,8 @@ def build_initial_hypergraph(
         "seeds": list(EXPERIMENT_SEEDS),
         "behavioral_k": behavioral_k,
         "behavioral_k_status": "default candidate; final choice requires validation",
+        "behavioral_similarity_feature_set": "behavior",
+        "behavioral_similarity_dimension": len(base_feature_columns()),
         "families": ["course", "object", "behavioral"],
         "matrix_format": "SciPy CSR uint8 saved with save_npz",
         "local_membership_encoding": {

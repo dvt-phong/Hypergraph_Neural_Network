@@ -1,9 +1,13 @@
-"""Dependency-light binary metrics for dropout prediction."""
+# Các metric phân loại nhị phân dùng chung cho validation và test.
 from __future__ import annotations
 
 import numpy as np
 
 
+# Mục đích: Chuẩn hóa và kiểm tra label/score trước khi tính metric.
+# Đầu vào: labels nhị phân và scores hoặc probabilities cùng số phần tử.
+# Đầu ra: Hai vector NumPy một chiều lần lượt có dtype int8 và float64.
+# Lưu ý: AUC/AUPRC yêu cầu dữ liệu có cả hai lớp và score phải hữu hạn.
 def _binary_inputs(
     labels: np.ndarray, scores: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -18,6 +22,10 @@ def _binary_inputs(
     return labels, scores
 
 
+# Mục đích: Tính ROC-AUC bằng thứ hạng, không phụ thuộc scikit-learn.
+# Đầu vào: Label 0/1 và score dự đoán của từng mẫu.
+# Đầu ra: Một số float trong khoảng [0, 1].
+# Lưu ý: Các score bằng nhau nhận rank trung bình để xử lý tie đúng công thức.
 def roc_auc(labels: np.ndarray, scores: np.ndarray) -> float:
     labels, scores = _binary_inputs(labels, scores)
     order = np.argsort(scores, kind="mergesort")
@@ -40,6 +48,10 @@ def roc_auc(labels: np.ndarray, scores: np.ndarray) -> float:
     )
 
 
+# Mục đích: Tính Average Precision, tương đương diện tích bậc thang của PR curve.
+# Đầu vào: Label 0/1 và score dự đoán của từng mẫu.
+# Đầu ra: Giá trị AUPRC dạng float.
+# Lưu ý: Mẫu được sắp theo score giảm dần và gộp các score bằng nhau.
 def average_precision(labels: np.ndarray, scores: np.ndarray) -> float:
     labels, scores = _binary_inputs(labels, scores)
     order = np.argsort(-scores, kind="mergesort")
@@ -57,6 +69,10 @@ def average_precision(labels: np.ndarray, scores: np.ndarray) -> float:
     return float(np.sum(recall_increase * precision))
 
 
+# Mục đích: Tính toàn bộ metric báo cáo cho bài toán dropout nhị phân.
+# Đầu vào: Label, xác suất lớp 1 và threshold phân lớp, mặc định 0.5.
+# Đầu ra: Dictionary gồm AUC, AUPRC, F1, precision và recall.
+# Lưu ý: Threshold chỉ ảnh hưởng F1/precision/recall, không ảnh hưởng AUC/AUPRC.
 def binary_metrics(
     labels: np.ndarray,
     probabilities: np.ndarray,

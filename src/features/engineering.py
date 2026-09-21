@@ -1,4 +1,4 @@
-"""Aggregate canonical events into enrollment-level raw features."""
+# Tổng hợp event canonical thành feature hành vi ở mức enrollment node.
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,8 +6,8 @@ from typing import Any
 
 import duckdb
 
-from data.cache import copy_parquet_atomic, sql_path
-from data.schema import (
+from artifacts import copy_parquet_atomic, sql_path
+from config import (
     ACTIONS,
     DATASET_CONTRACT,
     EARLY_OBSERVATION_DAYS,
@@ -28,6 +28,10 @@ ABLATION_FEATURES = (
 )
 
 
+# Mục đích: Sinh SQL aggregate daily/action counts và feature activity summary.
+# Đầu vào: Node path, event path và số ngày quan sát.
+# Đầu ra: Chuỗi SQL trả đúng một hàng cho mỗi node_id.
+# Lưu ý: LEFT JOIN giữ cả node không có activity trong observation window.
 def _aggregate_query(
     nodes_path: Path,
     events_path: Path,
@@ -84,6 +88,10 @@ def _aggregate_query(
     """
 
 
+# Mục đích: Kiểm tra feature thô khớp số event và các công thức tổng hợp.
+# Đầu vào: Kết nối, file feature, số ngày quan sát và tổng event kỳ vọng.
+# Đầu ra: Dictionary audit số hàng, event và các invariant lỗi.
+# Lưu ý: Tổng daily count và action count đều phải bằng event_count.
 def validate_raw_features(
     connection: duckdb.DuckDBPyConnection,
     features_path: Path,
@@ -153,6 +161,10 @@ def validate_raw_features(
     return audit
 
 
+# Mục đích: Tạo feature hành vi thô cho một observation window.
+# Đầu vào: Kết nối, nodes/events path, file đích và observation_days.
+# Đầu ra: Audit dictionary của file features_raw vừa tạo.
+# Lưu ý: Chỉ chấp nhận cửa sổ 7/14/21/28/35 ngày đã khóa trong config.
 def build_raw_features(
     connection: duckdb.DuckDBPyConnection,
     nodes_path: Path,
@@ -161,8 +173,6 @@ def build_raw_features(
     *,
     observation_days: int = OBSERVATION_DAYS,
 ) -> dict[str, Any]:
-    """Build windowed base features and eight activity-ablation fields."""
-
     if observation_days not in EARLY_OBSERVATION_DAYS:
         raise ValueError(
             f"observation_days must be one of {EARLY_OBSERVATION_DAYS}, "

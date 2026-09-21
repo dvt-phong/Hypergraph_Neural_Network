@@ -149,7 +149,7 @@ hiện tại vẫn dùng `object` toàn cục và cần được tạo lại tr�
 
 ## 7. Bảng feature quyết định sử dụng
 
-### Input chính: `X_base` — 60 chiều
+### Behavioral input: `X_base` — 60 chiều
 
 | Khối feature | Số chiều | NA/zero | Transform | Quyết định |
 |---|---:|---|---|---|
@@ -168,17 +168,21 @@ của chúng bằng 0. `action_close_info` không xuất hiện trong dữ liệ
 cột zero-variance, vẫn được giữ để cố định vocabulary 23 action. Mỗi seed có scaler
 riêng, chỉ fit trên train của seed đó.
 
-### Feature dùng cho ablation hoặc phân tích
+### Context node features và feature ablation
+
+User demographic và course context đã được materialize thành `X_context` 36 chiều.
+Cấu hình `full` ghép context với `X_base` thành 96 chiều; `X_base` được giữ làm đối
+chứng và làm đầu vào cố định cho Behavioral kNN.
 
 | Feature | Xử lý NA và encoding | Quyết định |
 |---|---|---|
 | 8 activity summary: `event_count`, `active_days`, `active_span_days`, `first_active_day`, `last_active_day`, `days_since_last_activity`, `active_day_ratio`, `has_activity` | Node rỗng: first/last/span bằng 0, `days_since_last_activity=35`, `has_activity=0`; count dùng `log1p`; day chia 34; số ngày chia 35 | `X_augmented = X_base + 8`, chạy ablation |
 | `object_missing_ratio` | Node rỗng → NA; train-median + cột missing | Audit/ablation, không vào input chính |
-| `gender` | Null → `missing`; unseen → `other`; one-hot fit trên train | Context/fairness ablation |
-| `education` | Null → `missing`; unseen → `other`; one-hot fit trên train | Context/fairness ablation |
-| `age` | Ngoài `[10,100]` → NA; train-median + `age_missing`; standardize bằng train | Context/fairness ablation |
-| `category` | Null → `missing`; unseen → `other`; one-hot fit trên train | Course-context ablation |
-| `course_duration_days` | NA/âm → train-median + cột missing; standardize bằng train | Course-context ablation |
+| `gender` | Null → `missing`; unseen → `other`; vocabulary cố định, one-hot | `X_user`, 4 chiều |
+| `education` | Null → `missing`; unseen → `other`; vocabulary cố định, one-hot | `X_user`, 9 chiều |
+| `age` | Ngoài `[10,100]` → NA; train-median + `age_missing`; standardize bằng train | `X_user`, 2 chiều |
+| `category` | Null → `missing`; unseen → `other`; vocabulary cố định, one-hot | `X_course`, 19 chiều |
+| `course_duration_days` | NA/âm → train-median + cột missing; standardize bằng train | `X_course`, 2 chiều |
 | `course_type` | Tất cả 247 course đều bằng 0 | Loại |
 | `group_video`, `group_assignment`, `group_forum`, `group_web_page` | Là tổng các `action_*` tương ứng | Không dùng vì dư thừa |
 
@@ -192,7 +196,7 @@ Không one-hot `enroll_id`, `node_id`, `user_id`, `course_id`, `object` hoặc
 | Course | Các enrollment cùng `course_id` | Chỉ nối node trong tập đang xét |
 | User | Các enrollment cùng `user_id` | Với split chính, mỗi user chỉ nằm trong một tập |
 | Object | Các enrollment cùng `object_key`; bỏ singleton | Khóa phải gồm cả course; thống kê cardinality trên train |
-| Behavioral | kNN trên `X_base` đã transform | Scaler và neighbor search chỉ fit trên train; chọn `k` bằng validation |
+| Behavioral | kNN trên `X_base` 60 chiều đã transform | Scaler và neighbor search chỉ fit trên train; context không tham gia; chọn `k` bằng validation |
 
 Phase 5 đã materialize `H0` dạng CSR riêng cho năm seed. `k=10` hiện chỉ là
 candidate mặc định; lựa chọn cuối giữa `{5,10,20}` sẽ dựa trên validation ở phase

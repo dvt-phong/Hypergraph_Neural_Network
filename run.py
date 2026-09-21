@@ -1,4 +1,4 @@
-"""Repository-local entry point for the XuetangX-247 pipeline."""
+# Entry point duy nhất để gọi CLI pipeline từ project root.
 from pathlib import Path
 import sys
 
@@ -6,7 +6,7 @@ import sys
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from cli import main  # noqa: E402
+from main import main  # noqa: E402
 
 
 if __name__ == "__main__":

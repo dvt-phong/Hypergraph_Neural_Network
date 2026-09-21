@@ -10,7 +10,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from data.schema import DATASET_CONTRACT, EXPERIMENT_SEEDS
+from config import DATASET_CONTRACT, EXPERIMENT_SEEDS
 from hypergraph.behavioral import K_CANDIDATES, K_MAX, build_seed_neighbors
 from hypergraph.construction import build_hyperedges
 from hypergraph.object import OBJECT_TYPES

@@ -11,10 +11,10 @@ from scipy import sparse
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from data.schema import EXPERIMENT_SEEDS
+from config import EXPERIMENT_SEEDS
 from hypergraph.behavioral import DEFAULT_K, K_CANDIDATES
 from hypergraph.construction import build_initial_hypergraph
-from hypergraph.io import load_local_hypergraph, load_train_hypergraph
+from graph_data import load_local_hypergraph, load_train_hypergraph
 from paths import PROCESSED_DATA_DIR
 
 
@@ -163,6 +163,19 @@ class PhaseFiveIntegrationTests(unittest.TestCase):
             self.assertGreaterEqual(
                 int(np.asarray(local.incidence.sum(axis=0)).min()), 2
             )
+
+    def test_graph_loaders_support_all_feature_sets(self):
+        expected = {
+            "behavior": 60,
+            "behavior_user": 75,
+            "behavior_course": 81,
+            "full": 96,
+        }
+        seed = EXPERIMENT_SEEDS[0]
+        for feature_set, dimension in expected.items():
+            train = load_train_hypergraph(seed, feature_set=feature_set)
+            self.assertEqual(train.features.shape, (train.node_ids.size, dimension))
+            self.assertTrue(np.isfinite(train.features[::1000]).all())
 
 
 if __name__ == "__main__":

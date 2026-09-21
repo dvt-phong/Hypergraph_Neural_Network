@@ -11,12 +11,11 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from losses.objective import classification_loss, train_pos_weight
-from models.hgnn import HypergraphOperator
-from models.model import HGNNBaseline
+from hsl import classification_loss, train_pos_weight
+from model import HGNNBaseline, HypergraphOperator
 from paths import REPORTS_DIR
-from training.evaluator import binary_metrics
-from training.trainer import BaselineConfig
+from metrics import binary_metrics
+from train import BaselineConfig
 
 
 class PhaseSixUnitTests(unittest.TestCase):
@@ -85,20 +84,27 @@ class PhaseSixUnitTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             BaselineConfig(seed=42).validate()
 
+    def test_config_rejects_unknown_feature_set(self):
+        with self.assertRaises(ValueError):
+            BaselineConfig(feature_set="unknown").validate()
+
 
 @unittest.skipUnless(
-    (REPORTS_DIR / "phase6_hgnn_seed_1.json").is_file(),
+    (REPORTS_DIR / "phase6_hgnn_full_seed_1.json").is_file(),
     "Phase 6 smoke report has not been generated",
 )
 class PhaseSixIntegrationTests(unittest.TestCase):
     def test_real_smoke_report(self):
         report = json.loads(
-            (REPORTS_DIR / "phase6_hgnn_seed_1.json").read_text(encoding="utf-8")
+            (REPORTS_DIR / "phase6_hgnn_full_seed_1.json").read_text(
+                encoding="utf-8"
+            )
         )
         self.assertEqual(report["phase"], 6)
         self.assertEqual(report["config"]["seed"], 1)
+        self.assertEqual(report["config"]["feature_set"], "full")
         self.assertEqual(report["nodes"], 144543)
-        self.assertEqual(report["feature_dim"], 60)
+        self.assertEqual(report["feature_dim"], 96)
         self.assertGreater(report["hyperedges"], 100000)
         self.assertGreater(report["incidences"], 3000000)
         self.assertGreater(report["pos_weight"], 0)
@@ -111,6 +117,7 @@ class PhaseSixIntegrationTests(unittest.TestCase):
         self.assertGreaterEqual(report["best_epoch"], 1)
         self.assertGreaterEqual(report["validation_targets"], 2)
         self.assertTrue(Path(report["checkpoint"]).is_file())
+        self.assertEqual(len(report["checkpoint_feature_manifest_sha256"]), 64)
         self.assertEqual(
             set(report["best_validation_metrics"]) - {"epoch"},
             {"auc", "auprc", "f1", "precision", "recall"},

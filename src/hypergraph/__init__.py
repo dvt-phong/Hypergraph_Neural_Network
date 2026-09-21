@@ -1,1 +1,1 @@
-"""Leakage-safe hyperedge construction, sparse materialization and graph I/O."""
+# Package xây hyperedge leakage-safe và materialize sparse initial hypergraph.

@@ -1,12 +1,5 @@
-r"""Download and extract the public XuetangX full activity logs.
-
-Usage:
-    .\.venv\Scripts\python.exe scripts\download_xuetangx_full.py
-
-The script is restart-safe: verified archives and extracted JSON files are
-reused.  Downloads are written to ``.part`` files and only published after
-their size and SHA-256 match the recorded release fingerprint.
-"""
+# Tải và giải nén public XuetangX full activity logs theo cách restart-safe.
+# Archive/JSON hợp lệ được tái sử dụng; file mới chỉ publish sau khi hash khớp.
 from __future__ import annotations
 
 import argparse
@@ -26,6 +19,9 @@ BASE_URL = "https://lfs.aminer.cn/misc/moocdata/data"
 BUFFER_SIZE = 8 * 1024 * 1024
 
 
+# Mục đích: Lưu tên, kích thước và hash kỳ vọng của một JSON member.
+# Đầu vào: Metadata lấy từ public release.
+# Đầu ra: Object bất biến dùng để xác minh sau giải nén.
 @dataclass(frozen=True)
 class JsonFile:
     name: str
@@ -33,6 +29,9 @@ class JsonFile:
     sha256: str
 
 
+# Mục đích: Mô tả một archive và các JSON members phải chứa.
+# Đầu vào: Tên, size, hash và tuple JsonFile.
+# Đầu ra: Object bất biến có property url.
 @dataclass(frozen=True)
 class Archive:
     name: str
@@ -41,6 +40,9 @@ class Archive:
     members: tuple[JsonFile, ...]
 
     @property
+    # Mục đích: Tạo download URL đầy đủ cho archive.
+    # Đầu vào: Archive name hiện tại.
+    # Đầu ra: Chuỗi URL trên public data server.
     def url(self) -> str:
         return f"{BASE_URL}/{self.name}"
 
@@ -93,6 +95,9 @@ ARCHIVES = (
 )
 
 
+# Mục đích: Tính SHA-256 của file lớn theo từng chunk.
+# Đầu vào: File path.
+# Đầu ra: Chuỗi SHA-256 hexadecimal.
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -101,6 +106,9 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+# Mục đích: Xác minh một file bằng tồn tại, kích thước và SHA-256.
+# Đầu vào: Path, expected size và expected hash.
+# Đầu ra: Boolean cho biết file khớp hoàn toàn hay không.
 def matches(path: Path, *, size_bytes: int, expected_sha256: str) -> bool:
     return (
         path.is_file()
@@ -109,6 +117,10 @@ def matches(path: Path, *, size_bytes: int, expected_sha256: str) -> bool:
     )
 
 
+# Mục đích: Tải một archive hoặc dùng lại archive đã xác minh.
+# Đầu vào: Archive spec, raw directory và force flag.
+# Đầu ra: Path archive hoàn chỉnh.
+# Lưu ý: Download vào .part và chỉ đổi tên sau khi size/hash khớp.
 def download(archive: Archive, raw_dir: Path, *, force: bool) -> Path:
     destination = raw_dir / archive.name
     if not force and matches(
@@ -151,6 +163,9 @@ def download(archive: Archive, raw_dir: Path, *, force: bool) -> Path:
     return destination
 
 
+# Mục đích: Kiểm tra ổ đĩa đủ cho các JSON mới và file thay thế tạm.
+# Đầu vào: Raw directory, archives và force flag.
+# Đầu ra: Không có nếu đủ dung lượng; ném OSError nếu thiếu.
 def ensure_disk_space(raw_dir: Path, archives: tuple[Archive, ...], *, force: bool) -> None:
     new_files = 0
     replacement_sizes: list[int] = []
@@ -175,6 +190,10 @@ def ensure_disk_space(raw_dir: Path, archives: tuple[Archive, ...], *, force: bo
         )
 
 
+# Mục đích: Stream-extract đúng các JSON đã khai báo khỏi tar.gz.
+# Đầu vào: Archive spec/path, raw directory và force flag.
+# Đầu ra: Không trả dữ liệu; tạo verified JSON files.
+# Lưu ý: Chặn path traversal, duplicate member và hash mismatch.
 def extract(archive: Archive, archive_path: Path, raw_dir: Path, *, force: bool) -> None:
     expected = {member.name: member for member in archive.members}
     found: set[str] = set()
@@ -225,6 +244,9 @@ def extract(archive: Archive, archive_path: Path, raw_dir: Path, *, force: bool)
         )
 
 
+# Mục đích: Ghi metadata nguồn và hashes của full activity release.
+# Đầu vào: Raw directory chứa các archive/JSON đã xác minh.
+# Đầu ra: Path manifest.json.
 def write_manifest(raw_dir: Path) -> Path:
     manifest = {
         "dataset": "XuetangX full user activity",
@@ -245,6 +267,9 @@ def write_manifest(raw_dir: Path) -> Path:
     return path
 
 
+# Mục đích: Khai báo và parse CLI arguments của downloader.
+# Đầu vào: sys.argv.
+# Đầu ra: argparse.Namespace gồm raw-dir và force.
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Download and extract the two public XuetangX full-log archives."
@@ -254,6 +279,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# Mục đích: Kiểm tra dung lượng, tải, giải nén và ghi manifest.
+# Đầu vào: CLI arguments từ parse_args().
+# Đầu ra: Không trả dữ liệu; in đường dẫn raw data/manifest.
 def main() -> None:
     args = parse_args()
     raw_dir = args.raw_dir.resolve()

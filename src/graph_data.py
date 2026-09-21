@@ -1,4 +1,4 @@
-"""Load materialized train graphs and reconstruct compact local graphs."""
+# Đọc train graph và dựng local validation/test graph từ compact memberships.
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,8 +10,9 @@ import duckdb
 import numpy as np
 from scipy import sparse
 
-from data.cache import sql_path
-from data.schema import EXPERIMENT_SEEDS
+from artifacts import sql_path
+from config import DEFAULT_FEATURE_SET, EXPERIMENT_SEEDS
+from features.io import NodeFeatureStore
 from hypergraph.construction import (
     BEHAVIORAL_ARTIFACT,
     GRAPH_MANIFEST_ARTIFACT,
@@ -25,6 +26,9 @@ from paths import PROCESSED_DATA_DIR, require_project_path
 
 
 @dataclass(frozen=True)
+# Mục đích: Gom dữ liệu cần cho một full train-graph forward.
+# Đầu vào: Global node IDs, feature matrix và CSR incidence H0.
+# Đầu ra: Object bất biến được train loop sử dụng.
 class TrainHypergraph:
     node_ids: np.ndarray
     features: np.ndarray
@@ -32,6 +36,9 @@ class TrainHypergraph:
 
 
 @dataclass(frozen=True)
+# Mục đích: Biểu diễn graph inductive của đúng một validation/test target.
+# Đầu vào: Node IDs/features, target mask, incidence và edge metadata.
+# Đầu ra: Object độc lập; target chỉ kết nối tới train-reference nodes.
 class LocalHypergraph:
     node_ids: np.ndarray
     features: np.ndarray
@@ -41,6 +48,10 @@ class LocalHypergraph:
 
 
 @dataclass(frozen=True)
+# Mục đích: Gom nhiều local graph thành một block-diagonal batch.
+# Đầu vào: Các array đã concatenate và group IDs của node/edge.
+# Đầu ra: Object dùng trực tiếp cho HGNN/HSL evaluation.
+# Lưu ý: Group IDs giúp HSL không sample negative node từ graph khác.
 class BatchedLocalHypergraph:
     node_ids: np.ndarray
     features: np.ndarray
@@ -52,6 +63,10 @@ class BatchedLocalHypergraph:
     sizes: np.ndarray
 
 
+# Mục đích: Chuyển experiment seed thành vị trí trong feature tensor.
+# Đầu vào: Seed cần tìm.
+# Đầu ra: Integer index trong EXPERIMENT_SEEDS.
+# Lưu ý: Ném ValueError với seed ngoài protocol.
 def _seed_index(seed: int) -> int:
     try:
         return EXPERIMENT_SEEDS.index(seed)
@@ -59,6 +74,9 @@ def _seed_index(seed: int) -> int:
         raise ValueError(f"seed must be one of {EXPERIMENT_SEEDS}") from exc
 
 
+# Mục đích: Đọc global train node IDs theo đúng local row order của H0.
+# Đầu vào: Kết nối, output directory và seed.
+# Đầu ra: Vector int64 node IDs.
 def _node_ids(
     connection: duckdb.DuckDBPyConnection,
     output_dir: Path,
@@ -73,13 +91,17 @@ def _node_ids(
     return rows["node_id"].astype(np.int64, copy=False)
 
 
+# Mục đích: Load train features và H0 với hàng được căn đúng node index.
+# Đầu vào: Seed, output directory và feature_set.
+# Đầu ra: TrainHypergraph gồm node_ids, features và CSR incidence.
+# Lưu ý: Kiểm tra số hàng feature/incidence trước khi trả về.
 def load_train_hypergraph(
     seed: int,
     output_dir: Path = PROCESSED_DATA_DIR,
+    *,
+    feature_set: str = DEFAULT_FEATURE_SET,
 ) -> TrainHypergraph:
-    """Load train features and H0 with the same local node-row ordering."""
-
-    seed_index = _seed_index(seed)
+    _seed_index(seed)
     output_dir = require_project_path(output_dir)
     connection = duckdb.connect()
     try:
@@ -87,14 +109,17 @@ def load_train_hypergraph(
     finally:
         connection.close()
     incidence = sparse.load_npz(output_dir / train_matrix_name(seed)).tocsr()
-    features = np.asarray(
-        np.load(output_dir / "X_base.npy", mmap_mode="r")[seed_index, node_ids]
-    )
+    features = NodeFeatureStore(
+        seed, output_dir, feature_set=feature_set
+    ).rows(node_ids)
     if incidence.shape[0] != node_ids.size or features.shape[0] != node_ids.size:
         raise RuntimeError("Train feature and incidence rows do not match node index")
     return TrainHypergraph(node_ids, features, incidence)
 
 
+# Mục đích: Ánh xạ tên experiment split sang artifact local membership.
+# Đầu vào: "validation" hoặc "test".
+# Đầu ra: Tên file Parquet tương ứng.
 def _membership_name(experiment_split: str) -> str:
     if experiment_split == "validation":
         return VALIDATION_MEMBERSHIPS_ARTIFACT
@@ -103,9 +128,11 @@ def _membership_name(experiment_split: str) -> str:
     raise ValueError("experiment_split must be validation or test")
 
 
+# Mục đích: Giữ kết nối và artifact lớn mở để load nhiều local graph hiệu quả.
+# Đầu vào: Seed, split, output directory và feature_set.
+# Đầu ra: Context-manager object có target_node_ids() và load_many().
+# Lưu ý: Phải close sau khi dùng; cú pháp with tự đóng connection.
 class LocalGraphStore:
-    """Reuse large Phase 5 artifacts while loading many independent targets."""
-
     columns = (
         "local_hyperedge_id",
         "family",
@@ -118,17 +145,24 @@ class LocalGraphStore:
         "weight",
     )
 
+    # Mục đích: Mở split membership, train H0, behavioral neighbors và features.
+    # Đầu vào: Seed, validation/test split, output_dir và feature_set.
+    # Đầu ra: Không trả riêng; lưu các reader/index vào object.
+    # Lưu ý: Train incidence được chuyển CSC để lấy node của một edge nhanh.
     def __init__(
         self,
         seed: int,
         experiment_split: str,
         output_dir: Path = PROCESSED_DATA_DIR,
+        *,
+        feature_set: str = DEFAULT_FEATURE_SET,
     ) -> None:
         self.seed = seed
         self.seed_index = _seed_index(seed)
         self.experiment_split = experiment_split
         self.membership_name = _membership_name(experiment_split)
         self.output_dir = require_project_path(output_dir)
+        self.feature_set = feature_set
         manifest = json.loads(
             (self.output_dir / GRAPH_MANIFEST_ARTIFACT).read_text(encoding="utf-8")
         )
@@ -142,17 +176,31 @@ class LocalGraphStore:
             self.output_dir / BEHAVIORAL_ARTIFACT, allow_pickle=False
         ) as archive:
             self.neighbors = archive["neighbors"][self.seed_index].copy()
-        self.features = np.load(self.output_dir / "X_base.npy", mmap_mode="r")
+        self.feature_store = NodeFeatureStore(
+            seed, self.output_dir, feature_set=feature_set
+        )
 
+    # Mục đích: Đóng DuckDB connection của store.
+    # Đầu vào: Không có.
+    # Đầu ra: Không có.
     def close(self) -> None:
         self.connection.close()
 
+    # Mục đích: Cho phép dùng LocalGraphStore trong câu lệnh with.
+    # Đầu vào: Object hiện tại.
+    # Đầu ra: Chính object LocalGraphStore.
     def __enter__(self) -> "LocalGraphStore":
         return self
 
+    # Mục đích: Tự đóng connection khi rời context manager.
+    # Đầu vào: Thông tin exception do Python truyền vào, nếu có.
+    # Đầu ra: Không có; exception không bị nuốt.
     def __exit__(self, *_: object) -> None:
         self.close()
 
+    # Mục đích: Liệt kê target node IDs có local membership trong split.
+    # Đầu vào: Không có ngoài seed/split của store.
+    # Đầu ra: Vector int64 target IDs đã sort.
     def target_node_ids(self) -> np.ndarray:
         rows = self.connection.execute(
             f"""SELECT DISTINCT target_node_id
@@ -162,6 +210,10 @@ class LocalGraphStore:
         ).fetchnumpy()
         return rows["target_node_id"].astype(np.int64, copy=False)
 
+    # Mục đích: Dựng nhiều local graph theo đúng thứ tự target được yêu cầu.
+    # Đầu vào: Vector target_node_ids duy nhất và không rỗng.
+    # Đầu ra: List LocalHypergraph cùng thứ tự với input.
+    # Lưu ý: Query metadata một lần rồi assemble từng target để giảm I/O.
     def load_many(self, target_node_ids: np.ndarray) -> list[LocalHypergraph]:
         targets = np.asarray(target_node_ids, dtype=np.int64).reshape(-1)
         if targets.size == 0 or np.unique(targets).size != targets.size:
@@ -187,6 +239,10 @@ class LocalGraphStore:
             )
         return [self._assemble(int(target), grouped[int(target)]) for target in targets]
 
+    # Mục đích: Chuyển các row compact membership thành một local sparse graph.
+    # Đầu vào: Một target node ID và metadata rows của target đó.
+    # Đầu ra: LocalHypergraph có target ở local row 0.
+    # Lưu ý: Mọi node còn lại phải là train references; target không được lặp lại.
     def _assemble(
         self, target_node_id: int, rows: list[tuple[Any, ...]]
     ) -> LocalHypergraph:
@@ -242,7 +298,7 @@ class LocalGraphStore:
         ).tocsr()
         target_mask = np.zeros(node_ids.size, dtype=bool)
         target_mask[0] = True
-        features = np.asarray(self.features[self.seed_index, node_ids])
+        features = self.feature_store.rows(node_ids)
         return LocalHypergraph(
             node_ids=node_ids,
             features=features,
@@ -252,11 +308,13 @@ class LocalGraphStore:
         )
 
 
+# Mục đích: Ghép local graphs thành block-diagonal incidence batch.
+# Đầu vào: List LocalHypergraph không rỗng.
+# Đầu ra: BatchedLocalHypergraph chứa target offsets và node/edge group IDs.
+# Lưu ý: Block diagonal bảo đảm các target không truyền message cho nhau.
 def batch_local_hypergraphs(
     graphs: list[LocalHypergraph],
 ) -> BatchedLocalHypergraph:
-    """Create a block-diagonal batch; graphs cannot exchange messages."""
-
     if not graphs:
         raise ValueError("At least one local graph is required")
     offsets = np.cumsum([0, *(graph.node_ids.size for graph in graphs[:-1])])
@@ -290,13 +348,18 @@ def batch_local_hypergraphs(
     )
 
 
+# Mục đích: API tiện lợi để dựng đúng một local graph rồi đóng store ngay.
+# Đầu vào: Seed, split, target ID, output directory và feature_set.
+# Đầu ra: Một LocalHypergraph.
 def load_local_hypergraph(
     seed: int,
     experiment_split: str,
     target_node_id: int,
     output_dir: Path = PROCESSED_DATA_DIR,
+    *,
+    feature_set: str = DEFAULT_FEATURE_SET,
 ) -> LocalHypergraph:
-    """Reconstruct one inductive graph containing one target and train references."""
-
-    with LocalGraphStore(seed, experiment_split, output_dir) as store:
+    with LocalGraphStore(
+        seed, experiment_split, output_dir, feature_set=feature_set
+    ) as store:
         return store.load_many(np.array([target_node_id], dtype=np.int64))[0]

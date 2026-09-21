@@ -1,8 +1,7 @@
-"""Deterministic user-disjoint train/validation/test split."""
+# Tạo train/validation/test split deterministic và không trùng user.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 import math
 from pathlib import Path
 import random
@@ -10,44 +9,64 @@ from typing import Any
 
 import duckdb
 
-from data.cache import (
-    copy_parquet_atomic,
-    source_signature,
-    sql_path,
-    utc_now,
-    write_json_atomic,
-)
-from data.preprocess import prepare_dataset
-from data.schema import (
+from config import (
     DATASET_CONTRACT,
     EXPERIMENT_SEEDS,
     EXPERIMENT_SPLITS,
-    SCHEMA_VERSION,
 )
 from paths import PROCESSED_DATA_DIR, require_project_path
 
 
 SPLIT_VERSION = "user-disjoint-v2"
 SPLIT_ARTIFACT = "splits.parquet"
-SPLIT_MANIFEST = "split_manifest.json"
 SPLIT_ALGORITHM = "stratified weighted round-robin group assignment"
 MAX_RELATIVE_DEVIATION = 0.005
 
 
+# Mục đích: Chuẩn hóa Path để nhúng vào câu SQL DuckDB.
+# Đầu vào: Đường dẫn file.
+# Đầu ra: Chuỗi đường dẫn tuyệt đối đã escape dấu nháy đơn.
+def _sql_path(path: Path) -> str:
+    return path.resolve().as_posix().replace("'", "''")
+
+
+# Mục đích: Ghi một query thành file Parquet hoàn chỉnh.
+# Đầu vào: Kết nối DuckDB, câu query và đường dẫn đích.
+# Đầu ra: Không trả dữ liệu; tạo hoặc thay thế file đích.
+# Lưu ý: Không dùng cache ở bước split để kết quả luôn được kiểm tra lại.
+def _write_parquet(
+    connection: duckdb.DuckDBPyConnection,
+    query: str,
+    destination: Path,
+) -> None:
+    temporary = destination.with_name(destination.name + ".part")
+    temporary.unlink(missing_ok=True)
+    connection.execute(
+        f"COPY ({query}) TO '{_sql_path(temporary)}' "
+        "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 1000000)"
+    )
+    temporary.replace(destination)
+
+
 @dataclass(frozen=True)
+# Mục đích: Lưu thống kê của một user để gán cả user vào đúng một split.
+# Đầu vào: user_id, tổng enrollment và tổng dropout của user.
+# Đầu ra: Object bất biến được dùng bởi thuật toán assign_user_groups().
 class UserGroup:
     user_id: int
     enrollments: int
     dropouts: int
 
 
+# Mục đích: Chuyển tỷ lệ thực thành số lượng nguyên mà vẫn giữ đúng tổng.
+# Đầu vào: Tổng số phần tử, tuple tỷ lệ và tên các nhóm đích.
+# Đầu ra: Dictionary số phần tử nguyên cho từng nhóm.
+# Lưu ý: Phần dư được cấp theo largest remainder với tie-break ổn định.
 def integer_targets(
     total: int,
     ratios: tuple[float, ...],
     names: tuple[str, ...] = EXPERIMENT_SPLITS,
 ) -> dict[str, int]:
-    """Allocate an integer total by largest remainder with stable tie-breaking."""
-
     if total < 0 or len(names) != len(ratios) or not names:
         raise ValueError("A non-negative total and matching non-empty ratios are required")
     if any(ratio < 0 for ratio in ratios) or not math.isclose(sum(ratios), 1.0):
@@ -65,6 +84,9 @@ def integer_targets(
     return dict(zip(names, targets, strict=True))
 
 
+# Mục đích: Tạo bộ đếm rỗng có cùng cấu trúc cho ba experiment split.
+# Đầu vào: Không có.
+# Đầu ra: Dictionary users/enrollments/dropouts đều bắt đầu từ 0.
 def _new_counts() -> dict[str, dict[str, int]]:
     return {
         split: {"users": 0, "enrollments": 0, "dropouts": 0}
@@ -72,6 +94,9 @@ def _new_counts() -> dict[str, dict[str, int]]:
     }
 
 
+# Mục đích: Tính mục tiêu users, enrollments và dropouts cho từng split.
+# Đầu vào: Danh sách UserGroup và ba tỷ lệ split.
+# Đầu ra: Dictionary số lượng mục tiêu theo split và metric.
 def _target_counts(
     groups: list[UserGroup], ratios: tuple[float, float, float]
 ) -> dict[str, dict[str, int]]:
@@ -88,14 +113,16 @@ def _target_counts(
     return targets
 
 
+# Mục đích: Gán nguyên user vào train/validation/test mà vẫn cân bằng nhãn.
+# Đầu vào: Danh sách UserGroup, tỷ lệ split và random seed.
+# Đầu ra: Mapping user-to-split, target counts và actual counts.
+# Lưu ý: Một user không bao giờ bị tách sang nhiều split; seed quyết định tie-break.
 def assign_user_groups(
     groups: list[UserGroup],
     *,
     ratios: tuple[float, float, float] = DATASET_CONTRACT.target_user_ratios,
     seed: int = EXPERIMENT_SEEDS[0],
 ) -> tuple[dict[int, str], dict[str, dict[str, int]], dict[str, dict[str, int]]]:
-    """Assign whole user groups while balancing users, enrollments and labels."""
-
     if not groups:
         raise ValueError("At least one user group is required")
     if len({group.user_id for group in groups}) != len(groups):
@@ -151,6 +178,9 @@ def assign_user_groups(
     return assignments, targets, actual
 
 
+# Mục đích: Tổng hợp bảng nodes thành một record thống kê cho mỗi user.
+# Đầu vào: Kết nối DuckDB và đường dẫn nodes.parquet.
+# Đầu ra: Danh sách UserGroup sắp theo user_id.
 def _load_user_groups(
     connection: duckdb.DuckDBPyConnection, nodes_path: Path
 ) -> list[UserGroup]:
@@ -158,46 +188,17 @@ def _load_user_groups(
         f"""
         SELECT user_id, count(*) AS enrollments,
                sum(CASE WHEN label=1 THEN 1 ELSE 0 END) AS dropouts
-        FROM read_parquet('{sql_path(nodes_path)}')
+        FROM read_parquet('{_sql_path(nodes_path)}')
         GROUP BY user_id ORDER BY user_id
         """
     ).fetchall()
     return [UserGroup(int(row[0]), int(row[1]), int(row[2])) for row in rows]
 
 
-def _split_cache_hit(
-    output_dir: Path,
-    nodes_signature: dict[str, Any],
-    ratios: tuple[float, float, float],
-    seeds: tuple[int, ...],
-) -> dict[str, Any] | None:
-    artifact_path = output_dir / SPLIT_ARTIFACT
-    manifest_path = output_dir / SPLIT_MANIFEST
-    if not artifact_path.is_file() or not manifest_path.is_file():
-        return None
-    try:
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if (
-        manifest.get("schema_version") != SCHEMA_VERSION
-        or manifest.get("split_version") != SPLIT_VERSION
-        or manifest.get("algorithm") != SPLIT_ALGORITHM
-        or manifest.get("seeds") != list(seeds)
-        or manifest.get("max_relative_deviation") != MAX_RELATIVE_DEVIATION
-        or manifest.get("target_ratios")
-        != dict(zip(EXPERIMENT_SPLITS, ratios, strict=True))
-        or manifest.get("input_nodes") != nodes_signature
-    ):
-        return None
-    artifact = manifest.get("artifact", {})
-    if artifact_path.stat().st_size != artifact.get("size_bytes"):
-        return None
-    if source_signature(artifact_path, include_hash=True) != artifact:
-        return None
-    return manifest
-
-
+# Mục đích: Kiểm tra split không overlap và tóm tắt cân bằng theo từng seed.
+# Đầu vào: Kết nối, node/split path, target counts và danh sách seed.
+# Đầu ra: Hai dictionary gồm summary và invariant cho từng seed.
+# Lưu ý: Sai lệch enrollment/dropout phải nhỏ hơn MAX_RELATIVE_DEVIATION.
 def _validate_and_summarize(
     connection: duckdb.DuckDBPyConnection,
     nodes_path: Path,
@@ -205,8 +206,8 @@ def _validate_and_summarize(
     targets: dict[str, dict[str, int]],
     seeds: tuple[int, ...],
 ) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, dict[str, int]]]:
-    split_source = f"read_parquet('{sql_path(split_path)}')"
-    nodes_source = f"read_parquet('{sql_path(nodes_path)}')"
+    split_source = f"read_parquet('{_sql_path(split_path)}')"
+    nodes_source = f"read_parquet('{_sql_path(nodes_path)}')"
     seed_values = ", ".join(str(seed) for seed in seeds)
     invariant_rows = connection.execute(
         f"""
@@ -333,24 +334,22 @@ def _validate_and_summarize(
     return summary_by_seed, invariants_by_seed
 
 
+# Mục đích: Tạo splits.parquet cho toàn bộ năm seed nghiên cứu.
+# Đầu vào: Thư mục processed đã có nodes.parquet.
+# Đầu ra: Report mô tả thuật toán, mục tiêu, invariant và thống kê từng seed.
+# Lưu ý: Hàm luôn rebuild và tuyệt đối không dùng label validation/test để train model.
 def build_splits(
     output_dir: Path = PROCESSED_DATA_DIR,
-    *,
-    force: bool = False,
 ) -> dict[str, Any]:
-    """Build and cache the locked user-disjoint experiment split."""
-
     output_dir = require_project_path(output_dir)
-    prepare_dataset(output_dir=output_dir)
     nodes_path = output_dir / "nodes.parquet"
+    if not nodes_path.is_file():
+        raise FileNotFoundError(
+            f"{nodes_path} does not exist. Run prepare-data before split-data."
+        )
     split_path = output_dir / SPLIT_ARTIFACT
     ratios = DATASET_CONTRACT.target_user_ratios
     seeds = EXPERIMENT_SEEDS
-    nodes_signature = source_signature(nodes_path, include_hash=True)
-    if not force and (
-        cached := _split_cache_hit(output_dir, nodes_signature, ratios, seeds)
-    ) is not None:
-        return {**cached, "cache_hit": True}
 
     connection = duckdb.connect()
     connection.execute("PRAGMA threads=8")
@@ -385,19 +384,17 @@ def build_splits(
         query = f"""
             SELECT s.seed, n.node_id, n.enroll_id, n.user_id, n.source_partition,
                    s.experiment_split
-            FROM read_parquet('{sql_path(nodes_path)}') n
+            FROM read_parquet('{_sql_path(nodes_path)}') n
             JOIN user_splits s USING(user_id)
             ORDER BY s.seed, n.node_id
         """
-        copy_parquet_atomic(connection, query, split_path)
+        _write_parquet(connection, query, split_path)
         summary_by_seed, invariants_by_seed = _validate_and_summarize(
             connection, nodes_path, split_path, targets, seeds
         )
     finally:
         connection.close()
 
-    if source_signature(nodes_path, include_hash=True) != nodes_signature:
-        raise RuntimeError("nodes.parquet changed while the split was being built")
     objective_by_seed = {
         str(seed): sum(
             (
@@ -410,22 +407,20 @@ def build_splits(
         )
         for seed in seeds
     }
-    manifest = {
-        "schema_version": SCHEMA_VERSION,
+    return {
         "split_version": SPLIT_VERSION,
         "dataset": DATASET_CONTRACT.dataset,
-        "generated_utc": utc_now(),
-        "cache_hit": False,
         "seeds": list(seeds),
         "algorithm": SPLIT_ALGORITHM,
         "balanced_metrics": ["users", "enrollments", "dropouts"],
         "max_relative_deviation": MAX_RELATIVE_DEVIATION,
         "target_ratios": dict(zip(EXPERIMENT_SPLITS, ratios, strict=True)),
         "objective_by_seed": objective_by_seed,
-        "input_nodes": nodes_signature,
-        "artifact": source_signature(split_path, include_hash=True),
+        "artifact": {
+            "path": SPLIT_ARTIFACT,
+            "rows": DATASET_CONTRACT.enrollments * len(seeds),
+            "size_bytes": split_path.stat().st_size,
+        },
         "invariants_by_seed": invariants_by_seed,
         "summary_by_seed": summary_by_seed,
     }
-    write_json_atomic(output_dir / SPLIT_MANIFEST, manifest)
-    return manifest

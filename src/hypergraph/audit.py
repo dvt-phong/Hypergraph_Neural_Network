@@ -1,4 +1,4 @@
-"""Audits for structural and behavioral hyperedge candidates."""
+# Tính thống kê kiểm tra cho structural và behavioral hyperedge candidates.
 from __future__ import annotations
 
 from typing import Any
@@ -6,13 +6,15 @@ from typing import Any
 import duckdb
 import numpy as np
 
-from data.cache import sql_path
+from artifacts import sql_path
 from hypergraph.behavioral import K_CANDIDATES
 
 
+# Mục đích: Tóm tắt phân bố cardinality của một tập hyperedge.
+# Đầu vào: Vector số node trong từng hyperedge.
+# Đầu ra: Dictionary count, median, P90/P95/P99, max và singleton.
+# Lưu ý: Tập rỗng trả toàn bộ thống kê bằng 0 thay vì lỗi.
 def size_statistics(sizes: np.ndarray) -> dict[str, int | float]:
-    """Summarize hyperedge cardinalities using deterministic percentiles."""
-
     sizes = np.asarray(sizes, dtype=np.int64)
     if sizes.size == 0:
         return {
@@ -35,6 +37,9 @@ def size_statistics(sizes: np.ndarray) -> dict[str, int | float]:
     }
 
 
+# Mục đích: Chạy query có cột size và chuyển kết quả thành NumPy int64.
+# Đầu vào: Kết nối DuckDB, câu SQL và parameter tùy chọn.
+# Đầu ra: Vector cardinality của các hyperedge được query.
 def _sizes(
     connection: duckdb.DuckDBPyConnection,
     query: str,
@@ -44,6 +49,10 @@ def _sizes(
     return rows["size"].astype(np.int64, copy=False)
 
 
+# Mục đích: Audit Course/Object hyperedge ở mức global và train từng seed.
+# Đầu vào: Kết nối, membership path, split path và tuple seed.
+# Đầu ra: Dictionary thống kê family, object type và singleton bị loại.
+# Lưu ý: Train audit chỉ giữ edge có cardinality >= 2.
 def audit_structural(
     connection: duckdb.DuckDBPyConnection,
     memberships_path,
@@ -120,6 +129,10 @@ def audit_structural(
     return {"global": global_audit, "train_by_seed": train_by_seed}
 
 
+# Mục đích: Audit số behavioral edge duy nhất ở từng giá trị k.
+# Đầu vào: Neighbor tensor và danh sách train node IDs theo seed.
+# Đầu ra: Dictionary thống kê edge/duplicate cho mỗi seed và k.
+# Lưu ý: Anchor được ghép với k neighbor rồi sort để phát hiện edge trùng.
 def audit_behavioral(
     neighbors: np.ndarray,
     train_ids_by_seed: list[np.ndarray],

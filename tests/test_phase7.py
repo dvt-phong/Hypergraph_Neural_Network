@@ -11,13 +11,18 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from losses.contrastive import contrastive_alignment_loss
-from losses.objective import classification_loss, hgsl_objective, train_pos_weight
-from models.hgnn import HypergraphOperator, sparse_values_mm
-from models.hyperedge_sampling import sample_balanced_hyperedges, sampled_strata_audit
-from models.incident_node_sampling import sample_incident_nodes
-from models.model import HGSLModel
-from models.refinement import RefinementConfig
+from hsl import (
+    HGSLModel,
+    RefinementConfig,
+    classification_loss,
+    contrastive_alignment_loss,
+    hgsl_objective,
+    sample_balanced_hyperedges,
+    sample_incident_nodes,
+    sampled_strata_audit,
+    train_pos_weight,
+)
+from model import HypergraphOperator, sparse_values_mm
 from paths import REPORTS_DIR
 
 
@@ -175,15 +180,19 @@ class PhaseSevenUnitTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    (REPORTS_DIR / "phase7_hgsl_seed_1.json").is_file(),
+    (REPORTS_DIR / "phase7_hgsl_full_seed_1.json").is_file(),
     "Phase 7 smoke report has not been generated",
 )
 class PhaseSevenIntegrationTests(unittest.TestCase):
     def test_real_hgsl_smoke_report(self):
         report = json.loads(
-            (REPORTS_DIR / "phase7_hgsl_seed_1.json").read_text(encoding="utf-8")
+            (REPORTS_DIR / "phase7_hgsl_full_seed_1.json").read_text(
+                encoding="utf-8"
+            )
         )
         self.assertEqual(report["phase"], 7)
+        self.assertEqual(report["config"]["feature_set"], "full")
+        self.assertEqual(report["feature_dim"], 96)
         self.assertTrue(report["gradient_finite"])
         self.assertGreater(report["gradient_norm"], 0)
         self.assertGreater(report["refinement"]["sampled_hyperedges"], 0)

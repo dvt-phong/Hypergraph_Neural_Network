@@ -1,7 +1,8 @@
 # Kế hoạch triển khai mô hình HGSL trên XuetangX
 
-> Trạng thái: Phase 0–8 đã hoàn thành. Phase tiếp theo là Phase 9 — chạy thí nghiệm,
-> đánh giá và ablation trên đủ năm seed.
+> Trạng thái: code và kiểm thử Phase 0–10 đã hoàn thành. Việc tiếp theo là chạy
+> thí nghiệm và ablation trên đủ năm seed bằng `run-experiments`; chưa coi các
+> smoke report là kết quả nghiên cứu.
 
 ## 1. Phạm vi đã chốt
 
@@ -21,52 +22,41 @@
 
 ```text
 src/
+  main.py
+  config.py
   paths.py
-  cli.py
+  artifacts.py
+  graph_data.py
+  model.py
+  hsl.py
+  train.py
+  metrics.py
   data/
     __init__.py
-    schema.py
-    audit.py
     preprocess.py
     split.py
-    cache.py
   features/
     __init__.py
+    context.py
     engineering.py
+    io.py
     transform.py
   hypergraph/
     __init__.py
     course.py
     object.py
     behavioral.py
-    user.py
     construction.py
     audit.py
-    io.py
-  models/
-    __init__.py
-    hgnn.py
-    hyperedge_sampling.py
-    incident_node_sampling.py
-    refinement.py
-    classifier.py
-    model.py
-  losses/
-    __init__.py
-    contrastive.py
-    objective.py
-  training/
-    __init__.py
-    trainer.py
-    evaluator.py
-    hgsl.py
-    hgsl_trainer.py
 ```
+
+Các package `models`, `losses` và `training` cũ đã được gom thành `model.py`,
+`hsl.py`, `train.py` và `metrics.py` để luồng mô hình có thể đọc liên tục. Ba
+package còn lại chỉ tách các bước SQL/data lớn, tránh tạo một file hơn 1.000 dòng.
 
 `run.py` là entry point duy nhất ở project root. Các lệnh dự kiến:
 
 ```text
-python run.py audit-data
 python run.py prepare-data
 python run.py split-data
 python run.py build-features
@@ -75,10 +65,12 @@ python run.py build-hypergraph
 python run.py train-baseline --seed 1 --epochs 1
 python run.py check-hgsl --seed 1
 python run.py train-hgsl --seed 1 --epochs 1
-python run.py evaluate
+python run.py evaluate --seed 1
+python run.py run-experiments
+python run.py run-pipeline --seed 1 --epochs 1
 ```
 
-## 3. Cách tổ chức artifact và cache
+## 3. Cách tổ chức artifact
 
 Không tạo nhiều tầng thư mục. Toàn bộ artifact của dataset 247 course đặt tại:
 
@@ -90,8 +82,11 @@ data/processed/xuetangx_247/
   courses.parquet
   splits.parquet
   features_raw.parquet
+  context_raw.parquet
   X_base.npy
+  X_context.npy
   feature_transform.joblib
+  context_transform.joblib
   structural_memberships.parquet
   behavioral_neighbors.npz
   hyperedge_audit.json
@@ -107,15 +102,12 @@ data/processed/xuetangx_247/
   hyperedges.parquet
   hypergraph_audit.json
   hypergraph_manifest.json
-  audit.json
-  manifest.json
 ```
 
-Nguyên tắc cache:
+Phase 1 không dùng cache hay manifest. `prepare-data` và `split-data` luôn tạo lại
+artifact của chính lệnh đó. Các phase sau hiện vẫn còn manifest riêng và sẽ được
+rà soát độc lập.
 
-- `manifest.json` lưu hash nguồn, schema version, feature version, experiment seed và
-  tham số tạo hypergraph.
-- Chỉ rebuild artifact chịu ảnh hưởng khi input hoặc tham số của nó thay đổi.
 - File tạm dùng hậu tố `.part`; chỉ đổi thành tên chính thức sau khi kiểm tra xong.
 - Không dùng pickle cho graph/data lớn. Feature dense dùng `.npy`, incidence sparse
   dùng `.npz`, bảng dùng Parquet; `joblib` chỉ lưu transformer nhỏ do project tự tạo.
@@ -135,10 +127,10 @@ Nguyên tắc cache:
 ### Điều kiện hoàn thành
 
 - Schema, action vocabulary và quy ước tên được khai báo một lần trong
-  `src/data/schema.py`.
+  `src/config.py`.
 - Không có module khác tự định nghĩa lại schema.
 
-## Phase 1 — Data audit và canonical events
+## Phase 1 — Preprocessing và canonical events
 
 ### Việc thực hiện
 
@@ -147,13 +139,13 @@ Nguyên tắc cache:
 - Join `course_info.start`, tính `course_day`, giữ ngày 0–34.
 - Giữ event thiếu object cho behavioral features; không tạo object incidence cho
   các event này.
-- Audit:
+- Kiểm tra trực tiếp trong `preprocess.py`:
   - `enroll_id` duy nhất và `(user_id, course_id)` ánh xạ một-một trong dữ liệu hiện tại;
   - label chỉ thuộc `{0,1}`;
   - unknown action bằng 0;
-  - timestamp lỗi, event trước course start, sau course end;
+  - timestamp lỗi và event ngoài observation window;
   - course duration dưới 35 ngày;
-  - exact duplicate và missing theo field.
+  - missing ở các field bắt buộc.
 
 ### Artifact
 
@@ -163,14 +155,13 @@ data/processed/xuetangx_247/
   events_35d.parquet
   users.parquet
   courses.parquet
-  audit.json
 ```
 
 ### Điều kiện hoàn thành
 
 - Có đúng 225.642 node và 247 course.
 - Mỗi node có đúng một label.
-- Audit lỗi nghiêm trọng phải làm pipeline dừng, không chỉ ghi warning.
+- Vi phạm invariant phải làm pipeline dừng, không chỉ ghi warning.
 
 ## Phase 2 — User-disjoint split
 
@@ -189,7 +180,6 @@ data/processed/xuetangx_247/
 
 ```text
 splits.parquet
-split_manifest.json
 ```
 
 `splits.parquet` gồm:
@@ -217,7 +207,7 @@ Các seed có cùng số lượng và tỷ lệ nhãn nhưng khác thành viên 
 
 ## Phase 3 — Feature engineering
 
-### 3.1 Feature chính `X_base`
+### 3.1 Behavioral feature `X_base`
 
 | Khối | Số chiều | Cách tạo |
 |---|---:|---|
@@ -227,17 +217,33 @@ Các seed có cùng số lượng và tỷ lệ nhãn nhưng khác thành viên 
 | `distinct_observed_objects` | 1 | Số `object_key` quan sát được |
 | Tổng | 60 | |
 
-### 3.2 Feature ablation
+### 3.2 Context node features
+
+User demographic được join vào enrollment qua `user_id`; course context được join
+qua `course_id`. Không encode các ID. Các cấu hình được hỗ trợ:
+
+| Feature set | Khối | Số chiều |
+|---|---|---:|
+| `behavior` | Behavioral | 60 |
+| `behavior_user` | Behavioral + user | 75 |
+| `behavior_course` | Behavioral + course | 81 |
+| `full` | Behavioral + user + course | 96 |
+
+Khối user gồm gender, education và age tại thời điểm course bắt đầu. Khối course gồm
+category và duration. Numeric dùng train-median imputation, missing indicator và
+train-only standardization; categorical dùng one-hot với `missing`/`other`.
+
+### 3.3 Feature ablation
 
 ```text
 event_count, active_days, active_span_days, first_active_day,
 last_active_day, days_since_last_activity, active_day_ratio, has_activity
 ```
 
-Metadata user/course chỉ dùng trong context/fairness ablation, không đưa vào main
-`X_base`.
+Các cấu hình `behavior_user`, `behavior_course` và `full` được dùng để tách đóng góp
+của demographic và course context. `X_base` vẫn là đối chứng behavioral-only.
 
-### 3.3 Transform
+### 3.4 Transform
 
 - Count dùng `log1p` rồi standardize.
 - Median, scaler và categorical vocabulary chỉ fit trên train.
@@ -255,13 +261,16 @@ unknown_action_count = 0
 
 ```text
 features_raw.parquet
+context_raw.parquet
 X_base.npy
+X_context.npy
 feature_transform.joblib
+context_transform.joblib
 feature_manifest.json
 ```
 
-`X_base.npy` có layout `[seed_index, node_id, feature_index]`. Không lưu thêm ba
-bản sao train/validation/test; dùng `splits.parquet` để lấy node index tương ứng.
+Hai array có layout `[seed_index, node_id, feature_index]`. Không lưu `X_full.npy`
+hoặc ba bản sao train/validation/test; loader chỉ lấy node cần thiết rồi ghép block.
 
 Canonical event 35 ngày được dùng lại để tạo `X^(7)`, `X^(14)`, `X^(21)` và
 `X^(28)`; không đọc lại raw CSV.
@@ -301,7 +310,8 @@ e_object(o) = {node i | i tương tác với object_key o}
 
 ### 4.3 Behavioral hyperedge
 
-- Dùng cosine similarity trên `X_base` đã transform.
+- Dùng cosine similarity trên `X_base` 60 chiều đã transform. Không dùng context
+  để tránh thay đổi đồng thời node attributes và cấu trúc graph.
 - Với mỗi anchor node, tạo:
 
 ```text
@@ -355,7 +365,7 @@ Audit global dùng mô tả dataset; mọi threshold và quyết định model c
 ### Node features
 
 ```text
-X ∈ R^(N×60)
+X ∈ R^(N×D), D ∈ {60, 75, 81, 96}
 ```
 
 Thứ tự hàng của `X` phải trùng tuyệt đối với `node_id` trong node index.
@@ -404,7 +414,7 @@ Không sử dụng validation/test label khi xây graph.
 
 - Số hàng của train `H0` khớp train node index.
 - Mỗi local evaluation graph có đúng một target mask; thứ tự feature lấy từ
-  `X_base.npy` theo `seed_index` và global `node_id`.
+  `X_base.npy`/`X_context.npy` theo `seed_index` và global `node_id`.
 - Không có hyperedge rỗng hoặc singleton trong main `H0`.
 - Mọi incidence và feature đều có manifest/hash để cache có thể tái sử dụng.
 
@@ -415,11 +425,11 @@ Không sử dụng validation/test label khi xây graph.
 - `behavioral_k=10` là candidate mặc định để materialize, chưa phải kết quả tuning.
   CLI cho phép dựng lại với `k=5` hoặc `k=20`; quyết định cuối dựa trên validation.
 - `hyperedges.parquet` lưu metadata và weight `1.0`; `train_node_index.parquet`
-  ánh xạ chính xác hàng local của `H0` về global `node_id` trong `X_base`.
+  ánh xạ chính xác hàng local của `H0` về global `node_id` trong feature store.
 - Local membership không nhân bản toàn bộ train incidence. Course/Object trỏ tới
   train hyperedge; object chỉ có một train reference lưu trực tiếp node đó;
   Behavioral trỏ tới anchor trong `behavioral_neighbors.npz`.
-- `src/hypergraph/io.py` đọc trực tiếp `(X_train, H0_train)` và dựng local graph
+- `src/graph_data.py` đọc trực tiếp `(X_train, H0_train)` và dựng local graph
   có đúng một target mask. Mọi reference trong local graph đều thuộc train.
 
 ## Phase 6 — Baseline HGNN trên `H0`
@@ -517,8 +527,9 @@ L_total = L_BCE + λ L_CL
   checkpoint chứa cấu hình, optimizer state cùng hash graph manifest.
 - Seed điều khiển split, khởi tạo mô hình, dropout, hyperedge/node sampling và validation
   subset. Năm seed khóa là `1, 11, 111, 1111, 11111`.
-- Smoke run seed 1 trên full train graph đã hoàn tất một epoch và tạo checkpoint. Validation
-  32 target chỉ là kiểm tra kỹ thuật, không phải kết quả nghiên cứu.
+- Smoke run seed 1 trên full train graph đã hoàn tất một epoch và tạo checkpoint.
+  Smoke run có thể đặt `validation_limit` nhỏ; cấu hình thí nghiệm mặc định dùng
+  toàn bộ validation split.
 
 ## Phase 9 — Thí nghiệm, evaluation và ablation
 
@@ -527,6 +538,33 @@ L_total = L_BCE + λ L_CL
 - Chạy full validation, early stopping và đánh giá test đúng một lần từ checkpoint tốt nhất.
 - Tune `λ`, learning rate, dropout, `top_r`/threshold và sampling budget chỉ trên validation.
 - Chạy đúng năm seed `{1, 11, 111, 1111, 11111}` và báo cáo mean ± std.
+
+Phần thực thi hiện nằm trong `src/train.py` và `src/main.py`:
+
+```powershell
+python run.py train-hgsl --seed 1 --feature-set full --epochs 50
+python run.py evaluate --seed 1 --feature-set full
+python run.py run-experiments --feature-sets behavior full --epochs 50
+```
+
+`evaluate` chỉ đọc test sau khi checkpoint đã được chọn bằng validation.
+`run-experiments` ghi từng run và mean/std vào
+`outputs/reports/experiment_summary.json`.
+
+### Kết quả triển khai protocol Phase 9
+
+- Full validation (`validation_limit=0`) là mặc định của HGNN và HGSL training.
+- HGSL validation/test refine toàn bộ hyperedge trong từng local graph và chọn
+  candidate deterministic; prediction không đổi khi thay `batch_size`.
+- Evaluator kiểm tra SHA-256 của graph manifest và feature manifest trước khi load
+  model. Checkpoint không còn khớp artifact hiện tại sẽ bị từ chối.
+- Checkpoint và report chi tiết có `experiment_id` ghép từ training config,
+  graph hash và feature hash, nên tuning hoặc đổi `behavioral_k` không ghi đè
+  file model của nhau.
+- Có lệnh `evaluate-baseline` để đánh giá HGNN không HSL trên cùng test protocol.
+- Đã kiểm tra trên checkpoint smoke mới: 8 test target cho cùng metric ở batch 1
+  và batch 8 (`AUC=0.8`, `AUPRC=0.925`, `F1=0.75`). Đây chỉ là kiểm tra protocol,
+  không phải kết quả nghiên cứu.
 
 ### Metric
 
@@ -583,7 +621,7 @@ XuetangX 1.213 course.
 ```text
 Phase 0–1: schema + audit + canonical events
 → Phase 2: khóa split
-→ Phase 3: tạo X_base
+→ Phase 3: tạo X_base + X_context
 → Phase 4–5: tạo từng family và H0
 → Phase 6: HGNN baseline
 → Phase 7–8: HSL + loss
@@ -600,18 +638,18 @@ hoàn thành của phase trước chưa đạt.
 | ID | File chính | Công việc | Đầu ra/kiểm tra |
 |---|---|---|---|
 | A01 | `src/paths.py` | Khai báo đường dẫn raw, processed, output; không hard-code ở module khác | Test mọi path nằm trong project root |
-| A02 | `src/data/schema.py` | Khai báo raw columns, 23 actions, observation days và schema version | Action không trùng; đủ 23 action |
-| A03 | `src/data/audit.py` | Kiểm tra file, hash, row count, schema, missing, duplicate và timestamp | `audit.json`; lỗi nghiêm trọng trả exit code khác 0 |
-| A04 | `src/data/preprocess.py` | Tạo node index, join truth/user/course, tạo canonical event ngày 0–34 | 225.642 node, 247 course, 40.558.640 event |
+| A02 | `src/config.py` | Khai báo raw columns, 23 actions, observation days và schema version | Action không trùng; đủ 23 action |
+| A03–A04 | `src/data/preprocess.py` | Kiểm tra input/invariant, tạo node index, join truth/user/course và canonical event ngày 0–34 | 225.642 node, 247 course, 40.558.640 event |
 | A05 | `src/data/split.py` | Tạo user summary và chia group 64/16/20 cho năm seed đã khóa | User overlap bằng 0 trong từng seed |
-| A06 | `src/data/split.py` | Ghi riêng `seed`, `source_partition` và `experiment_split` | Mỗi seed đủ node; split manifest cố định |
+| A06 | `src/data/split.py` | Ghi riêng `seed`, `source_partition` và `experiment_split` | Mỗi seed đủ node; user overlap bằng 0 |
 | A07 | `src/features/engineering.py` | Aggregate 35 daily count, 23 action count, session và observed object | `features_raw.parquet`; invariant đúng |
 | A08 | `src/features/transform.py` | Fit `log1p`/standardization trên train; transform các split còn lại | Transformer không đọc val/test khi fit |
 | A09 | `src/features/engineering.py` | Hỗ trợ cắt cửa sổ 7/14/21/28/35 từ canonical event | Không đọc lại raw CSV |
-| A10 | `src/data/cache.py` | Ghi manifest, hash và kiểm tra khả năng reuse | Chạy lại không đổi input phải cache hit |
+| A11 | `src/features/context.py` | Join demographic/course metadata xuống enrollment node | `context_raw.parquet`; không nhân bản node |
+| A12 | `src/features/io.py` | Ghép bốn feature set 60/75/81/96 chiều khi load | Train/local graph cùng schema và node order |
 
 Milestone A hoàn thành khi `python run.py build-features` tạo được `X_base.npy`,
-split cố định và báo cáo audit mà không cần code mô hình.
+`X_context.npy` từ năm split user-disjoint đã được kiểm tra mà không cần code mô hình.
 
 ### Milestone B — Initial hypergraph `H0`
 
@@ -626,7 +664,7 @@ split cố định và báo cáo audit mà không cần code mô hình.
 | B07 | `src/hypergraph/audit.py` | Thống kê số edge, size, P90/P95/P99/max/singleton theo family | Có bảng global và train riêng |
 | B08 | `src/hypergraph/construction.py` | Ghép `H_course`, `H_object`, `H_behavior` thành sparse `H0_train` | Không tạo dense matrix |
 | B09 | `src/hypergraph/construction.py` | Tạo local memberships cho từng val/test target với train reference | Mỗi local graph đúng một target; không target-target edge |
-| B10 | `src/data/cache.py` | Ghi `.npz`, membership table và hyperedge metadata | Shape/hash khớp node index |
+| B10 | `src/artifacts.py` | Ghi `.npz`, membership table và hyperedge metadata | Shape/hash khớp node index |
 
 Milestone B hoàn thành khi `python run.py build-hypergraph` tạo được `H0_train.npz`
 và local memberships, đồng thời toàn bộ audit hyperedge đạt invariant.
@@ -635,12 +673,12 @@ và local memberships, đồng thời toàn bộ audit hyperedge đạt invarian
 
 | ID | File chính | Công việc | Đầu ra/kiểm tra |
 |---|---|---|---|
-| C01 | `src/models/hgnn.py` | Cài sparse hypergraph convolution và degree normalization | So khớp phép tính trên graph đồ chơi |
-| C02 | `src/models/classifier.py` | Linear head tạo dropout logit | Output shape `[batch]` |
-| C03 | `src/models/model.py` | Ghép `X`, `H0`, HGNN và classifier | Forward không dùng label |
-| C04 | `src/losses/objective.py` | BCEWithLogitsLoss; `pos_weight` chỉ tính từ train | Loss hữu hạn và có gradient |
-| C05 | `src/training/trainer.py` | Train/validation loop, early stopping và checkpoint | Chạy được một epoch CPU/GPU |
-| C06 | `src/training/evaluator.py` | AUC, AUPRC, F1, precision, recall | So khớp sklearn trên dữ liệu nhỏ |
+| C01 | `src/model.py` | Cài sparse hypergraph convolution và degree normalization | So khớp phép tính trên graph đồ chơi |
+| C02 | `src/model.py` | Linear head tạo dropout logit | Output shape `[batch]` |
+| C03 | `src/model.py` | Ghép `X`, `H0`, HGNN và classifier | Forward không dùng label |
+| C04 | `src/hsl.py` | BCEWithLogitsLoss; `pos_weight` chỉ tính từ train | Loss hữu hạn và có gradient |
+| C05 | `src/train.py` | Train/validation loop, early stopping và checkpoint | Chạy được một epoch CPU/GPU |
+| C06 | `src/metrics.py` | AUC, AUPRC, F1, precision, recall | So khớp dữ liệu nhỏ |
 
 Milestone C hoàn thành khi HGNN không HSL train ổn định và tạo được kết quả baseline.
 Nếu baseline này chưa chạy đúng thì chưa triển khai structure learning.
@@ -649,13 +687,13 @@ Nếu baseline này chưa chạy đúng thì chưa triển khai structure learni
 
 | ID | File chính | Công việc | Đầu ra/kiểm tra |
 |---|---|---|---|
-| D01 | `src/models/hyperedge_sampling.py` | Sample cân bằng theo family và bucket kích thước | Edge lớn không chiếm toàn bộ batch |
-| D02 | `src/models/incident_node_sampling.py` | Sample positive incident nodes và negative nodes | Không lẫn positive vào negative |
-| D03 | `src/models/refinement.py` | Tạo edge embedding và tính node-edge membership score | Score đúng shape, không dense toàn graph |
-| D04 | `src/models/refinement.py` | Refine incidence bằng top-r/threshold chọn trên validation | `H*` sparse; không edge rỗng |
-| D05 | `src/models/model.py` | Chạy HGNN lần hai trên `H*` để tạo `Z*` | Forward trả `Z0`, `Z*`, logits và audit stats |
-| D06 | `src/losses/contrastive.py` | Contrastive loss giữa hai view của cùng node | Positive/negative mask đúng |
-| D07 | `src/losses/objective.py` | Tính `L_total=L_BCE+λL_CL` | `λ=0` khớp HGNN baseline |
+| D01 | `src/hsl.py` | Sample cân bằng theo family và bucket kích thước | Edge lớn không chiếm toàn bộ batch |
+| D02 | `src/hsl.py` | Sample positive incident nodes và negative nodes | Không lẫn positive vào negative |
+| D03 | `src/hsl.py` | Tạo edge embedding và tính node-edge membership score | Score đúng shape, không dense toàn graph |
+| D04 | `src/hsl.py` | Refine incidence bằng top-r/threshold chọn trên validation | `H*` sparse; không edge rỗng |
+| D05 | `src/hsl.py` | Chạy HGNN lần hai trên `H*` để tạo `Z*` | Forward trả `Z0`, `Z*`, logits và audit stats |
+| D06 | `src/hsl.py` | Contrastive loss giữa hai view của cùng node | Positive/negative mask đúng |
+| D07 | `src/hsl.py` | Tính `L_total=L_BCE+λL_CL` | `λ=0` khớp HGNN baseline |
 
 Milestone D hoàn thành khi HGSL chạy end-to-end trên sample nhỏ, gradient đi qua
 refinement và không materialize ma trận node-hyperedge dense.
@@ -664,7 +702,7 @@ refinement và không materialize ma trận node-hyperedge dense.
 
 | ID | File/đầu ra | Công việc | Điều kiện hoàn thành |
 |---|---|---|---|
-| E01 | `src/cli.py`, `run.py` | Hoàn thiện sáu lệnh CLI; validate tham số và log rõ cache hit/miss | Mỗi phase chạy độc lập được |
+| E01 | `src/main.py`, `run.py` | Hoàn thiện CLI; validate tham số và log rõ cache hit/miss | Mỗi phase chạy độc lập được |
 | E02 | `outputs/runs/` | Lưu checkpoint, seed, metric, hash data/graph và tham số | Có thể truy lại đúng input của mỗi run |
 | E03 | Main experiment | Chạy HGSL với cấu hình được chọn trên validation | Test chỉ đánh giá một lần sau khi khóa cấu hình |
 | E04 | Ablation | Chạy feature, hyperedge, HSL và observation-window ablation | Cùng split, metric và seed |

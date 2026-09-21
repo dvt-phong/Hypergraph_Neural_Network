@@ -1,13 +1,5 @@
-r"""Stream XuetangX full-log JSON files into gzip-compressed CSV files.
-
-Usage:
-    .\.venv\Scripts\python.exe scripts\convert_xuetangx_full.py
-
-Input JSON structure:
-    [course_id, {user_id: {session_id: [[action, time], ...]}}]
-
-The converter never loads a complete JSON file, course, or user into memory.
-"""
+# Chuyển streaming full-log JSON thành CSV.GZ mà không load toàn bộ file vào RAM.
+# Input có cấu trúc [course_id, {user_id: {session_id: [[action, time], ...]}}].
 from __future__ import annotations
 
 import argparse
@@ -31,6 +23,9 @@ BUFFER_SIZE = 8 * 1024 * 1024
 COLUMNS = ("course_id", "user_id", "session_id", "action", "time")
 
 
+# Mục đích: Mô tả một JSON nguồn và số event kỳ vọng.
+# Đầu vào: Tên input/output và expected_rows.
+# Đầu ra: Object bất biến dùng trong SOURCES.
 @dataclass(frozen=True)
 class SourceFile:
     input_name: str
@@ -38,6 +33,9 @@ class SourceFile:
     expected_rows: int
 
 
+# Mục đích: Lưu kết quả xác minh của một file CSV.GZ đã convert.
+# Đầu vào: Tên/kích thước file, row count và SHA-256.
+# Đầu ra: Record ghi vào manifest.
 @dataclass(frozen=True)
 class ConversionRecord:
     source_file: str
@@ -82,6 +80,9 @@ SOURCES = (
 )
 
 
+# Mục đích: Tính SHA-256 của file output lớn theo từng chunk.
+# Đầu vào: File path.
+# Đầu ra: Chuỗi SHA-256 hexadecimal.
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -90,9 +91,11 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+# Mục đích: Stream nested JSON và flatten từng event thành một CSV row.
+# Đầu vào: Đường dẫn một full-activity JSON file.
+# Đầu ra: Iterator tuple course/user/session/action/time.
+# Lưu ý: Validate cấu trúc trong lúc đọc và không giữ trọn file trong RAM.
 def rows_from_json(path: Path) -> Iterator[tuple[str, str, str, str, str]]:
-    """Yield flat event rows while validating the published nested schema."""
-
     stack: list[str] = []
     course_id: str | None = None
     user_id: str | None = None
@@ -155,6 +158,10 @@ def rows_from_json(path: Path) -> Iterator[tuple[str, str, str, str, str]]:
         raise ValueError(f"Incomplete JSON structure in {path.name}")
 
 
+# Mục đích: Convert một JSON nguồn thành deterministic gzip CSV.
+# Đầu vào: SourceFile specification, raw directory và output directory.
+# Đầu ra: ConversionRecord của file đã tạo.
+# Lưu ý: Xóa file tạm nếu row count không khớp công bố.
 def convert(source: SourceFile, raw_dir: Path, output_dir: Path) -> ConversionRecord:
     input_path = raw_dir / source.input_name
     output_path = output_dir / source.output_name
@@ -193,6 +200,9 @@ def convert(source: SourceFile, raw_dir: Path, output_dir: Path) -> ConversionRe
     )
 
 
+# Mục đích: Đọc manifest conversion cũ để quyết định tái sử dụng output.
+# Đầu vào: Output directory.
+# Đầu ra: Manifest dictionary hoặc dictionary rỗng nếu file lỗi/không có.
 def load_previous_manifest(output_dir: Path) -> dict:
     path = output_dir / "manifest.json"
     if not path.exists():
@@ -203,6 +213,9 @@ def load_previous_manifest(output_dir: Path) -> dict:
         return {}
 
 
+# Mục đích: Kiểm tra một converted file có thể dùng lại mà không chạy lại JSON.
+# Đầu vào: Source spec, raw/output dirs và manifest cũ.
+# Đầu ra: ConversionRecord nếu metadata khớp; ngược lại None.
 def reusable_record(
     source: SourceFile,
     raw_dir: Path,
@@ -229,6 +242,9 @@ def reusable_record(
     return ConversionRecord(**item)
 
 
+# Mục đích: Ghi conversion manifest tổng hợp cho sáu file.
+# Đầu vào: Output directory và conversion records.
+# Đầu ra: Path tới manifest.json vừa ghi.
 def write_manifest(output_dir: Path, records: list[ConversionRecord]) -> Path:
     manifest = {
         "dataset": "XuetangX full user activity",
@@ -245,6 +261,9 @@ def write_manifest(output_dir: Path, records: list[ConversionRecord]) -> Path:
     return path
 
 
+# Mục đích: Khai báo và parse CLI arguments cho converter.
+# Đầu vào: sys.argv.
+# Đầu ra: argparse.Namespace gồm raw-dir, output-dir và force.
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Convert six XuetangX full-log JSON files to streaming CSV.GZ."
@@ -255,6 +274,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# Mục đích: Điều phối reuse/convert từng source rồi ghi manifest.
+# Đầu vào: CLI arguments từ parse_args().
+# Đầu ra: Không trả dữ liệu; in đường dẫn output/manifest.
 def main() -> None:
     args = parse_args()
     raw_dir = args.raw_dir.resolve()

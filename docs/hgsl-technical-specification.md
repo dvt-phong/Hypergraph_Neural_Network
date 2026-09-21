@@ -10,7 +10,7 @@
 
 ```text
 XuetangX-247
-→ tạo node enrollment và X ∈ R^(N×60)
+→ tạo node enrollment và X ∈ R^(N×D), D ∈ {60, 75, 81, 96}
 → tạo Course/Object/Behavioral hyperedge
 → sparse initial incidence H0
 → HGNN(H0, X) sinh Z0
@@ -28,14 +28,14 @@ Nhãn được khóa là `truth=1: dropout`, `truth=0: non-dropout`.
 | Khối trong hình | Đặc tả đang triển khai | Trạng thái |
 |---|---|---|
 | Dataset XUETANGX | Một dataset XuetangX-247 có nhãn: 225.642 enrollment, 77.083 user, 247 course | Khớp |
-| Features Engineering | 60 feature: 35 daily count + 23 action count + session count + distinct object count | Khớp |
+| Features Engineering | 60 behavioral + 15 user demographic + 21 course context; cấu hình đầy đủ 96 chiều | Khớp |
 | Nodes | Một node là một enrollment; khóa nội bộ `node_id`, khóa nguồn `enroll_id` | Khớp |
 | Course hyperedge | Nối các train enrollment cùng `course_id`; loại edge có dưới 2 node | Khớp |
 | Object hyperedge | Nối theo khóa `(course_id, object_id)` cho video, assignment, forum; loại edge dưới 2 node | Khớp |
 | Behavioral hyperedge | Anchor + k train-neighbor gần nhất theo cosine trên `X`; hiện `k=10` | Khớp, k chưa tune |
 | User hyperedge | Không được tạo và không nằm trong `H0` | **Không khớp hình** |
 | Initial hypergraph `H0` | Sparse binary CSR, kích thước `N×E`, edge weight ban đầu bằng 1 | Khớp |
-| Node features `X` | `float32`, 60 chiều, `log1p` rồi standardize theo train của từng seed | Khớp |
+| Node features `X` | Chọn `behavior`/`behavior_user`/`behavior_course`/`full`; tương ứng 60/75/81/96 chiều | Khớp |
 | HGNN → `Z0` | HGNN 2 lớp, hidden 64, ReLU và dropout 0,5 | Khớp |
 | Hyperedge Sampling | Round-robin theo `(family, size bucket)`; bucket `≤10`, `11–100`, `>100` | Khớp |
 | Incident Node Sampling | Mỗi sampled edge lấy tối đa 16 positive và 16 non-incident negative | Khớp |
@@ -69,7 +69,7 @@ Split được thực hiện theo **user-disjoint**, mục tiêu 64/16/20. Mỗi
 144.543 train node, 36.028 validation node và 45.071 test node; không có user xuất
 hiện ở hai split.
 
-### 3.2 `X_base`
+### 3.2 Behavioral features `X_base`
 
 ```text
 35 day counts
@@ -86,6 +86,42 @@ hiện ở hai split.
   train/validation/test của cùng seed.
 - `X_base.npy` có layout `[seed_index, global_node_id, feature_index]` và shape
   `[5, 225642, 60]`.
+
+### 3.3 User demographic và course context
+
+Node dự đoán vẫn là enrollment. Metadata được gắn xuống từng node bằng:
+
+```text
+nodes.user_id   → users.(gender, education, birth_year)
+nodes.course_id → courses.(category, course_start, course_end)
+```
+
+Khối user có 15 chiều: gender one-hot 4 chiều; education one-hot 9 chiều;
+`age_at_course_start` và `age_missing`. Khối course có 21 chiều: category one-hot
+19 chiều; `course_duration_days` và `course_duration_missing`. `course_type` bị loại
+vì cả 247 course đều bằng 0.
+
+```text
+age_at_course_start = year(course_start) - birth_year
+course_duration_days = date(course_end) - date(course_start)
+```
+
+Age ngoài `[10,100]` và duration âm được chuyển thành missing. Numeric context dùng
+train-median imputation rồi standardize chỉ theo train của từng seed. Categorical
+dùng vocabulary cố định, có cột `missing` và `other`, không standardize.
+
+`X_context.npy` có layout `[seed_index, global_node_id, context_feature_index]` và
+shape `[5, 225642, 36]`. `X_full` không được lưu trùng trên đĩa mà được ghép khi load:
+
+| `feature_set` | Thành phần | Số chiều |
+|---|---|---:|
+| `behavior` | `X_base` | 60 |
+| `behavior_user` | `X_base + X_user` | 75 |
+| `behavior_course` | `X_base + X_course` | 81 |
+| `full` | `X_base + X_user + X_course` | 96 |
+
+CLI giữ mặc định `behavior` để tái lập kết quả cũ; thí nghiệm dùng context phải ghi
+rõ `--feature-set full` hoặc cấu hình ablation tương ứng.
 
 ## 4. Initial hypergraph `H0`
 
@@ -106,8 +142,9 @@ Quy tắc tạo edge:
 1. Course edge chứa toàn bộ train enrollment của cùng course.
 2. Object edge dùng composite key `(course_id, object_id)`, không dùng `object_id`
    riêng vì ID có thể chỉ duy nhất trong phạm vi course.
-3. Behavioral edge của train gồm anchor và `k=10` train neighbor; cosine search dùng
-   normalized `X` và FAISS HNSW. Edge trùng nhau được gộp.
+3. Behavioral edge của train gồm anchor và `k=10` train neighbor; cosine search luôn
+   dùng normalized `X_base` 60 chiều và FAISS HNSW. Context chỉ thay đổi HGNN node
+   input, không làm thay đổi cấu trúc graph. Edge trùng nhau được gộp.
 4. `H0` chỉ chứa edge có ít nhất hai node và mọi incidence ban đầu bằng 1.
 
 Validation/test dùng **local inductive graph** cho từng target:
@@ -233,7 +270,8 @@ phải được chọn bằng validation ở Phase 9.
 
 Train chạy full-batch trên train graph. Validation chạy từng local graph và có thể ghép
 block-diagonal để tiết kiệm thời gian. Test không được dùng trong training, tuning hay
-chọn checkpoint; Phase 9 phải load checkpoint tốt nhất rồi đánh giá test đúng một lần.
+chọn checkpoint; `evaluate_hgsl_checkpoint()` load checkpoint tốt nhất rồi mới
+đánh giá test.
 
 Smoke run Phase 8 chỉ chạy seed 1, một epoch và 32 validation target. Các metric của
 smoke run chỉ chứng minh pipeline hoạt động, **không phải kết quả nghiên cứu**.
@@ -266,15 +304,14 @@ smoke run chỉ chứng minh pipeline hoạt động, **không phải kết qu�
 
 | Nội dung | File |
 |---|---|
-| Dataset contract và feature schema | `src/data/schema.py` |
+| Dataset contract và feature schema | `src/config.py` |
 | User-disjoint split | `src/data/split.py` |
 | Feature engineering/transform | `src/features/engineering.py`, `src/features/transform.py` |
 | Course/Object/Behavioral construction | `src/hypergraph/` |
-| `H0` và local graph | `src/hypergraph/construction.py`, `src/hypergraph/io.py` |
-| Sparse HGNN | `src/models/hgnn.py` |
-| Sampling và refinement | `src/models/hyperedge_sampling.py`, `incident_node_sampling.py`, `refinement.py` |
-| End-to-end model | `src/models/model.py` |
-| BCE + InfoNCE | `src/losses/objective.py`, `src/losses/contrastive.py` |
-| Training protocol | `src/training/hgsl_trainer.py` |
+| `H0` và local graph | `src/hypergraph/construction.py`, `src/graph_data.py` |
+| Sparse HGNN | `src/model.py` |
+| Sampling và refinement | `src/hsl.py` |
+| End-to-end model | `src/model.py`, `src/hsl.py` |
+| BCE + InfoNCE | `src/hsl.py` |
+| Training protocol | `src/train.py` |
 | Phase 8 tests | `tests/test_phase8.py` |
-

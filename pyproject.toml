@@ -18,12 +18,12 @@ dependencies = [
 ]
 
 [project.scripts]
-xuetangx-hgsl = "cli:main"
+xuetangx-hgsl = "main:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-py-modules = ["cli", "paths"]
+py-modules = ["main", "config", "paths", "artifacts", "graph_data", "model", "hsl", "train", "metrics"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["data*", "features*", "hypergraph*", "models*", "losses*", "training*"]
+include = ["data*", "features*", "hypergraph*"]

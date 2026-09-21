@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 import sys
 import unittest
@@ -9,9 +8,8 @@ import duckdb
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from data.audit import SOURCE_SCHEMAS, validate_source_files
-from data.preprocess import PARQUET_ARTIFACTS, prepare_dataset
-from data.schema import DATASET_CONTRACT, SCHEMA_VERSION
+from data.preprocess import PARQUET_ARTIFACTS, validate_source_files
+from config import DATASET_CONTRACT, SOURCE_SCHEMAS
 from paths import PROCESSED_DATA_DIR, RAW_DATA_DIR
 
 
@@ -42,47 +40,46 @@ class PhaseOneContractTests(unittest.TestCase):
 
 
 @unittest.skipUnless(RAW_DATA_DIR.is_dir(), "raw XuetangX data is not available")
-class PhaseOneIntegrationTests(unittest.TestCase):
+class PhaseOneSourceTests(unittest.TestCase):
     def test_raw_source_headers(self):
         source = validate_source_files()
         self.assertEqual(set(source), set(SOURCE_SCHEMAS))
 
-    @unittest.skipUnless(
-        (PROCESSED_DATA_DIR / "manifest.json").is_file(),
-        "Phase 1 artifacts have not been built",
-    )
+
+@unittest.skipUnless(
+    all((PROCESSED_DATA_DIR / name).is_file() for name in PARQUET_ARTIFACTS),
+    "Phase 1 Parquet artifacts have not been built",
+)
+class PhaseOneArtifactTests(unittest.TestCase):
     def test_artifact_counts_and_invariants(self):
-        manifest = json.loads(
-            (PROCESSED_DATA_DIR / "manifest.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(manifest["schema_version"], SCHEMA_VERSION)
-        expected = {
-            "nodes.parquet": DATASET_CONTRACT.enrollments,
-            "events_35d.parquet": DATASET_CONTRACT.retained_events_35d,
-            "users.parquet": DATASET_CONTRACT.users,
-            "courses.parquet": DATASET_CONTRACT.courses,
-        }
-        actual = {item["path"]: item["rows"] for item in manifest["artifacts"]}
-        self.assertEqual(actual, expected)
-
-        audit = json.loads(
-            (PROCESSED_DATA_DIR / "audit.json").read_text(encoding="utf-8")
-        )
-        self.assertTrue(all(value == 0 for value in audit["enrollment_relations"].values()))
-        self.assertEqual(audit["user_profiles"]["selected_users"], DATASET_CONTRACT.users)
-        self.assertEqual(audit["user_profiles"]["missing_metadata"], 0)
-        self.assertEqual(audit["course_duration"]["used_courses"], DATASET_CONTRACT.courses)
-        self.assertEqual(audit["course_duration"]["missing_metadata"], 0)
-
         connection = duckdb.connect()
         try:
-            nodes = (PROCESSED_DATA_DIR / "nodes.parquet").as_posix()
-            events = (PROCESSED_DATA_DIR / "events_35d.parquet").as_posix()
+            paths = {
+                name: (PROCESSED_DATA_DIR / name).as_posix()
+                for name in PARQUET_ARTIFACTS
+            }
+            counts = {
+                name: connection.execute(
+                    f"SELECT count(*) FROM read_parquet('{path}')"
+                ).fetchone()[0]
+                for name, path in paths.items()
+            }
+            self.assertEqual(
+                counts,
+                {
+                    "nodes.parquet": DATASET_CONTRACT.enrollments,
+                    "events_35d.parquet": DATASET_CONTRACT.retained_events_35d,
+                    "users.parquet": DATASET_CONTRACT.users,
+                    "courses.parquet": DATASET_CONTRACT.courses,
+                },
+            )
+
             node_row = connection.execute(
                 f"""
-                SELECT count(*), count(DISTINCT enroll_id), count(DISTINCT node_id),
+                SELECT count(DISTINCT enroll_id), count(DISTINCT node_id),
+                       min(node_id), max(node_id),
                        count(*) FILTER (WHERE label NOT IN (0, 1))
-                FROM read_parquet('{nodes}')
+                FROM read_parquet('{paths['nodes.parquet']}')
                 """
             ).fetchone()
             self.assertEqual(
@@ -90,31 +87,22 @@ class PhaseOneIntegrationTests(unittest.TestCase):
                 (
                     DATASET_CONTRACT.enrollments,
                     DATASET_CONTRACT.enrollments,
-                    DATASET_CONTRACT.enrollments,
+                    0,
+                    DATASET_CONTRACT.enrollments - 1,
                     0,
                 ),
             )
+
             event_row = connection.execute(
                 f"""
-                SELECT count(*), min(course_day), max(course_day),
+                SELECT min(course_day), max(course_day),
                        count(*) FILTER (WHERE event_time IS NULL)
-                FROM read_parquet('{events}')
+                FROM read_parquet('{paths['events_35d.parquet']}')
                 """
             ).fetchone()
-            self.assertEqual(
-                event_row,
-                (DATASET_CONTRACT.retained_events_35d, 0, 34, 0),
-            )
+            self.assertEqual(event_row, (0, 34, 0))
         finally:
             connection.close()
-
-    @unittest.skipUnless(
-        (PROCESSED_DATA_DIR / "manifest.json").is_file(),
-        "Phase 1 artifacts have not been built",
-    )
-    def test_second_prepare_uses_cache(self):
-        manifest = prepare_dataset()
-        self.assertTrue(manifest["cache_hit"])
 
 
 if __name__ == "__main__":

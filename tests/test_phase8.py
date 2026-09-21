@@ -11,11 +11,15 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from hypergraph.io import LocalHypergraph, batch_local_hypergraphs
-from losses.objective import classification_loss, hgsl_objective, train_pos_weight
-from models.incident_node_sampling import sample_incident_nodes
+from graph_data import LocalHypergraph, batch_local_hypergraphs
+from hsl import (
+    classification_loss,
+    hgsl_objective,
+    sample_incident_nodes,
+    train_pos_weight,
+)
 from paths import REPORTS_DIR
-from training.hgsl_trainer import HGSLTrainingConfig
+from train import HGSLTrainingConfig
 
 
 class PhaseEightUnitTests(unittest.TestCase):
@@ -84,15 +88,19 @@ class PhaseEightUnitTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    (REPORTS_DIR / "phase8_hgsl_seed_1.json").is_file(),
+    (REPORTS_DIR / "phase8_hgsl_full_seed_1.json").is_file(),
     "Phase 8 training report has not been generated",
 )
 class PhaseEightIntegrationTests(unittest.TestCase):
     def test_real_training_report_and_checkpoint(self):
         report = json.loads(
-            (REPORTS_DIR / "phase8_hgsl_seed_1.json").read_text(encoding="utf-8")
+            (REPORTS_DIR / "phase8_hgsl_full_seed_1.json").read_text(
+                encoding="utf-8"
+            )
         )
         self.assertEqual(report["phase"], 8)
+        self.assertEqual(report["config"]["feature_set"], "full")
+        self.assertEqual(report["feature_dim"], 96)
         self.assertEqual(report["selection_metric"], "validation_auc")
         self.assertFalse(report["test_split_used"])
         self.assertEqual(report["local_negative_scope"], "same local graph only")
@@ -101,6 +109,7 @@ class PhaseEightIntegrationTests(unittest.TestCase):
         self.assertGreater(report["history"][0]["scorer_gradient_norm"], 0)
         self.assertTrue(Path(report["checkpoint"]).is_file())
         self.assertEqual(len(report["graph_manifest_sha256"]), 64)
+        self.assertEqual(len(report["feature_manifest_sha256"]), 64)
 
 
 if __name__ == "__main__":

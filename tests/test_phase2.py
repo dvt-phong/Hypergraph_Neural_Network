@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 import sys
 import unittest
@@ -9,8 +8,8 @@ import duckdb
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from data.schema import DATASET_CONTRACT, EXPERIMENT_SEEDS, EXPERIMENT_SPLITS
-from data.split import UserGroup, assign_user_groups, build_splits, integer_targets
+from config import DATASET_CONTRACT, EXPERIMENT_SEEDS, EXPERIMENT_SPLITS
+from data.split import UserGroup, assign_user_groups, integer_targets
 from paths import PROCESSED_DATA_DIR
 
 
@@ -49,35 +48,11 @@ class PhaseTwoUnitTests(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    (PROCESSED_DATA_DIR / "split_manifest.json").is_file(),
+    (PROCESSED_DATA_DIR / "splits.parquet").is_file(),
     "Phase 2 artifacts have not been built",
 )
 class PhaseTwoIntegrationTests(unittest.TestCase):
-    def test_split_artifact_and_manifest(self):
-        manifest = json.loads(
-            (PROCESSED_DATA_DIR / "split_manifest.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(manifest["seeds"], list(EXPERIMENT_SEEDS))
-        for seed in EXPERIMENT_SEEDS:
-            invariants = manifest["invariants_by_seed"][str(seed)]
-            self.assertEqual(invariants["rows"], DATASET_CONTRACT.enrollments)
-            self.assertEqual(invariants["distinct_users"], DATASET_CONTRACT.users)
-            self.assertEqual(invariants["user_overlap"], 0)
-            summary = manifest["summary_by_seed"][str(seed)]
-            self.assertEqual(sum(row["users"] for row in summary.values()), 77_083)
-            self.assertEqual(
-                sum(row["enrollments"] for row in summary.values()), 225_642
-            )
-            for row in summary.values():
-                enrollment_error = abs(row["enrollment_deviation"]) / row[
-                    "target_enrollments"
-                ]
-                dropout_error = abs(row["dropout_deviation"]) / row[
-                    "target_dropouts"
-                ]
-                self.assertLess(enrollment_error, 0.005)
-                self.assertLess(dropout_error, 0.005)
-
+    def test_split_artifact(self):
         path = (PROCESSED_DATA_DIR / "splits.parquet").as_posix()
         connection = duckdb.connect()
         try:
@@ -95,6 +70,33 @@ class PhaseTwoIntegrationTests(unittest.TestCase):
                     "experiment_split",
                 ],
             )
+            invariants = connection.execute(
+                f"""
+                SELECT seed, count(*) AS rows,
+                       count(DISTINCT node_id) AS nodes,
+                       count(DISTINCT user_id) AS users
+                FROM read_parquet('{path}')
+                GROUP BY seed ORDER BY seed
+                """
+            ).fetchall()
+            self.assertEqual([row[0] for row in invariants], list(EXPERIMENT_SEEDS))
+            for _, rows, nodes, users in invariants:
+                self.assertEqual(rows, DATASET_CONTRACT.enrollments)
+                self.assertEqual(nodes, DATASET_CONTRACT.enrollments)
+                self.assertEqual(users, DATASET_CONTRACT.users)
+
+            overlap = connection.execute(
+                f"""
+                SELECT count(*) FROM (
+                    SELECT seed, user_id
+                    FROM read_parquet('{path}')
+                    GROUP BY seed, user_id
+                    HAVING count(DISTINCT experiment_split) > 1
+                )
+                """
+            ).fetchone()[0]
+            self.assertEqual(overlap, 0)
+
             changed = connection.execute(
                 f"""
                 WITH base AS (
@@ -113,10 +115,6 @@ class PhaseTwoIntegrationTests(unittest.TestCase):
             self.assertTrue(all(int(row[1]) > 0 for row in changed))
         finally:
             connection.close()
-
-    def test_second_build_uses_cache(self):
-        manifest = build_splits()
-        self.assertTrue(manifest["cache_hit"])
 
 
 if __name__ == "__main__":
