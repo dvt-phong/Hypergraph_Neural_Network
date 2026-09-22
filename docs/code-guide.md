@@ -1,84 +1,60 @@
 # Hướng dẫn đọc code
 
-Code được tổ chức theo đúng thứ tự chạy của mô hình. Điểm bắt đầu là
-`src/main.py`, đặc biệt là hai hàm `run_pipeline()` và `run_experiments()`.
-Tài liệu đối chiếu chi tiết từng khối trong sơ đồ nằm ở
-[hgsl-model-code-walkthrough.md](hgsl-model-code-walkthrough.md).
-
-Mỗi hàm/class trong `src/` có comment `# Mục đích`, `# Đầu vào`, `# Đầu ra` ngay
-trước định nghĩa; `# Lưu ý` được thêm khi có điều kiện cần nhớ. Đọc ba dòng đó
-trước rồi xem thân hàm để đối chiếu phép biến đổi dữ liệu. Không dùng docstring
-ba nháy làm comment; dấu ba nháy còn lại trong code là chuỗi SQL nhiều dòng.
-
-## Luồng chính
+Đọc tám file trong `src/` theo số thứ tự dưới đây. Mỗi file có một hàm chính,
+các hàm còn lại chỉ giúp thực hiện bước đó.
 
 ```text
-Raw CSV
-→ preprocessing và user-disjoint split
-→ behavioral/user/course features
-→ course/object/behavioral hyperedges
-→ sparse H0
-→ HGNN tạo Z0
-→ HSL tạo H*
-→ HGNN tạo Z*
-→ dropout logits và loss
-→ validation chọn checkpoint
-→ test checkpoint đã chọn
+1 download.py     download()          → sáu CSV gốc
+2 preprocess.py   preprocess()        → nodes, events 35 ngày, split theo user
+3 features.py     build_features()    → X cho từng seed
+4 hypergraph.py   build_hyperedges()  → danh sách edge và membership
+5 model.py        build_h0()          → sparse H0, train node order
+                  HGSLModel.forward() → Z0, H*, Z*, logits
+6 hsl.py          refine_hypergraph() → sample và score membership
+7 losses.py       total_loss()        → weighted BCE + λ InfoNCE
+8 train.py        train(), test()     → checkpoint theo validation, rồi test
 ```
 
-## Module và dữ liệu vào/ra
+## Theo dấu một node
 
-| Module | Nhiệm vụ | Đầu vào | Đầu ra |
-|---|---|---|---|
-| `main.py` | Thể hiện pipeline và cung cấp CLI | Tham số experiment | Report của từng stage |
-| `config.py` | Khóa dataset contract, feature schema và seed | Không có | Constants và tên feature |
-| `data.py` | Chuẩn hóa raw XuetangX | CSV gốc | `nodes`, `events_35d`, `users`, `courses` |
-| `split.py` | Tạo split user-disjoint | `nodes.parquet`, seed | `splits.parquet` |
-| `features/engineering.py`, `features/context.py`, `features/transform.py`, `features/io.py` | Aggregate, transform và đọc feature; chỉ fit trên train | Canonical tables và split | `X_base`, `X_context`, transforms |
-| `hypergraph/structural.py`, `hypergraph/behavioral.py`, `hypergraph/construction.py` | Tạo candidate hyperedge và sparse H0 | Events, split, features | Memberships, neighbors, H0, metadata |
-| `graph_data.py` | Ghép đúng feature với train/local graph | Artifacts của feature và graph | Train graph hoặc local evaluation graph |
-| `model.py` | Sparse propagation và HGNN encoder | Feature tensor và incidence operator | Node embeddings và logits |
-| `hsl.py` | Sampling, membership refinement và loss | Z0, H0, metadata, labels | H*, Z*, logits và loss |
-| `train.py` | Train, validation, checkpoint và test | Config và processed artifacts | Checkpoint, history và metrics report |
-| `metrics.py` | Tính metric nhị phân | Labels và probability | AUC, AUPRC, F1, precision, recall |
-| `artifacts.py` | I/O dùng chung | Path và payload | Atomic artifact, signature, timestamp |
+Một dòng `train_truth.csv` hoặc `test_truth.csv` có `enroll_id` và `truth`.
+`preprocess.py` ghép nó với log cùng `enroll_id`, gán `node_id` liên tiếp, và ghi
+`nodes.csv`. `source_partition` chỉ cho biết file gốc; `split_seed_*.csv` mới là
+train/validation/test của thí nghiệm. Mọi enrollment của cùng một user nằm cùng
+một split.
 
-## Vì sao thấy “split” ở ba bước?
+`features.py` duyệt event ngày 0–34 để tạo 35 day counts, 23 action counts,
+session count và số object khác nhau: 60 chiều. User/course context thêm 36 chiều.
+Mean, standard deviation và median chỉ tính trên node train của từng seed.
+`X_seed_*.npy` có thứ tự hàng đúng bằng `node_id`.
 
-Chỉ [`split.py`](../src/split.py) **gán** train/validation/test của nghiên cứu.
-`data.py` thêm `source_partition` để nhớ dòng đến từ CSV `train_*` hay `test_*`
-gốc; đó không phải tập train/test của model. `features/transform.py` chỉ **đọc**
-split đã gán để fit mean/std và median trên train của từng seed, rồi áp dụng
-cùng tham số cho mọi node. Không có lần chia dữ liệu thứ hai trong feature
-engineering.
+`hypergraph.py` nối các train node chung course, chung `(course_id, object_id,
+object_type)`, hoặc gần nhau theo cosine của 60 behavioral feature. `model.py`
+chuyển danh sách membership thành ma trận thưa `H0` với hàng theo
+`train_ids_seed_*.npy`. Khi đánh giá, `local_graph()` dựng một graph cho target
+validation/test cùng các train reference; target khác không đi vào graph này.
 
-Bảng đầy đủ sáu CSV đầu vào, cột của từng Parquet, cách gán user-disjoint split
-và các ranh giới chống leakage nằm ở [khối Dataset và Feature Engineering](hgsl-model-code-walkthrough.md).
+## Theo dấu một forward
 
-## Quy tắc thí nghiệm
-
-- Transformer và class weight chỉ được fit/tính từ train split.
-- Validation AUC chọn checkpoint.
-- Feature và local graph của test có thể được chuẩn bị trước, nhưng **test label**
-  không tham gia loss hoặc chọn checkpoint. Test metrics chỉ được tính sau khi
-  validation đã chọn checkpoint. Nhãn toàn bộ dữ liệu có được dùng để cân bằng
-  các tập lúc tạo user-disjoint split.
-- Mỗi seed điều khiển cả data split, model initialization và sampling.
-- `check-hgsl` chỉ là một optimizer step để debug gradient; không phải kết quả
-  thí nghiệm.
-
-## Lệnh thường dùng
-
-```powershell
-# Kiểm tra nhanh HSL
-.\.venv\Scripts\python.exe src/main.py check-hgsl --seed 1 --feature-set full
-
-# Train một cấu hình
-.\.venv\Scripts\python.exe src/main.py train-hgsl --seed 1 --feature-set full --epochs 50
-
-# Test checkpoint đã chọn bằng validation
-.\.venv\Scripts\python.exe src/main.py evaluate --seed 1 --feature-set full
-
-# Chạy năm seed và tổng hợp mean/std
-.\.venv\Scripts\python.exe src/main.py run-experiments --feature-sets behavior full --epochs 50
+```text
+X + H0 → HGNN → Z0
+Z0 + H0 → sample edge/node → score membership → H*
+X + H* → cùng HGNN → Z* → classifier → dropout logit
+Z0 + Z* → contrastive loss
+logit + train label → weighted BCE
+total = BCE + λ × contrastive
 ```
+
+Trong `HGSLModel.forward()`, `hsl.py` được gọi sau khi có `Z0`. Train chọn một
+số edge mỗi epoch. Validation/test chọn toàn bộ edge trong local graph với
+candidate cố định, để đổi evaluation batch size không đổi kết quả.
+
+`train.py` chỉ dùng validation AUC để giữ checkpoint tốt nhất. Hàm `test()`
+đọc checkpoint đó rồi mới tính test metrics. `--no-hsl` dùng cùng encoder nhưng
+bỏ bước refine và contrastive loss, phục vụ ablation.
+
+## Định dạng file
+
+CSV/CSV nén là dữ liệu dạng bảng dễ mở. `.npy` chứa ma trận feature. `.npz`
+chứa sparse incidence `H0`; không chuyển `H0` sang ma trận dense vì nó có hơn
+144 nghìn node và hơn 150 nghìn edge ở seed 1.

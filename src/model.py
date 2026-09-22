@@ -1,300 +1,227 @@
-# Cài đặt phần neural network HGNN và phép lan truyền hypergraph sparse.
-# Việc dựng H0 và học lại H* nằm ở module khác để file này chỉ giữ toán của HGNN.
-from __future__ import annotations
+"""Build sparse H0, align X, and run the two HGNN passes of one HGSL model."""
 
-from dataclasses import dataclass
+import argparse
+import csv
+import gzip
+from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 from scipy import sparse
 import torch
 from torch import nn
+from torch.nn import functional as F
+
+from preprocess import PROCESSED, SEEDS, read_csv
+from hsl import refine_hypergraph
 
 
-SPARSE_BACKWARD_CHUNK = 100_000
+def feature_columns(feature_set):
+    if feature_set == "behavior":
+        return slice(0, 60)
+    if feature_set == "behavior_user":
+        return slice(0, 75)
+    if feature_set == "behavior_course":
+        return np.r_[0:60, 75:96]
+    if feature_set == "full":
+        return slice(0, 96)
+    raise ValueError(f"Unknown feature set: {feature_set}")
 
 
-# Mục đích: Nhân sparse-dense nhưng vẫn tính gradient cho sparse values với O(nnz).
-# Đầu vào: Sparse indices/values, shape và dense matrix.
-# Đầu ra: Dense tensor là kết quả matrix multiplication.
-# Lưu ý: Chỉ dùng khi membership weights cần học gradient.
+def build_h0(output_dir=PROCESSED, *, seed=1):
+    """Turn train edge membership rows into a CSR H0 matrix."""
+    output_dir = Path(output_dir)
+    split = [row["split"] for row in read_csv(output_dir / f"split_seed_{seed}.csv")]
+    train_ids = np.flatnonzero(np.array(split) == "train")
+    global_to_train = {int(node): row for row, node in enumerate(train_ids)}
+    meta = list(read_csv(output_dir / f"edge_meta_seed_{seed}.csv"))
+    rows, cols = [], []
+    with gzip.open(output_dir / f"edge_memberships_seed_{seed}.csv.gz", "rt",
+                   newline="", encoding="utf-8") as source:
+        for item in csv.DictReader(source):
+            rows.append(global_to_train[int(item["node_id"])])
+            cols.append(int(item["edge_id"]))
+    h0 = sparse.coo_matrix((np.ones(len(rows), dtype=np.uint8), (rows, cols)),
+                           shape=(len(train_ids), len(meta))).tocsr()
+    if np.any(np.asarray(h0.sum(axis=0)).ravel() < 2):
+        raise ValueError("H0 contains an empty or singleton edge")
+    if np.any(np.asarray(h0.sum(axis=1)).ravel() == 0):
+        raise ValueError("H0 contains an isolated train node")
+    sparse.save_npz(output_dir / f"H0_seed_{seed}.npz", h0)
+    np.save(output_dir / f"train_ids_seed_{seed}.npy", train_ids)
+    report = {"seed": seed, "shape": h0.shape, "incidences": h0.nnz}
+    print(report, flush=True)
+    return report
+
+
+def load_train_graph(output_dir=PROCESSED, *, seed=1, feature_set="behavior"):
+    output_dir = Path(output_dir)
+    h0 = sparse.load_npz(output_dir / f"H0_seed_{seed}.npz")
+    train_ids = np.load(output_dir / f"train_ids_seed_{seed}.npy")
+    x = np.load(output_dir / f"X_seed_{seed}.npy", mmap_mode="r")
+    x = np.asarray(x[train_ids][:, feature_columns(feature_set)], dtype=np.float32)
+    nodes = list(read_csv(output_dir / "nodes.csv"))
+    labels = np.array([int(nodes[node]["label"]) for node in train_ids], dtype=np.float32)
+    meta = list(read_csv(output_dir / f"edge_meta_seed_{seed}.csv"))
+    families = np.array([row["family"] for row in meta])
+    sizes = np.array([int(row["size"]) for row in meta], dtype=np.int64)
+    return x, h0, labels, families, sizes
+
+
+def load_evaluation_data(output_dir=PROCESSED, *, seed=1, feature_set="behavior"):
+    """Read small node tables once; local validation/test edges use train references."""
+    output_dir = Path(output_dir)
+    nodes = list(read_csv(output_dir / "nodes.csv"))
+    split = [row["split"] for row in read_csv(output_dir / f"split_seed_{seed}.csv")]
+    course_refs, object_refs, objects_by_node = defaultdict(list), defaultdict(list), defaultdict(set)
+    for node_id, node in enumerate(nodes):
+        if split[node_id] == "train":
+            course_refs[node["course_id"]].append(node_id)
+    with gzip.open(output_dir / "node_objects.csv.gz", "rt", newline="",
+                   encoding="utf-8") as source:
+        for row in csv.DictReader(source):
+            node_id = int(row["node_id"])
+            key = (row["course_id"], row["object_id"], row["object_type"])
+            objects_by_node[node_id].add(key)
+            if split[node_id] == "train":
+                object_refs[key].append(node_id)
+    return {"nodes": nodes, "split": split, "course_refs": course_refs,
+            "object_refs": object_refs, "objects_by_node": objects_by_node,
+            "neighbors": np.load(output_dir / f"neighbors_seed_{seed}.npy"),
+            "x": np.load(output_dir / f"X_seed_{seed}.npy"),
+            "columns": feature_columns(feature_set)}
+
+
+def local_graph(data, target, k=10):
+    """One target plus only train references; return X, H0, edge families and label."""
+    if data["split"][target] == "train":
+        raise ValueError("A local evaluation target must be validation or test")
+    course = data["nodes"][target]["course_id"]
+    edges = []
+    if data["course_refs"][course]:
+        edges.append(("course", data["course_refs"][course]))
+    for key in sorted(data["objects_by_node"][target]):
+        refs = data["object_refs"][key]
+        if refs:
+            edges.append(("object", refs))
+    edges.append(("behavioral", data["neighbors"][target, :k]))
+    references = sorted({int(node) for _, refs in edges for node in refs})
+    ids = np.array([target, *references], dtype=np.int64)
+    positions = {node: i + 1 for i, node in enumerate(references)}
+    rows, columns = [], []
+    for edge_id, (_, refs) in enumerate(edges):
+        rows.append(0)
+        columns.append(edge_id)
+        for node in refs:
+            rows.append(positions[int(node)])
+            columns.append(edge_id)
+    h0 = sparse.coo_matrix((np.ones(len(rows), dtype=np.uint8), (rows, columns)),
+                           shape=(len(ids), len(edges))).tocsr()
+    x = np.asarray(data["x"][ids][:, data["columns"]], dtype=np.float32)
+    families = np.array([family for family, _ in edges])
+    sizes = np.asarray(h0.sum(axis=0)).ravel().astype(np.int64)
+    label = int(data["nodes"][target]["label"])
+    return x, h0, families, sizes, label
+
+
 class _SparseValuesMM(torch.autograd.Function):
+    """Backpropagate through stored sparse values without a dense N x E gradient."""
+
     @staticmethod
-    # Mục đích: Thực hiện forward sparse matrix nhân dense matrix.
-    # Đầu vào: Autograd context, COO indices/values, shape và dense tensor.
-    # Đầu ra: Dense tensor [sparse rows, dense columns].
-    def forward(
-        ctx: object,
-        indices: torch.Tensor,
-        values: torch.Tensor,
-        rows: int,
-        columns: int,
-        dense: torch.Tensor,
-    ) -> torch.Tensor:
+    def forward(ctx, indices, values, shape, dense):
         ctx.save_for_backward(indices, values, dense)
-        ctx.shape = (rows, columns)
-        matrix = torch.sparse_coo_tensor(
-            indices,
-            values,
-            size=(rows, columns),
-            dtype=values.dtype,
-            device=values.device,
-            check_invariants=False,
-        ).coalesce()
+        ctx.shape = shape
+        matrix = torch.sparse_coo_tensor(indices, values, shape,
+                                         check_invariants=False).coalesce()
         return torch.sparse.mm(matrix, dense)
 
     @staticmethod
-    # Mục đích: Tính gradient cho sparse values và dense operand.
-    # Đầu vào: Context đã lưu và gradient từ output.
-    # Đầu ra: Gradient của values và dense; các shape/index input không có gradient.
-    # Lưu ý: Chia chunk để không tạo tensor tạm quá lớn theo toàn bộ nnz.
-    def backward(
-        ctx: object, gradient: torch.Tensor
-    ) -> tuple[None, torch.Tensor, None, None, torch.Tensor]:
+    def backward(ctx, gradient):
         indices, values, dense = ctx.saved_tensors
-        rows, columns = ctx.shape
         value_gradient = torch.empty_like(values)
-        for start in range(0, values.numel(), SPARSE_BACKWARD_CHUNK):
-            stop = min(start + SPARSE_BACKWARD_CHUNK, values.numel())
-            row = indices[0, start:stop]
-            column = indices[1, start:stop]
-            value_gradient[start:stop] = (
-                gradient[row] * dense[column]
-            ).sum(dim=1)
-        transpose = torch.sparse_coo_tensor(
-            indices.flip(0),
-            values.detach(),
-            size=(columns, rows),
-            dtype=values.dtype,
-            device=values.device,
-            check_invariants=False,
-        ).coalesce()
-        dense_gradient = torch.sparse.mm(transpose, gradient)
-        return None, value_gradient, None, None, dense_gradient
+        for start in range(0, len(values), 100000):
+            stop = min(start + 100000, len(values))
+            row, col = indices[:, start:stop]
+            value_gradient[start:stop] = (gradient[row] * dense[col]).sum(dim=1)
+        transpose = torch.sparse_coo_tensor(indices.flip(0), values.detach(),
+            (ctx.shape[1], ctx.shape[0]), check_invariants=False).coalesce()
+        return None, value_gradient, None, torch.sparse.mm(transpose, gradient)
 
 
-# Mục đích: Chọn phép sparse matmul phù hợp với incidence cố định hoặc learnable.
-# Đầu vào: PyTorch sparse matrix và dense tensor.
-# Đầu ra: Dense multiplication result.
-# Lưu ý: Dùng custom autograd khi sparse values có requires_grad=True.
-def sparse_values_mm(matrix: torch.Tensor, dense: torch.Tensor) -> torch.Tensor:
+def _sparse_mm(matrix, dense):
     matrix = matrix.coalesce()
     if matrix.values().requires_grad:
-        return _SparseValuesMM.apply(
-            matrix.indices(),
-            matrix.values(),
-            matrix.shape[0],
-            matrix.shape[1],
-            dense,
-        )
+        return _SparseValuesMM.apply(matrix.indices(), matrix.values(), matrix.shape, dense)
     return torch.sparse.mm(matrix, dense)
 
 
-# Mục đích: Chuyển SciPy sparse matrix sang PyTorch coalesced COO tensor.
-# Đầu vào: SciPy sparse matrix và device đích.
-# Đầu ra: PyTorch float32 sparse tensor cùng shape.
-# Lưu ý: Coalesce gộp duplicate indices trước khi propagation.
-def scipy_to_torch_sparse(
-    matrix: sparse.spmatrix,
-    *,
-    device: torch.device,
-) -> torch.Tensor:
+def to_torch_sparse(matrix, device):
     coo = matrix.tocoo(copy=False)
-    indices = torch.from_numpy(
-        np.vstack((coo.row, coo.col)).astype(np.int64, copy=False)
-    )
-    values = torch.from_numpy(coo.data.astype(np.float32, copy=False))
-    return torch.sparse_coo_tensor(
-        indices,
-        values,
-        size=coo.shape,
-        dtype=torch.float32,
-        device=device,
-        check_invariants=False,
-    ).coalesce()
+    indices = torch.as_tensor(np.stack((coo.row, coo.col)), dtype=torch.int64, device=device)
+    values = torch.as_tensor(coo.data.astype(np.float32), device=device)
+    return torch.sparse_coo_tensor(indices, values, coo.shape,
+                                   check_invariants=False).coalesce()
 
 
-# Mục đích: Lưu H và các degree factors của công thức HGNN propagation.
-# Đầu vào: Sparse incidence và các vector normalization đã tính.
-# Đầu ra: Object bất biến có hàm propagate(node_features).
-# Lưu ý: Không materialize ma trận truyền N x N.
-@dataclass(frozen=True)
-class HypergraphOperator:
-    incidence: torch.Tensor
-    incidence_t: torch.Tensor
-    node_inverse_sqrt_degree: torch.Tensor
-    edge_weight_over_degree: torch.Tensor
-
-    @classmethod
-    # Mục đích: Tạo operator differentiable từ weighted PyTorch incidence.
-    # Đầu vào: Sparse incidence và edge weights tùy chọn.
-    # Đầu ra: HypergraphOperator với degree normalization đã tính.
-    # Lưu ý: Từ chối edge rỗng hoặc node cô lập để tránh chia cho 0.
-    def from_torch_sparse(
-        cls,
-        incidence: torch.Tensor,
-        *,
-        edge_weights: torch.Tensor | None = None,
-    ) -> "HypergraphOperator":
-        if not incidence.is_sparse or incidence.ndim != 2:
-            raise ValueError("incidence must be a sparse COO tensor")
-        incidence = incidence.coalesce()
-        node_count, edge_count = incidence.shape
-        if node_count == 0 or edge_count == 0 or incidence._nnz() == 0:
-            raise ValueError("incidence must be non-empty")
-        indices = incidence.indices()
-        values = incidence.values()
-        if not torch.isfinite(values).all() or torch.any(values <= 0):
-            raise ValueError("incidence values must be finite and positive")
-        if edge_weights is None:
-            weights = torch.ones(
-                edge_count, dtype=values.dtype, device=values.device
-            )
-        else:
-            weights = edge_weights.to(device=values.device, dtype=values.dtype)
-        if weights.shape != (edge_count,) or torch.any(weights <= 0):
-            raise ValueError("edge_weights must be positive and match edge count")
-        edge_degree = torch.zeros(
-            edge_count, dtype=values.dtype, device=values.device
-        ).scatter_add(0, indices[1], values)
-        node_degree = torch.zeros(
-            node_count, dtype=values.dtype, device=values.device
-        ).scatter_add(0, indices[0], values * weights[indices[1]])
-        if torch.any(edge_degree <= 0) or torch.any(node_degree <= 0):
-            raise ValueError("incidence cannot contain empty nodes or hyperedges")
-        return cls(
-            incidence=incidence,
-            incidence_t=incidence.transpose(0, 1).coalesce(),
-            node_inverse_sqrt_degree=node_degree.rsqrt(),
-            edge_weight_over_degree=weights / edge_degree,
-        )
-
-    @classmethod
-    # Mục đích: Tạo operator từ SciPy binary incidence H0.
-    # Đầu vào: SciPy matrix, device và edge weights tùy chọn.
-    # Đầu ra: HypergraphOperator float32 trên device yêu cầu.
-    # Lưu ý: H0 phải binary; weighted H* dùng from_torch_sparse().
-    def from_scipy(
-        cls,
-        incidence: sparse.spmatrix,
-        *,
-        device: torch.device,
-        edge_weights: np.ndarray | None = None,
-    ) -> "HypergraphOperator":
-        matrix = incidence.tocsr().astype(np.float32)
-        if matrix.ndim != 2 or matrix.shape[0] == 0 or matrix.shape[1] == 0:
-            raise ValueError("incidence must be a non-empty 2-D sparse matrix")
-        if matrix.nnz == 0 or not np.all(matrix.data == 1):
-            raise ValueError("incidence must be binary with at least one incidence")
-        if edge_weights is None:
-            weights = np.ones(matrix.shape[1], dtype=np.float32)
-        else:
-            weights = np.asarray(edge_weights, dtype=np.float32)
-        if weights.shape != (matrix.shape[1],) or np.any(weights <= 0):
-            raise ValueError("edge_weights must be positive and match edge count")
-
-        edge_degree = np.asarray(matrix.sum(axis=0)).reshape(-1)
-        node_degree = np.asarray(matrix @ weights).reshape(-1)
-        if np.any(edge_degree <= 0) or np.any(node_degree <= 0):
-            raise ValueError("incidence cannot contain empty nodes or hyperedges")
-        torch_incidence = scipy_to_torch_sparse(matrix, device=device)
-        return cls(
-            incidence=torch_incidence,
-            incidence_t=torch_incidence.transpose(0, 1).coalesce(),
-            node_inverse_sqrt_degree=torch.as_tensor(
-                np.power(node_degree, -0.5), dtype=torch.float32, device=device
-            ),
-            edge_weight_over_degree=torch.as_tensor(
-                weights / edge_degree, dtype=torch.float32, device=device
-            ),
-        )
-
-    # Mục đích: Áp dụng Dv^-1/2 H W De^-1 H^T Dv^-1/2 lên node features.
-    # Đầu vào: Dense node feature hoặc embedding matrix [N,D].
-    # Đầu ra: Dense propagated matrix [N,D].
-    # Lưu ý: Hai phép sparse-dense tránh tạo adjacency N x N.
-    def propagate(self, node_features: torch.Tensor) -> torch.Tensor:
-        if node_features.ndim != 2:
-            raise ValueError("node_features must be a 2-D tensor")
-        if node_features.shape[0] != self.incidence.shape[0]:
-            raise ValueError("Feature rows must match incidence rows")
-        scaled_nodes = node_features * self.node_inverse_sqrt_degree[:, None]
-        edge_messages = sparse_values_mm(self.incidence_t, scaled_nodes)
-        edge_messages = edge_messages * self.edge_weight_over_degree[:, None]
-        node_messages = sparse_values_mm(self.incidence, edge_messages)
-        return node_messages * self.node_inverse_sqrt_degree[:, None]
+def _operator(h):
+    h = h.coalesce()
+    row, col = h.indices()
+    value = h.values()
+    node_degree = torch.zeros(h.shape[0], device=value.device).scatter_add(0, row, value)
+    edge_degree = torch.zeros(h.shape[1], device=value.device).scatter_add(0, col, value)
+    if torch.any(node_degree <= 0) or torch.any(edge_degree <= 0):
+        raise ValueError("H has an isolated node or empty edge")
+    return h, h.transpose(0, 1).coalesce(), node_degree.rsqrt(), edge_degree.reciprocal()
 
 
-# Mục đích: Một HGNN layer gồm linear projection rồi hypergraph propagation.
-# Đầu vào: input_dim/output_dim khi tạo; features/operator khi forward.
-# Đầu ra: Node representations [N, output_dim].
-class HGNNLayer(nn.Module):
-    # Mục đích: Khởi tạo linear projection và learnable bias.
-    # Đầu vào: Số chiều input và output.
-    # Đầu ra: HGNNLayer sẵn sàng train.
-    def __init__(self, input_dim: int, output_dim: int) -> None:
+def _propagate(operator, x):
+    h, h_transpose, node_scale, edge_scale = operator
+    edge_messages = _sparse_mm(h_transpose, x * node_scale[:, None])
+    return _sparse_mm(h, edge_messages * edge_scale[:, None]) * node_scale[:, None]
+
+
+class HGSLModel(nn.Module):
+    """One shared two-layer HGNN, one membership scorer, and one classifier."""
+
+    def __init__(self, input_dim, hidden_dim=64, dropout=0.5):
         super().__init__()
-        self.linear = nn.Linear(input_dim, output_dim, bias=False)
-        self.bias = nn.Parameter(torch.zeros(output_dim))
-
-    # Mục đích: Chiếu feature rồi truyền message qua hypergraph.
-    # Đầu vào: Node features và HypergraphOperator.
-    # Đầu ra: Node representations sau một layer.
-    def forward(
-        self, node_features: torch.Tensor, operator: HypergraphOperator
-    ) -> torch.Tensor:
-        return operator.propagate(self.linear(node_features)) + self.bias
-
-
-# Mục đích: Baseline hai layer HGNN kèm binary dropout classifier.
-# Đầu vào: input_dim, hidden_dim và dropout khi khởi tạo.
-# Đầu ra: Encoder dùng độc lập hoặc logits qua forward().
-class HGNNBaseline(nn.Module):
-    # Mục đích: Khởi tạo hai HGNN layers, dropout và linear classifier.
-    # Đầu vào: Số chiều feature, embedding và dropout probability.
-    # Đầu ra: Model parameters có thể train bằng PyTorch.
-    def __init__(
-        self,
-        input_dim: int,
-        hidden_dim: int = 64,
-        dropout: float = 0.5,
-    ) -> None:
-        super().__init__()
-        if input_dim <= 0 or hidden_dim <= 0:
-            raise ValueError("input_dim and hidden_dim must be positive")
-        if not 0 <= dropout < 1:
-            raise ValueError("dropout must be in [0, 1)")
-        self.layer1 = HGNNLayer(input_dim, hidden_dim)
-        self.layer2 = HGNNLayer(hidden_dim, hidden_dim)
-        # Dùng nn.Module trực tiếp để giữ checkpoint key classifier.output.*.
-        # Cách này tránh tạo thêm một class chỉ chứa đúng một Linear layer.
-        self.classifier = nn.Module()
-        self.classifier.add_module("output", nn.Linear(hidden_dim, 1))
+        self.layer1 = nn.Linear(input_dim, hidden_dim, bias=False)
+        self.bias1 = nn.Parameter(torch.zeros(hidden_dim))
+        self.layer2 = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.bias2 = nn.Parameter(torch.zeros(hidden_dim))
+        self.node_projection = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.edge_projection = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        self.membership_bias = nn.Parameter(torch.zeros(()))
+        self.classifier = nn.Linear(hidden_dim, 1)
         self.dropout = dropout
 
-    # Mục đích: Tạo node embedding từ feature và một hypergraph operator.
-    # Đầu vào: Node features [N,F] và operator của H0 hoặc H*.
-    # Đầu ra: Embedding [N, hidden_dim].
-    # Lưu ý: ReLU/dropout nằm giữa hai HGNN layers.
-    def encode(
-        self, node_features: torch.Tensor, operator: HypergraphOperator
-    ) -> torch.Tensor:
-        hidden = torch.relu(self.layer1(node_features, operator))
-        hidden = torch.nn.functional.dropout(
-            hidden, p=self.dropout, training=self.training
-        )
-        return torch.relu(self.layer2(hidden, operator))
+    def encode(self, x, h):
+        operator = _operator(h)
+        hidden = F.relu(_propagate(operator, self.layer1(x)) + self.bias1)
+        hidden = F.dropout(hidden, p=self.dropout, training=self.training)
+        return F.relu(_propagate(operator, self.layer2(hidden)) + self.bias2)
 
-    # Mục đích: Chuyển node embedding thành dropout logit.
-    # Đầu vào: Embeddings [N, hidden_dim].
-    # Đầu ra: Logits [N], chưa áp dụng sigmoid.
-    def classify(self, embeddings: torch.Tensor) -> torch.Tensor:
-        return self.classifier.output(embeddings).squeeze(-1)
+    def forward(self, x, h0, families, sizes, rng, *, hsl=True, deterministic=False,
+                refinement=None, node_groups=None, edge_groups=None):
+        refinement = refinement or {}
+        initial = to_torch_sparse(h0, x.device)
+        z0 = self.encode(x, initial)
+        if hsl:
+            h_star, audit = refine_hypergraph(
+                z0, h0, families, sizes, self.node_projection, self.edge_projection,
+                self.membership_bias, rng, deterministic=deterministic,
+                node_groups=node_groups, edge_groups=edge_groups, **refinement)
+            z_star = self.encode(x, h_star)
+        else:
+            h_star, z_star, audit = initial, z0, {"sampled_hyperedges": 0}
+        logits = self.classifier(z_star).squeeze(-1)
+        return {"logits": logits, "z0": z0, "z_star": z_star,
+                "h_star": h_star, "audit": audit}
 
-    # Mục đích: Chạy baseline end-to-end trên một hypergraph.
-    # Đầu vào: Node features và HypergraphOperator.
-    # Đầu ra: Tuple (logits [N], embeddings [N,D]).
-    def forward(
-        self, node_features: torch.Tensor, operator: HypergraphOperator
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        embeddings = self.encode(node_features, operator)
-        return self.classify(embeddings), embeddings
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output-dir", type=Path, default=PROCESSED)
+    parser.add_argument("--seed", type=int, choices=SEEDS, default=1)
+    args = parser.parse_args()
+    build_h0(args.output_dir, seed=args.seed)

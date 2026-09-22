@@ -1,120 +1,73 @@
-# XuetangX Hypergraph Structure Learning
+# XuetangX dropout prediction with HGSL
 
-Project dự đoán dropout bằng Hypergraph Neural Network kết hợp học lại cấu trúc
-hypergraph. Thí nghiệm chính chỉ dùng phần XuetangX có nhãn gồm **225.642
-enrollment, 77.083 user và 247 course**.
+Một project, một mô hình: mỗi enrollment là một node; Course, Object và Behavioral
+hyperedge tạo `H0`; HGNN tạo `Z0`; HSL tạo `H*`; cùng HGNN tạo `Z*`; classifier dự đoán
+dropout. Loss là weighted BCE cộng `lambda ×` contrastive InfoNCE.
 
-## Quyết định chính
+Code chính chỉ có tám file trong `src/`, theo đúng thứ tự chạy:
 
-- Node là enrollment; identity chuẩn là `enroll_id`.
-- Node input hỗ trợ bốn cấu hình 60/75/81/96 chiều; `full` ghép behavioral,
-  user demographic và course context.
-- Initial hypergraph gồm Course, Object và Behavioral hyperedge.
-- User hyperedge chưa dùng trong cấu hình chính vì nguy cơ temporal leakage.
-- Split chính là user-disjoint train/validation/test với tỷ lệ mục tiêu 64/16/20.
-- Không dùng 351 triệu full-activity event trong thí nghiệm chính vòng đầu.
-- SIG-Net và MST-GCN được chạy lại trên cùng XuetangX-247; không so trực tiếp với
-  kết quả XuetangX 1.213 course đã công bố.
+| Bước | File | Việc cần đọc |
+|---|---|---|
+| 1 | `download.py` | Tải và giải nén CSV |
+| 2 | `preprocess.py` | Làm sạch event, tạo node và user-disjoint split |
+| 3 | `features.py` | Tạo và chuẩn hóa node feature bằng train split |
+| 4 | `hypergraph.py` | Tạo Course/Object/Behavioral hyperedge |
+| 5 | `model.py` | Tạo sparse `H0`, ghép `X`, hai lượt HGNN và classifier |
+| 6 | `hsl.py` | Sample và refine membership để có `H*` |
+| 7 | `losses.py` | BCE, contrastive và total loss |
+| 8 | `train.py` | Train, validation chọn checkpoint, test |
 
-Chi tiết dữ liệu nằm tại
-[docs/xuetangx-feature-analysis.md](docs/xuetangx-feature-analysis.md). Kế hoạch
-triển khai nằm tại [docs/implementation-plan.md](docs/implementation-plan.md). Đặc tả
-đối chiếu giữa sơ đồ và code nằm tại
-[docs/hgsl-technical-specification.md](docs/hgsl-technical-specification.md).
-Diễn giải end-to-end cho từng khối và ánh xạ tới file code nằm tại
-[docs/hgsl-detailed-technical-design.md](docs/hgsl-detailed-technical-design.md).
+Xem [hướng dẫn đọc code](docs/code-guide.md) và
+[sơ đồ mô hình](docs/assets/hypergraph-neural-network-v3.png).
 
-Bản nên đọc để double-check trực tiếp từng khối trong sơ đồ với công thức, tensor,
-hàm và file code tương ứng là
-[docs/hgsl-model-code-walkthrough.md](docs/hgsl-model-code-walkthrough.md).
+## Chạy từ dữ liệu gốc
 
-## Cấu trúc code
-
-Code chính đặt dưới `src/`; chỉ hai nhóm xử lý nhiều bước có thư mục riêng:
-
-```text
-src/
-  main.py          # pipeline end-to-end và CLI
-  data.py          # chuẩn hóa raw data
-  split.py         # user-disjoint train/validation/test
-  features/
-    engineering.py  # feature hành vi
-    context.py      # user/course context
-    transform.py    # train-only transform và tạo X
-    io.py           # đọc X theo node_id
-  hypergraph/
-    structural.py   # Course và Object hyperedges
-    behavioral.py   # behavioral neighbors
-    audit.py        # kiểm tra hyperedges
-    construction.py # tạo H0 và local memberships
-  config.py        # dataset contract và cấu hình thí nghiệm
-  artifacts.py     # cache, manifest và atomic write
-  paths.py
-  model.py         # sparse HGNN
-  hsl.py           # sampling, HSL và loss
-  graph_data.py    # load train/validation/test graph
-  train.py         # train, validation, checkpoint và test
-  metrics.py
-```
-
-`main.py` đặt hàm `run_pipeline()` ở đầu file để có thể đọc toàn bộ luồng từ raw
-data đến test report mà không phải lần theo CLI hoặc các lớp trung gian.
-Phần input/output của từng module được tóm tắt tại
-[docs/code-guide.md](docs/code-guide.md).
-Các hàm/class trong `src/` có comment `#` nêu mục đích, đầu
-vào, đầu ra và lưu ý khi cần; xem
-[docs/hgsl-model-code-walkthrough.md](docs/hgsl-model-code-walkthrough.md)
-để đọc comment theo thứ tự các khối trong sơ đồ.
-
-`baseline/` chứa manifest và hướng dẫn cho các repository tham khảo. Các clone cục
-bộ được Git ignore và không được import vào mô hình đề xuất.
-
-## Trạng thái
-
-Phase 0–10 đã có luồng thực thi và kiểm thử; chưa chạy đủ thí nghiệm 5 seed/ablation.
-Pipeline tạo `X_base`, `X_context`, sparse `H0`,
-huấn luyện HGNN/HGSL, chọn checkpoint bằng validation và chỉ sau đó mới đánh giá
-checkpoint trên test split.
-
-Validation mặc định dùng toàn bộ split. HGSL inference refine toàn bộ local edge
-theo cách deterministic, nên kết quả không đổi theo evaluation batch size.
-Checkpoint được tách theo experiment ID và chỉ được load khi hash graph/feature
-artifact còn khớp.
-
-Phase 0 đã khóa:
-
-- đường dẫn project;
-- schema raw data;
-- action vocabulary 23 chiều;
-- dataset contract XuetangX-247;
-- feature schema behavioral 60 chiều và context 36 chiều;
-- năm experiment seed `1, 11, 111, 1111, 11111` và ba hyperedge family chính.
-
-Kiểm tra contract và cấu trúc:
+Trong PowerShell:
 
 ```powershell
-.\.venv\Scripts\python.exe src/main.py contract
-.\.venv\Scripts\python.exe src/main.py structure
-.\.venv\Scripts\python.exe src/main.py prepare-data
-.\.venv\Scripts\python.exe src/main.py split-data
-.\.venv\Scripts\python.exe src/main.py build-features
-.\.venv\Scripts\python.exe src/main.py build-hyperedges
-.\.venv\Scripts\python.exe src/main.py build-hypergraph --behavioral-k 10
-.\.venv\Scripts\python.exe src/main.py train-baseline --seed 1 --epochs 1 --feature-set full
-.\.venv\Scripts\python.exe src/main.py evaluate-baseline --seed 1 --feature-set full
-.\.venv\Scripts\python.exe src/main.py check-hgsl --seed 1 --feature-set full
-.\.venv\Scripts\python.exe src/main.py train-hgsl --seed 1 --epochs 1 --feature-set full
-.\.venv\Scripts\python.exe src/main.py evaluate --seed 1 --feature-set full
-.\.venv\Scripts\python.exe src/main.py run-experiments --feature-sets behavior full
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe src/download.py
+.\.venv\Scripts\python.exe src/preprocess.py
+.\.venv\Scripts\python.exe src/features.py
+.\.venv\Scripts\python.exe src/hypergraph.py --seed 1 --k 10
+.\.venv\Scripts\python.exe src/model.py --seed 1
+.\.venv\Scripts\python.exe src/train.py --seed 1 --feature-set full --epochs 50
+.\.venv\Scripts\python.exe src/train.py --mode test --checkpoint outputs/runs/simple_hgsl_full_seed_1.pt
+```
+
+`train.py` chỉ dùng validation để chọn checkpoint. `--mode test` đánh giá test sau
+khi chốt cấu hình. Dùng `--mode both` nếu cấu hình đã được chốt. Mặc định
+`--feature-set behavior` là 60 chiều; `full` là 96 chiều. `--no-hsl` cho ablation
+HGNN với cùng encoder. Chạy lại cùng seed và feature set sẽ ghi đè checkpoint
+`simple_*`; hãy lưu checkpoint cần giữ trước khi thử cấu hình khác.
+
+Dữ liệu bảng lưu dạng CSV/CSV nén; `X` dùng NumPy `.npy`, `H0` dùng SciPy sparse
+`.npz`. Project không dùng cơ sở dữ liệu hoặc Parquet. Hai log gốc khoảng 6 GB;
+`features.py` chia các cặp session/object thành file tạm nhỏ để đếm chính xác mà
+không giữ tất cả event trong RAM.
+
+## Thiết kế hiện tại
+
+- Node là enrollment; `truth=1` là dropout.
+- Split 64/16/20 theo user, dùng năm seed `1, 11, 111, 1111, 11111`.
+- `H0` chính có Course, Object và Behavioral edge. User edge trong hình chưa dùng.
+- Hai lượt HGNN dùng chung trọng số. HSL refine một lượt mỗi forward.
+- Train sample edge; validation/test refine toàn bộ edge trong local graph của từng
+  target, chỉ lấy train node làm reference.
+
+Các quyết định này giữ theo code trước refactor. Bản trước refactor nằm ở commit
+`3d50a16` trên `main` để đối chiếu khi cần.
+
+Khi đối chiếu `X` với bản cũ, 60 behavioral feature khớp hoàn toàn. Bản cũ gán
+category trống của gender/education/course vào cột `other`; bản này gán vào cột
+`missing` theo đúng tên feature. Đây là thay đổi đầu vào có chủ đích, nên metric
+`full` sau refactor cần được chạy lại; không so trực tiếp với checkpoint cũ.
+
+## Kiểm tra
+
+```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-Chạy toàn bộ pipeline từ raw data đến test trong một lệnh:
-
-```powershell
-.\.venv\Scripts\python.exe src/main.py run-pipeline --seed 1 --feature-set full --epochs 1
-```
-
-Việc còn lại của nghiên cứu là chạy đủ năm seed và các ablation mong muốn; lệnh
-`run-experiments` tự ghi mean và standard deviation vào
-`outputs/reports/experiment_summary.json`.
+Test nhỏ chạy toàn bộ luồng. Sau khi chạy đủ dữ liệu thật và chọn hyperparameter
+bằng validation, cần chạy năm seed và các ablation trước khi báo cáo kết quả nghiên cứu.
