@@ -32,14 +32,17 @@ Trong PowerShell:
 .\.venv\Scripts\python.exe src/hypergraph.py --seed 1 --k 10
 .\.venv\Scripts\python.exe src/model.py --seed 1
 .\.venv\Scripts\python.exe src/train.py --seed 1 --feature-set full --epochs 50
-.\.venv\Scripts\python.exe src/train.py --mode test --checkpoint outputs/runs/simple_hgsl_full_seed_1.pt
+$checkpoint = Get-ChildItem outputs/runs/simple_hgsl_full_seed_1_*.pt | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+.\.venv\Scripts\python.exe src/train.py --mode test --checkpoint $checkpoint.FullName
 ```
 
 `train.py` chỉ dùng validation để chọn checkpoint. `--mode test` đánh giá test sau
 khi chốt cấu hình. Dùng `--mode both` nếu cấu hình đã được chốt. Mặc định
 `--feature-set behavior` là 60 chiều; `full` là 96 chiều. `--no-hsl` cho ablation
-HGNN với cùng encoder. Chạy lại cùng seed và feature set sẽ ghi đè checkpoint
-`simple_*`; hãy lưu checkpoint cần giữ trước khi thử cấu hình khác.
+HGNN với cùng encoder. Tên checkpoint có mã 10 ký tự từ cấu hình và dữ liệu,
+nên các cấu hình khác nhau có file riêng. Chạy lại cùng cấu hình trên cùng dữ liệu
+sẽ ghi đè checkpoint đó. Khi test, code kiểm tra các file dữ liệu còn khớp với
+lúc train; nếu đã tạo lại dữ liệu, cần train checkpoint mới.
 
 Dữ liệu bảng lưu dạng CSV/CSV nén; `X` dùng NumPy `.npy`, `H0` dùng SciPy sparse
 `.npz`. Project không dùng cơ sở dữ liệu hoặc Parquet. Hai log gốc khoảng 6 GB;

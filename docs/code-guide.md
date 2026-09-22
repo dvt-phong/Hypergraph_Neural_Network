@@ -51,7 +51,9 @@ candidate cố định, để đổi evaluation batch size không đổi kết q
 
 `train.py` chỉ dùng validation AUC để giữ checkpoint tốt nhất. Hàm `test()`
 đọc checkpoint đó rồi mới tính test metrics. `--no-hsl` dùng cùng encoder nhưng
-bỏ bước refine và contrastive loss, phục vụ ablation.
+bỏ bước refine và contrastive loss, phục vụ ablation. Checkpoint ghi cấu hình và
+mã kiểm tra của các file dữ liệu đã dùng; nếu em tạo lại feature, graph hoặc
+split, `test()` yêu cầu train lại thay vì trả về metric từ dữ liệu không khớp.
 
 ## Định dạng file
 

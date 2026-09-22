@@ -87,6 +87,8 @@ class SimplePipelineTest(unittest.TestCase):
                                        "negative_nodes": 2, "top_r": 2})
             self.assertEqual(result["best_epoch"], 1)
             self.assertGreater(result["history"][0]["scorer_gradient_norm"], 0)
+            self.assertEqual(len(result["artifact_hashes"]), 9)
+            self.assertRegex(Path(result["checkpoint"]).stem, r"_seed_1_[0-9a-f]{10}$")
             report = evaluate_test(result["checkpoint"], output_dir=processed,
                                    device_name="cpu", batch_size=2,
                                    reports_dir=processed / "reports")
@@ -102,6 +104,11 @@ class SimplePipelineTest(unittest.TestCase):
                              device_name="cpu", validation_batch_size=2, hsl=False,
                              runs_dir=processed / "runs", reports_dir=processed / "reports")
             self.assertEqual(baseline["best_epoch"], 1)
+            with open(processed / "graph_config_seed_1.json", "ab") as config:
+                config.write(b"\n")
+            with self.assertRaisesRegex(ValueError, "graph_config_seed_1.json"):
+                evaluate_test(result["checkpoint"], output_dir=processed,
+                              device_name="cpu", reports_dir=processed / "reports")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 """Train HGSL, select a checkpoint on validation, then evaluate on test."""
 
 import argparse
+import hashlib
 import json
 import random
 from pathlib import Path
@@ -16,6 +17,22 @@ from preprocess import PROCESSED, ROOT, SEEDS
 
 RUNS = ROOT / "outputs" / "runs"
 REPORTS = ROOT / "outputs" / "reports"
+
+
+def artifact_hashes(output_dir, seed):
+    """Identify the exact files used to train and evaluate one seed."""
+    names = ("nodes.csv", "node_objects.csv.gz", f"split_seed_{seed}.csv",
+             f"X_seed_{seed}.npy", f"neighbors_seed_{seed}.npy",
+             f"H0_seed_{seed}.npz", f"train_ids_seed_{seed}.npy",
+             f"edge_meta_seed_{seed}.csv", f"graph_config_seed_{seed}.json")
+    hashes = {}
+    for name in names:
+        digest = hashlib.sha256()
+        with open(Path(output_dir) / name, "rb") as source:
+            for chunk in iter(lambda: source.read(4 * 1024 * 1024), b""):
+                digest.update(chunk)
+        hashes[name] = digest.hexdigest()
+    return hashes
 
 
 def metrics(labels, scores):
@@ -137,11 +154,14 @@ def train(*, seed=1, feature_set="behavior", epochs=50, patience=5,
                 "lambda_cl": lambda_cl, "temperature": temperature,
                 "contrastive_nodes": contrastive_nodes, "k": k, "hsl": hsl,
                 "refinement": refinement}
+    artifacts = artifact_hashes(output_dir, seed)
+    run_id = hashlib.sha256(json.dumps({"settings": settings, "artifacts": artifacts},
+        sort_keys=True).encode("utf-8")).hexdigest()[:10]
     runs_dir, reports_dir = Path(runs_dir), Path(reports_dir)
     runs_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
     name = f"{'hgsl' if hsl else 'hgnn'}_{feature_set}_seed_{seed}"
-    checkpoint = runs_dir / f"simple_{name}.pt"
+    checkpoint = runs_dir / f"simple_{name}_{run_id}.pt"
     history, best_auc, best_epoch, stale = [], -float("inf"), 0, 0
     for epoch in range(1, epochs + 1):
         rng = np.random.default_rng(seed * 100003 + epoch)
@@ -179,7 +199,8 @@ def train(*, seed=1, feature_set="behavior", epochs=50, patience=5,
                         "validation": validation, "seed": seed, "feature_set": feature_set,
                         "input_dim": x.shape[1], "hidden_dim": hidden_dim,
                         "dropout": dropout, "hsl": hsl, "refinement": refinement,
-                        "k": k, "settings": settings}, checkpoint)
+                        "k": k, "settings": settings,
+                        "artifact_hashes": artifacts}, checkpoint)
         else:
             stale += 1
             if stale >= patience:
@@ -189,8 +210,8 @@ def train(*, seed=1, feature_set="behavior", epochs=50, patience=5,
               "validation_targets": count, "history": history,
               "seed": seed, "feature_set": feature_set, "train_nodes": len(y),
               "test_used_for_selection": False, "pos_weight": float(pos_weight),
-              "settings": settings}
-    (reports_dir / f"simple_{name}_train.json").write_text(json.dumps(report, indent=2),
+              "settings": settings, "artifact_hashes": artifacts}
+    (reports_dir / f"simple_{name}_{run_id}_train.json").write_text(json.dumps(report, indent=2),
                                                               encoding="utf-8")
     print(f"Saved validation-selected checkpoint: {checkpoint}", flush=True)
     return report
@@ -201,6 +222,13 @@ def test(checkpoint, *, output_dir=PROCESSED, device_name="auto", test_limit=0,
     device = torch.device("cuda" if device_name == "auto" and torch.cuda.is_available()
                           else "cpu" if device_name == "auto" else device_name)
     saved = torch.load(checkpoint, map_location=device, weights_only=False)
+    if "artifact_hashes" not in saved:
+        raise ValueError("Checkpoint has no data hashes; retrain with the current code")
+    current_hashes = artifact_hashes(output_dir, saved["seed"])
+    changed = [name for name, digest in saved["artifact_hashes"].items()
+               if current_hashes.get(name) != digest]
+    if changed:
+        raise ValueError(f"Processed data changed since training: {', '.join(changed)}")
     model = HGSLModel(saved["input_dim"], saved["hidden_dim"], saved["dropout"]).to(device)
     model.load_state_dict(saved["state_dict"])
     data = load_evaluation_data(output_dir, seed=saved["seed"],
