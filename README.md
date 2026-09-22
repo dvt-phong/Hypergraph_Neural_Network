@@ -17,7 +17,8 @@ Code chính chỉ có tám file trong `src/`, theo đúng thứ tự chạy:
 | 7 | `losses.py` | BCE, contrastive và total loss |
 | 8 | `train.py` | Train, validation chọn checkpoint, test |
 
-Xem [hướng dẫn đọc code](docs/code-guide.md) và
+Xem [tài liệu đầy đủ theo sơ đồ và input/output từng file](docs/project-guide.md),
+[hướng dẫn đọc code ngắn](docs/code-guide.md) và
 [sơ đồ mô hình](docs/assets/hypergraph-neural-network-v3.png).
 
 ## Chạy từ dữ liệu gốc

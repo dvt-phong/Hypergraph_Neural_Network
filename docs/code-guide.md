@@ -1,5 +1,8 @@
 # Hướng dẫn đọc code
 
+Nếu cần giải thích theo từng khối trong sơ đồ, input/output và chi tiết tám file,
+xem [tài liệu project đầy đủ](project-guide.md).
+
 Đọc tám file trong `src/` theo số thứ tự dưới đây. Mỗi file có một hàm chính,
 các hàm còn lại chỉ giúp thực hiện bước đó.
 
