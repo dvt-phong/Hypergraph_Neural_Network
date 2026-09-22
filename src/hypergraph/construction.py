@@ -34,8 +34,8 @@ from hypergraph.behavioral import (
     build_seed_neighbors,
     write_neighbors_atomic,
 )
-from hypergraph.course import course_membership_query
-from hypergraph.object import object_membership_query
+from hypergraph.structural import course_membership_query
+from hypergraph.structural import object_membership_query
 from paths import PROCESSED_DATA_DIR, require_project_path
 
 

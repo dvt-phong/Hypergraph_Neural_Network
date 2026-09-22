@@ -32,10 +32,10 @@ Raw CSV
 |---|---|---|---|
 | `main.py` | Thể hiện pipeline và cung cấp CLI | Tham số experiment | Report của từng stage |
 | `config.py` | Khóa dataset contract, feature schema và seed | Không có | Constants và tên feature |
-| `data/preprocess.py` | Chuẩn hóa raw XuetangX | CSV gốc | `nodes`, `events_35d`, `users`, `courses` |
-| `data/split.py` | Tạo split user-disjoint | `nodes.parquet`, seed | `splits.parquet` |
-| `features/` | Aggregate và transform feature, chỉ fit trên train | Canonical tables và split | `X_base`, `X_context`, transforms |
-| `hypergraph/` | Tạo candidate hyperedge và sparse H0 | Events, split, features | Memberships, neighbors, H0, metadata |
+| `data.py` | Chuẩn hóa raw XuetangX | CSV gốc | `nodes`, `events_35d`, `users`, `courses` |
+| `split.py` | Tạo split user-disjoint | `nodes.parquet`, seed | `splits.parquet` |
+| `features/engineering.py`, `features/context.py`, `features/transform.py`, `features/io.py` | Aggregate, transform và đọc feature; chỉ fit trên train | Canonical tables và split | `X_base`, `X_context`, transforms |
+| `hypergraph/structural.py`, `hypergraph/behavioral.py`, `hypergraph/construction.py` | Tạo candidate hyperedge và sparse H0 | Events, split, features | Memberships, neighbors, H0, metadata |
 | `graph_data.py` | Ghép đúng feature với train/local graph | Artifacts của feature và graph | Train graph hoặc local evaluation graph |
 | `model.py` | Sparse propagation và HGNN encoder | Feature tensor và incidence operator | Node embeddings và logits |
 | `hsl.py` | Sampling, membership refinement và loss | Z0, H0, metadata, labels | H*, Z*, logits và loss |
@@ -43,12 +43,26 @@ Raw CSV
 | `metrics.py` | Tính metric nhị phân | Labels và probability | AUC, AUPRC, F1, precision, recall |
 | `artifacts.py` | I/O dùng chung | Path và payload | Atomic artifact, signature, timestamp |
 
+## Vì sao thấy “split” ở ba bước?
+
+Chỉ [`split.py`](../src/split.py) **gán** train/validation/test của nghiên cứu.
+`data.py` thêm `source_partition` để nhớ dòng đến từ CSV `train_*` hay `test_*`
+gốc; đó không phải tập train/test của model. `features/transform.py` chỉ **đọc**
+split đã gán để fit mean/std và median trên train của từng seed, rồi áp dụng
+cùng tham số cho mọi node. Không có lần chia dữ liệu thứ hai trong feature
+engineering.
+
+Bảng đầy đủ sáu CSV đầu vào, cột của từng Parquet, cách gán user-disjoint split
+và các ranh giới chống leakage nằm ở [khối Dataset và Feature Engineering](hgsl-model-code-walkthrough.md).
+
 ## Quy tắc thí nghiệm
 
 - Transformer và class weight chỉ được fit/tính từ train split.
 - Validation AUC chọn checkpoint.
-- Test split chỉ được đọc bởi `evaluate_hgsl_checkpoint()` hoặc
-  `evaluate_baseline_checkpoint()` sau khi checkpoint đã được chọn.
+- Feature và local graph của test có thể được chuẩn bị trước, nhưng **test label**
+  không tham gia loss hoặc chọn checkpoint. Test metrics chỉ được tính sau khi
+  validation đã chọn checkpoint. Nhãn toàn bộ dữ liệu có được dùng để cân bằng
+  các tập lúc tạo user-disjoint split.
 - Mỗi seed điều khiển cả data split, model initialization và sampling.
 - `check-hgsl` chỉ là một optimizer step để debug gradient; không phải kết quả
   thí nghiệm.
@@ -57,14 +71,14 @@ Raw CSV
 
 ```powershell
 # Kiểm tra nhanh HSL
-.\.venv\Scripts\python.exe run.py check-hgsl --seed 1 --feature-set full
+.\.venv\Scripts\python.exe src/main.py check-hgsl --seed 1 --feature-set full
 
 # Train một cấu hình
-.\.venv\Scripts\python.exe run.py train-hgsl --seed 1 --feature-set full --epochs 50
+.\.venv\Scripts\python.exe src/main.py train-hgsl --seed 1 --feature-set full --epochs 50
 
 # Test checkpoint đã chọn bằng validation
-.\.venv\Scripts\python.exe run.py evaluate --seed 1 --feature-set full
+.\.venv\Scripts\python.exe src/main.py evaluate --seed 1 --feature-set full
 
 # Chạy năm seed và tổng hợp mean/std
-.\.venv\Scripts\python.exe run.py run-experiments --feature-sets behavior full --epochs 50
+.\.venv\Scripts\python.exe src/main.py run-experiments --feature-sets behavior full --epochs 50
 ```

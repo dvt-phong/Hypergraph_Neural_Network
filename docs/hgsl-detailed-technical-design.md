@@ -136,7 +136,7 @@ validation hoặc test của mô hình. Nó cũng không phải node feature và
 #### 1.2.2 `experiment_split`: node được dùng ở bước nào của thí nghiệm?
 
 `experiment_split` là **vai trò của node trong một lần chạy thí nghiệm**. Biến này
-được sinh sau preprocessing bởi `src/data/split.py`, có ba giá trị:
+được sinh sau preprocessing bởi `src/split.py`, có ba giá trị:
 
 | `experiment_split` | Dùng để làm gì? |
 |---|---|
@@ -330,8 +330,8 @@ splits.parquet
 | File | Hàm/lớp | Trách nhiệm |
 |---|---|---|
 | `src/config.py` | `DatasetContract`, `SOURCE_SCHEMAS` | Khóa tên file, schema, số lượng và protocol thí nghiệm |
-| `src/data/preprocess.py` | `validate_source_files()`, `prepare_dataset()` | Kiểm tra đầu vào và tạo nodes/users/courses/events canonical |
-| `src/data/split.py` | `assign_user_groups()`, `build_splits()` | Tạo và kiểm tra năm user-disjoint split |
+| `src/data.py` | `validate_source_files()`, `prepare_dataset()` | Kiểm tra đầu vào và tạo nodes/users/courses/events canonical |
+| `src/split.py` | `assign_user_groups()`, `build_splits()` | Tạo và kiểm tra năm user-disjoint split |
 | `src/main.py` | `prepare-data`, `split-data` | Entry point dòng lệnh |
 
 Phase preprocessing không dùng cache hay manifest. Mỗi lệnh luôn tạo lại artifact
@@ -523,8 +523,8 @@ Label: không được đọc khi tạo hyperedge
 
 | File | Hàm/lớp | Trách nhiệm |
 |---|---|---|
-| `src/hypergraph/course.py` | `course_membership_query()` | Sinh candidate Course incidence |
-| `src/hypergraph/object.py` | `object_membership_query()` | Sinh candidate Object incidence |
+| `src/hypergraph/structural.py` | `course_membership_query()` | Sinh candidate Course incidence |
+| `src/hypergraph/structural.py` | `object_membership_query()` | Sinh candidate Object incidence |
 | `src/hypergraph/behavioral.py` | `build_seed_neighbors()` | FAISS cosine kNN với train references |
 | `src/hypergraph/construction.py` | `_build_structural()` | Gộp Course và Object candidate |
 | `src/hypergraph/construction.py` | `build_hyperedges()` | Điều phối ba family, cache và audit |
@@ -1056,23 +1056,23 @@ chạy bảng kết quả nghiên cứu chính thức.
 Build toàn bộ data/graph artifact:
 
 ```powershell
-.\.venv\Scripts\python.exe run.py prepare-data
-.\.venv\Scripts\python.exe run.py split-data
-.\.venv\Scripts\python.exe run.py build-features
-.\.venv\Scripts\python.exe run.py build-hyperedges
-.\.venv\Scripts\python.exe run.py build-hypergraph --behavioral-k 10
+.\.venv\Scripts\python.exe src/main.py prepare-data
+.\.venv\Scripts\python.exe src/main.py split-data
+.\.venv\Scripts\python.exe src/main.py build-features
+.\.venv\Scripts\python.exe src/main.py build-hyperedges
+.\.venv\Scripts\python.exe src/main.py build-hypergraph --behavioral-k 10
 ```
 
 Smoke test cấu hình đầy đủ 96 chiều:
 
 ```powershell
-.\.venv\Scripts\python.exe run.py check-hgsl --seed 1 --feature-set full
+.\.venv\Scripts\python.exe src/main.py check-hgsl --seed 1 --feature-set full
 ```
 
 Train với toàn bộ validation targets:
 
 ```powershell
-.\.venv\Scripts\python.exe run.py train-hgsl `
+.\.venv\Scripts\python.exe src/main.py train-hgsl `
   --seed 1 `
   --feature-set full `
   --epochs 100 `
@@ -1086,9 +1086,9 @@ Train với toàn bộ validation targets:
 
 | Khối | File chính |
 |---|---|
-| 1. Preprocessing | `src/config.py`, `preprocess.py`, `split.py` |
-| 2. Feature engineering | `src/features/engineering.py`, `context.py`, `transform.py`, `io.py` |
-| 3. Hypergraph construction | `src/hypergraph/course.py`, `object.py`, `behavioral.py`, `construction.py` |
+| 1. Preprocessing | `src/config.py`, `src/data.py`, `src/split.py` |
+| 2. Feature engineering | `src/features/engineering.py`, `src/features/context.py`, `src/features/transform.py`, `src/features/io.py` |
+| 3. Hypergraph construction | `src/hypergraph/structural.py`, `src/hypergraph/behavioral.py`, `src/hypergraph/construction.py` |
 | 4. Hyperedge | `src/hsl.py` |
 | 5. Initial `H0` và `X` | `src/hypergraph/construction.py`, `src/graph_data.py`, `src/model.py` |
 | 6. Hypergraph structure learning | `src/model.py`, `src/hsl.py` |

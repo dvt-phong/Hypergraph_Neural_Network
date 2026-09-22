@@ -305,9 +305,9 @@ smoke run chỉ chứng minh pipeline hoạt động, **không phải kết qu�
 | Nội dung | File |
 |---|---|
 | Dataset contract và feature schema | `src/config.py` |
-| User-disjoint split | `src/data/split.py` |
+| User-disjoint split | `src/split.py` |
 | Feature engineering/transform | `src/features/engineering.py`, `src/features/transform.py` |
-| Course/Object/Behavioral construction | `src/hypergraph/` |
+| Course/Object/Behavioral construction | `src/hypergraph/structural.py`, `src/hypergraph/behavioral.py` |
 | `H0` và local graph | `src/hypergraph/construction.py`, `src/graph_data.py` |
 | Sparse HGNN | `src/model.py` |
 | Sampling và refinement | `src/hsl.py` |

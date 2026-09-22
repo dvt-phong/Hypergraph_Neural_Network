@@ -31,8 +31,8 @@ def run_pipeline(
     test_batch_size: int = 4,
     force: bool = False,
 ) -> dict[str, object]:
-    from data.preprocess import prepare_dataset
-    from data.split import build_splits
+    from data import prepare_dataset
+    from split import build_splits
     from features.transform import build_features
     from hypergraph.construction import (
         build_hyperedges,
@@ -186,7 +186,7 @@ def _structure() -> int:
 # Đầu vào: Không có; dùng default project paths.
 # Đầu ra: Exit code 0.
 def _prepare_data() -> int:
-    from data.preprocess import prepare_dataset
+    from data import prepare_dataset
 
     result = prepare_dataset()
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -197,7 +197,7 @@ def _prepare_data() -> int:
 # Đầu vào: Không có; dùng processed data mặc định.
 # Đầu ra: Exit code 0.
 def _split_data() -> int:
-    from data.split import build_splits
+    from split import build_splits
 
     result = build_splits()
     summary = {

@@ -18,7 +18,7 @@ Các chuỗi SQL ba nháy là câu truy vấn thực thi, không phải comment 
 
 | Thứ tự trên sơ đồ | Nên mở hàm nào trước | Đầu vào → đầu ra chính |
 |---|---|---|
-| Raw Data, Preprocessing | [`prepare_dataset()`](../src/data/preprocess.py), [`build_splits()`](../src/data/split.py) | CSV → canonical Parquet và user-disjoint split |
+| Raw Data, Preprocessing | [`prepare_dataset()`](../src/data.py), [`build_splits()`](../src/split.py) | CSV → canonical Parquet và user-disjoint split |
 | Feature Engineering, `X` | [`build_features()`](../src/features/transform.py), [`NodeFeatureStore.rows()`](../src/features/io.py) | Event/context + train IDs → `X_base`, `X_context`, `X` |
 | Build Hyperedges, `H0` | [`build_hyperedges()`](../src/hypergraph/construction.py), [`build_initial_hypergraph()`](../src/hypergraph/construction.py) | Node/event/features/split → Course, Object, Behavioral incidence và sparse `H0` |
 | Initial HGNN, `Z0` | [`HGSLModel.forward()`](../src/hsl.py), [`HGNNBaseline.encode()`](../src/model.py) | `(X, H0)` → `Z0` |
@@ -36,11 +36,11 @@ edge của từng local graph được refine theo cách deterministic.
 
 | Khối trong hình | Code chính | Trạng thái |
 |---|---|---|
-| Dataset XuetangX | `data/preprocess.py`, `data/split.py` | Đã triển khai |
+| Dataset XuetangX | `data.py`, `split.py` | Đã triển khai |
 | Feature Engineering | `features/engineering.py`, `features/context.py`, `features/transform.py` | Đã triển khai |
 | Nodes: Enrollment | `nodes.parquet` | Đã triển khai |
-| Course hyperedge | `hypergraph/course.py` | Đã triển khai |
-| Object hyperedge | `hypergraph/object.py` | Đã triển khai |
+| Course hyperedge | `hypergraph/structural.py` | Đã triển khai |
+| Object hyperedge | `hypergraph/structural.py` | Đã triển khai |
 | Behavioral hyperedge | `hypergraph/behavioral.py` | Đã triển khai |
 | User hyperedge | Không đưa vào `H0` | Chủ ý không dùng vì nguy cơ temporal leakage |
 | Initial hypergraph `H0` | `hypergraph/construction.py` | Đã triển khai |
@@ -148,35 +148,68 @@ quan sát 35 ngày.
 ### Code
 
 ```text
-src/data/preprocess.py
+src/data.py
   validate_source_files()
   prepare_dataset()
 
-src/data/split.py
+src/split.py
   assign_user_groups()
   build_splits()
 ```
 
 ### Đầu vào
 
-```text
-train_log.csv
-test_log.csv
-train_truth.csv
-test_truth.csv
-user_info.csv
-course_info.csv
-```
+`src/config.py::SOURCE_SCHEMAS` khóa đúng tên và thứ tự cột của sáu file CSV:
+
+| CSV gốc | Cột trong CSV | Vai trò |
+|---|---|---|
+| `train_log.csv`, `test_log.csv` | `enroll_id`, `username`, `course_id`, `session_id`, `action`, `object`, `time` | Log hoạt động; tên train/test chỉ là nguồn của file gốc. |
+| `train_truth.csv`, `test_truth.csv` | `enroll_id`, `truth` | Nhãn dropout, ghép với log bằng `(enroll_id, source_partition)`. |
+| `user_info.csv` | `user_id`, `gender`, `education`, `birth` | Metadata user; `username` trong log được đổi kiểu thành `user_id`. |
+| `course_info.csv` | `id`, `course_id`, `start`, `end`, `course_type`, `category` | Metadata course và mốc tính `course_day`. |
+
+Code kiểm tra đủ sáu file và header trước khi đọc dữ liệu. Các cột CSV được đọc
+ban đầu như chuỗi, rồi mới đổi kiểu bằng `try_cast` trong query; dữ liệu sai
+kiểu hoặc sai số dòng làm preprocessing dừng.
 
 ### Đầu ra
 
-```text
-nodes.parquet
-events_35d.parquet
-users.parquet
-courses.parquet
-splits.parquet
-```
+`src/data.py::prepare_dataset()` tạo **bốn** Parquet canonical. Tên cột dưới
+đây đã đối chiếu với schema Parquet hiện có:
+
+| Parquet | Nguồn CSV | Cột đầu ra (theo thứ tự) | Biến đổi chính |
+|---|---|---|---|
+| `nodes.parquet` | Hai `*_log.csv` + hai `*_truth.csv` | `node_id`, `enroll_id`, `user_id`, `course_id`, `source_partition`, `label` | Một dòng/enrollment; `username → user_id`, `truth → label`; `node_id` đánh số từ 0. |
+| `events_35d.parquet` | Hai `*_log.csv` + `nodes.parquet` + `courses.parquet` | `node_id`, `enroll_id`, `user_id`, `course_id`, `source_partition`, `session_id`, `action`, `object_id`, `event_time`, `course_day` | `object → object_id`, `time → event_time`; chỉ giữ `course_day` từ 0 đến 34. |
+| `users.parquet` | `user_info.csv` + user có trong `nodes.parquet` | `user_id`, `gender`, `education`, `birth_year` | `birth → birth_year`; chuỗi trống thành NULL; chỉ giữ user được dùng. |
+| `courses.parquet` | `course_info.csv` + course có trong `nodes.parquet` | `metadata_id`, `course_id`, `course_start`, `course_end`, `course_type`, `category` | `id → metadata_id`, `start/end → timestamp`; chỉ giữ course được dùng. |
+
+`src/split.py::build_splits()` chạy **sau** preprocessing và tạo file thứ năm:
+
+| Parquet | Cột đầu ra | Ý nghĩa |
+|---|---|---|
+| `splits.parquet` | `seed`, `node_id`, `enroll_id`, `user_id`, `source_partition`, `experiment_split` | Với mỗi seed, mỗi node nhận một trong `train`, `validation`, `test`. Không sao chép `label` vào file split. |
+
+`source_partition` và `experiment_split` **không đồng nghĩa**:
+
+| Trường | Tạo ở đâu? | Giá trị | Dùng để làm gì? |
+|---|---|---|---|
+| `source_partition` | `data.py`, dựa trên tên CSV | `train`/`test` gốc | Truy vết nguồn và ghép đúng log–truth; không quyết định model train/test. |
+| `experiment_split` | `split.py`, dựa trên `user_id` và seed | `train`/`validation`/`test` mới | Quyết định node nào được train, chọn checkpoint, đánh giá. |
+
+Hiện code gộp cả hai nguồn CSV gốc rồi **chia lại** theo user cho nghiên cứu.
+Ví dụ ở artifact seed 1 hiện tại, `experiment_split='train'` chứa 43.414
+enrollment từ `source_partition='test'`. Vì vậy đây không phải protocol giữ
+nguyên test gốc của bộ dữ liệu. Khi so với phương pháp khác, phải dùng cùng
+user-disjoint split này; nếu muốn giữ test gốc bất khả xâm phạm thì phải thiết kế
+lại split trước khi chạy thí nghiệm.
+
+`assign_user_groups()` lấy số enrollment và số dropout của từng user để cân
+bằng ba tập gần tỷ lệ 64/16/20, rồi gán **toàn bộ enrollment của một user** vào
+cùng một tập cho mỗi seed. Nhãn của toàn bộ dữ liệu được dùng để *stratify*
+(cân bằng phân bố) lúc tạo split, nhưng không được dùng để fit feature hay tính
+training loss trên validation/test. `_validate_and_summarize()` kiểm tra mỗi
+seed đủ node, user overlap bằng 0 và sai lệch tỷ lệ nằm trong ngưỡng đã khóa.
 
 ### Quyết định quan trọng
 
@@ -190,8 +223,8 @@ splits.parquet
 ### Cách kiểm tra
 
 ```powershell
-python run.py prepare-data
-python run.py split-data
+python src/main.py prepare-data
+python src/main.py split-data
 python -m unittest tests.test_phase1 tests.test_phase2 -v
 ```
 
@@ -239,7 +272,7 @@ Categorical context dùng fixed vocabulary, không học vocabulary từ test.
 ```text
 src/features/engineering.py  behavioral aggregation
 src/features/context.py      user/course context
-src/features/transform.py    train-only transform và ghi array
+src/features/transform.py             train-only transform và ghi array
 src/features/io.py           chọn feature block và load row
 src/config.py                thứ tự/tên feature
 ```
@@ -247,14 +280,50 @@ src/config.py                thứ tự/tên feature
 ### Đầu vào và đầu ra
 
 ```text
-nodes + events + users + courses + splits
-→ X_base.npy + X_context.npy
+nodes + events → features_raw.parquet
+nodes + users + courses → context_raw.parquet
+features_raw + context_raw + splits → X_base.npy + X_context.npy
 ```
+
+`features_raw.parquet` có `node_id`, 35 cột `day_00`–`day_34`, 23 cột
+`action_<tên_action>`, `session_count`, `distinct_observed_objects` và tám cột
+tóm tắt hoạt động (`event_count`, `active_days`, `active_span_days`,
+`first_active_day`, `last_active_day`, `days_since_last_activity`,
+`active_day_ratio`, `has_activity`). **Chỉ 60 cột đầu** sau `node_id` tạo
+`X_base`; tám cột tóm tắt phục vụ audit/ablation, không tự động đi vào model.
+
+`context_raw.parquet` có `node_id`, `gender`, `education`,
+`age_at_course_start`, `category`, `course_duration_days`. Sau mã hóa và chuẩn
+hóa, nó thành 36 chiều trong `X_context`. Tùy `feature_set`, model nhận 60,
+75, 81 hoặc 96 chiều.
 
 ### Điểm chống leakage
 
-Toàn bộ node đều được transform, nhưng thống kê transform chỉ được fit trên
-train IDs của seed tương ứng.
+Có **một lần gán split** trong `split.py`. `features/engineering.py` và
+`features/context.py` tạo feature thô cho từng node, không chia tập lần nữa.
+`features/transform.py` chỉ **đọc** `splits.parquet` để lấy
+`experiment_split='train'` của từng seed khi fit tham số biến đổi:
+
+1. `features_raw` đếm event trong cửa sổ quan sát của chính enrollment; không
+   lấy `label`, không cộng thống kê giữa các node. `log1p` cũng là phép đổi từng
+   giá trị, nên có thể làm cho mọi node trước khi fit scaler.
+2. Mean/std của 60 behavioral features và median/mean/std của numeric context
+   chỉ tính trên train node IDs của seed đó. Cùng tham số đã fit được áp dụng
+   cho train, validation và test; không fit lại trên hai tập sau.
+3. One-hot context dùng vocabulary cố định trong `config.py`, không học category
+   mới từ validation/test. `source_partition` và `label` không nằm trong `X`.
+4. Training loss và class weight dùng nhãn của train graph. Validation label
+   chỉ chọn checkpoint; test label chỉ dùng cho đánh giá checkpoint đã chọn.
+   Hypergraph train và behavioral kNN cũng chỉ dùng train reference nodes.
+
+**Giới hạn cần xác nhận về thời gian:** `course_duration_days` lấy từ
+`course_info.end`. Code chưa kiểm chứng trường `end` đã được biết tại thời điểm
+dự đoán hay chỉ có sau khi course kết thúc. Nếu là thông tin biết sau, feature
+này gây *temporal leakage* dù split và scaler đều đúng; khi đó phải bỏ nó hoặc
+thay bằng lịch kết thúc đã công bố trước cutoff. Tương tự, code giữ event ở
+ngày course 0–34 nhưng không tự chứng minh nhãn `truth` được xác định *sau* cửa
+sổ đó. Cần xác nhận prediction cutoff và label horizon theo định nghĩa bài toán
+trước khi kết luận không có leakage theo thời gian.
 
 ## 6. Khối Hypergraph Construction
 
@@ -279,7 +348,7 @@ e_course(c) = {v_i | course_id(v_i) = c}
 Code:
 
 ```text
-src/hypergraph/course.py::course_membership_query()
+src/hypergraph/structural.py::course_membership_query()
 ```
 
 ### 6.3 Object hyperedge
@@ -294,7 +363,7 @@ e_object(c, o) = {v_i | v_i tương tác object o trong course c}
 Code:
 
 ```text
-src/hypergraph/object.py::object_membership_query()
+src/hypergraph/structural.py::object_membership_query()
 ```
 
 Chỉ giữ structural hyperedge có ít nhất hai node.

@@ -31,43 +31,37 @@ src/
   hsl.py
   train.py
   metrics.py
-  data/
-    __init__.py
-    preprocess.py
-    split.py
+  data.py
+  split.py
   features/
-    __init__.py
     context.py
     engineering.py
     io.py
     transform.py
   hypergraph/
-    __init__.py
-    course.py
-    object.py
+    structural.py
     behavioral.py
-    construction.py
     audit.py
+    construction.py
 ```
 
-Các package `models`, `losses` và `training` cũ đã được gom thành `model.py`,
-`hsl.py`, `train.py` và `metrics.py` để luồng mô hình có thể đọc liên tục. Ba
-package còn lại chỉ tách các bước SQL/data lớn, tránh tạo một file hơn 1.000 dòng.
+Chỉ `features/` và `hypergraph/` là package con; các file lõi nằm trực tiếp trong
+`src/`. Course và Object candidate cùng nằm ở `hypergraph/structural.py`.
 
-`run.py` là entry point duy nhất ở project root. Các lệnh dự kiến:
+`src/main.py` là entry point duy nhất cho pipeline. Chạy từ project root:
 
 ```text
-python run.py prepare-data
-python run.py split-data
-python run.py build-features
-python run.py build-hyperedges
-python run.py build-hypergraph
-python run.py train-baseline --seed 1 --epochs 1
-python run.py check-hgsl --seed 1
-python run.py train-hgsl --seed 1 --epochs 1
-python run.py evaluate --seed 1
-python run.py run-experiments
-python run.py run-pipeline --seed 1 --epochs 1
+python src/main.py prepare-data
+python src/main.py split-data
+python src/main.py build-features
+python src/main.py build-hyperedges
+python src/main.py build-hypergraph
+python src/main.py train-baseline --seed 1 --epochs 1
+python src/main.py check-hgsl --seed 1
+python src/main.py train-hgsl --seed 1 --epochs 1
+python src/main.py evaluate --seed 1
+python src/main.py run-experiments
+python src/main.py run-pipeline --seed 1 --epochs 1
 ```
 
 ## 3. Cách tổ chức artifact
@@ -331,9 +325,8 @@ Không đưa User hyperedge vào main `H0` vòng đầu vì nhiều enrollment c
 có course start khác nhau; nối trực tiếp có thể đưa hành vi tương lai vào enrollment
 trước đó.
 
-Module `src/hypergraph/user.py` chỉ phục vụ ablation sau này. Khi bật, một node chỉ
-được nối với enrollment của cùng user đã quan sát được trước prediction cutoff của
-node đó.
+User hyperedge chưa được cài trong cấu hình hiện tại. Nếu làm ablation sau này,
+chỉ được nối với enrollment cùng user đã quan sát trước prediction cutoff của node.
 
 ### Điều kiện hoàn thành
 
@@ -542,12 +535,13 @@ L_total = L_BCE + λ L_CL
 Phần thực thi hiện nằm trong `src/train.py` và `src/main.py`:
 
 ```powershell
-python run.py train-hgsl --seed 1 --feature-set full --epochs 50
-python run.py evaluate --seed 1 --feature-set full
-python run.py run-experiments --feature-sets behavior full --epochs 50
+python src/main.py train-hgsl --seed 1 --feature-set full --epochs 50
+python src/main.py evaluate --seed 1 --feature-set full
+python src/main.py run-experiments --feature-sets behavior full --epochs 50
 ```
 
-`evaluate` chỉ đọc test sau khi checkpoint đã được chọn bằng validation.
+`evaluate` chỉ dùng nhãn test để tính metrics sau khi checkpoint đã được chọn
+bằng validation; feature và local graph của test có thể được chuẩn bị trước.
 `run-experiments` ghi từng run và mean/std vào
 `outputs/reports/experiment_summary.json`.
 
@@ -639,34 +633,34 @@ hoàn thành của phase trước chưa đạt.
 |---|---|---|---|
 | A01 | `src/paths.py` | Khai báo đường dẫn raw, processed, output; không hard-code ở module khác | Test mọi path nằm trong project root |
 | A02 | `src/config.py` | Khai báo raw columns, 23 actions, observation days và schema version | Action không trùng; đủ 23 action |
-| A03–A04 | `src/data/preprocess.py` | Kiểm tra input/invariant, tạo node index, join truth/user/course và canonical event ngày 0–34 | 225.642 node, 247 course, 40.558.640 event |
-| A05 | `src/data/split.py` | Tạo user summary và chia group 64/16/20 cho năm seed đã khóa | User overlap bằng 0 trong từng seed |
-| A06 | `src/data/split.py` | Ghi riêng `seed`, `source_partition` và `experiment_split` | Mỗi seed đủ node; user overlap bằng 0 |
+| A03–A04 | `src/data.py` | Kiểm tra input/invariant, tạo node index, join truth/user/course và canonical event ngày 0–34 | 225.642 node, 247 course, 40.558.640 event |
+| A05 | `src/split.py` | Tạo user summary và chia group 64/16/20 cho năm seed đã khóa | User overlap bằng 0 trong từng seed |
+| A06 | `src/split.py` | Ghi riêng `seed`, `source_partition` và `experiment_split` | Mỗi seed đủ node; user overlap bằng 0 |
 | A07 | `src/features/engineering.py` | Aggregate 35 daily count, 23 action count, session và observed object | `features_raw.parquet`; invariant đúng |
 | A08 | `src/features/transform.py` | Fit `log1p`/standardization trên train; transform các split còn lại | Transformer không đọc val/test khi fit |
 | A09 | `src/features/engineering.py` | Hỗ trợ cắt cửa sổ 7/14/21/28/35 từ canonical event | Không đọc lại raw CSV |
 | A11 | `src/features/context.py` | Join demographic/course metadata xuống enrollment node | `context_raw.parquet`; không nhân bản node |
 | A12 | `src/features/io.py` | Ghép bốn feature set 60/75/81/96 chiều khi load | Train/local graph cùng schema và node order |
 
-Milestone A hoàn thành khi `python run.py build-features` tạo được `X_base.npy`,
+Milestone A hoàn thành khi `python src/main.py build-features` tạo được `X_base.npy`,
 `X_context.npy` từ năm split user-disjoint đã được kiểm tra mà không cần code mô hình.
 
 ### Milestone B — Initial hypergraph `H0`
 
 | ID | File chính | Công việc | Đầu ra/kiểm tra |
 |---|---|---|---|
-| B01 | `src/hypergraph/course.py` | Tạo course incidence trên train | Không có singleton; key duy nhất |
-| B02 | `src/hypergraph/object.py` | Tạo composite object key và incidence train | Không nối object khác course |
-| B03 | `src/hypergraph/object.py` | Giữ video/problem/forum có cardinality ≥ 2 | Forum non-singleton không bị loại nhầm |
+| B01 | `src/hypergraph/structural.py` | Tạo course incidence trên train | Không có singleton; key duy nhất |
+| B02 | `src/hypergraph/structural.py` | Tạo composite object key và incidence train | Không nối object khác course |
+| B03 | `src/hypergraph/structural.py` | Giữ video/problem/forum có cardinality ≥ 2 | Forum non-singleton không bị loại nhầm |
 | B04 | `src/hypergraph/behavioral.py` | Fit cosine neighbor index bằng train `X_base` | Index không nhận label |
 | B05 | `src/hypergraph/behavioral.py` | Tạo anchor-plus-k-neighbor edge; loại edge trùng | Thử `k={5,10,20}` bằng validation |
-| B06 | `src/hypergraph/user.py` | Cài causal user-edge builder nhưng để mặc định tắt | Main configuration không chứa user edge |
+| B06 | Chưa triển khai | Causal user-edge chỉ là ablation dự kiến, không thuộc main model | Main configuration không chứa user edge |
 | B07 | `src/hypergraph/audit.py` | Thống kê số edge, size, P90/P95/P99/max/singleton theo family | Có bảng global và train riêng |
 | B08 | `src/hypergraph/construction.py` | Ghép `H_course`, `H_object`, `H_behavior` thành sparse `H0_train` | Không tạo dense matrix |
 | B09 | `src/hypergraph/construction.py` | Tạo local memberships cho từng val/test target với train reference | Mỗi local graph đúng một target; không target-target edge |
 | B10 | `src/artifacts.py` | Ghi `.npz`, membership table và hyperedge metadata | Shape/hash khớp node index |
 
-Milestone B hoàn thành khi `python run.py build-hypergraph` tạo được `H0_train.npz`
+Milestone B hoàn thành khi `python src/main.py build-hypergraph` tạo được `H0_train.npz`
 và local memberships, đồng thời toàn bộ audit hyperedge đạt invariant.
 
 ### Milestone C — HGNN baseline
@@ -702,7 +696,7 @@ refinement và không materialize ma trận node-hyperedge dense.
 
 | ID | File/đầu ra | Công việc | Điều kiện hoàn thành |
 |---|---|---|---|
-| E01 | `src/main.py`, `run.py` | Hoàn thiện CLI; validate tham số và log rõ cache hit/miss | Mỗi phase chạy độc lập được |
+| E01 | `src/main.py`, `src/main.py` | Hoàn thiện CLI; validate tham số và log rõ cache hit/miss | Mỗi phase chạy độc lập được |
 | E02 | `outputs/runs/` | Lưu checkpoint, seed, metric, hash data/graph và tham số | Có thể truy lại đúng input của mỗi run |
 | E03 | Main experiment | Chạy HGSL với cấu hình được chọn trên validation | Test chỉ đánh giá một lần sau khi khóa cấu hình |
 | E04 | Ablation | Chạy feature, hyperedge, HSL và observation-window ablation | Cùng split, metric và seed |
@@ -729,7 +723,7 @@ chỉ dùng validation. Test không được dùng để thay đổi thiết k�
 
 | Nhóm | Package | Mục đích |
 |---|---|---|
-| Data | `duckdb`, `ijson` | Đọc/aggregate dữ liệu lớn |
+| Data | `duckdb` | Đọc/aggregate dữ liệu lớn |
 | Numeric | `numpy`, `scipy` | Dense feature và sparse incidence |
 | ML utility | `scikit-learn`, `joblib` | kNN, scaler và metric |
 | Model | `torch` | HGNN, HSL và training |

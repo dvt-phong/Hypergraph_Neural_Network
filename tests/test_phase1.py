@@ -8,7 +8,7 @@ import duckdb
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from data.preprocess import PARQUET_ARTIFACTS, validate_source_files
+from data import PARQUET_ARTIFACTS, validate_source_files
 from config import DATASET_CONTRACT, SOURCE_SCHEMAS
 from paths import PROCESSED_DATA_DIR, RAW_DATA_DIR
 

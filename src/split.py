@@ -1,4 +1,4 @@
-# Tạo train/validation/test split deterministic và không trùng user.
+# Tạo train/validation/test của nghiên cứu theo user_id, khác source_partition.
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,6 +9,7 @@ from typing import Any
 
 import duckdb
 
+from artifacts import copy_parquet_atomic, sql_path
 from config import (
     DATASET_CONTRACT,
     EXPERIMENT_SEEDS,
@@ -23,35 +24,10 @@ SPLIT_ALGORITHM = "stratified weighted round-robin group assignment"
 MAX_RELATIVE_DEVIATION = 0.005
 
 
-# Mục đích: Chuẩn hóa Path để nhúng vào câu SQL DuckDB.
-# Đầu vào: Đường dẫn file.
-# Đầu ra: Chuỗi đường dẫn tuyệt đối đã escape dấu nháy đơn.
-def _sql_path(path: Path) -> str:
-    return path.resolve().as_posix().replace("'", "''")
-
-
-# Mục đích: Ghi một query thành file Parquet hoàn chỉnh.
-# Đầu vào: Kết nối DuckDB, câu query và đường dẫn đích.
-# Đầu ra: Không trả dữ liệu; tạo hoặc thay thế file đích.
-# Lưu ý: Không dùng cache ở bước split để kết quả luôn được kiểm tra lại.
-def _write_parquet(
-    connection: duckdb.DuckDBPyConnection,
-    query: str,
-    destination: Path,
-) -> None:
-    temporary = destination.with_name(destination.name + ".part")
-    temporary.unlink(missing_ok=True)
-    connection.execute(
-        f"COPY ({query}) TO '{_sql_path(temporary)}' "
-        "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 1000000)"
-    )
-    temporary.replace(destination)
-
-
-@dataclass(frozen=True)
 # Mục đích: Lưu thống kê của một user để gán cả user vào đúng một split.
 # Đầu vào: user_id, tổng enrollment và tổng dropout của user.
 # Đầu ra: Object bất biến được dùng bởi thuật toán assign_user_groups().
+@dataclass(frozen=True)
 class UserGroup:
     user_id: int
     enrollments: int
@@ -188,7 +164,7 @@ def _load_user_groups(
         f"""
         SELECT user_id, count(*) AS enrollments,
                sum(CASE WHEN label=1 THEN 1 ELSE 0 END) AS dropouts
-        FROM read_parquet('{_sql_path(nodes_path)}')
+        FROM read_parquet('{sql_path(nodes_path)}')
         GROUP BY user_id ORDER BY user_id
         """
     ).fetchall()
@@ -206,8 +182,8 @@ def _validate_and_summarize(
     targets: dict[str, dict[str, int]],
     seeds: tuple[int, ...],
 ) -> tuple[dict[str, dict[str, dict[str, Any]]], dict[str, dict[str, int]]]:
-    split_source = f"read_parquet('{_sql_path(split_path)}')"
-    nodes_source = f"read_parquet('{_sql_path(nodes_path)}')"
+    split_source = f"read_parquet('{sql_path(split_path)}')"
+    nodes_source = f"read_parquet('{sql_path(nodes_path)}')"
     seed_values = ", ".join(str(seed) for seed in seeds)
     invariant_rows = connection.execute(
         f"""
@@ -384,11 +360,11 @@ def build_splits(
         query = f"""
             SELECT s.seed, n.node_id, n.enroll_id, n.user_id, n.source_partition,
                    s.experiment_split
-            FROM read_parquet('{_sql_path(nodes_path)}') n
+            FROM read_parquet('{sql_path(nodes_path)}') n
             JOIN user_splits s USING(user_id)
             ORDER BY s.seed, n.node_id
         """
-        _write_parquet(connection, query, split_path)
+        copy_parquet_atomic(connection, query, split_path)
         summary_by_seed, invariants_by_seed = _validate_and_summarize(
             connection, nodes_path, split_path, targets, seeds
         )

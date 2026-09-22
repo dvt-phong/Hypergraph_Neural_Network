@@ -1,4 +1,4 @@
-# Kiểm tra dữ liệu XuetangX gốc và tạo bốn bảng Parquet chuẩn của Phase 1.
+# Kiểm tra CSV gốc và tạo bốn bảng Parquet chuẩn, chưa chia experiment split.
 from __future__ import annotations
 
 import csv
@@ -7,6 +7,7 @@ from typing import Any
 
 import duckdb
 
+from artifacts import copy_parquet_atomic, sql_path
 from config import (
     ACTIONS,
     DATASET_CONTRACT,
@@ -68,20 +69,13 @@ def validate_source_files(raw_dir: Path = RAW_DATA_DIR) -> dict[str, dict[str, A
     return result
 
 
-# Mục đích: Escape một đường dẫn để dùng an toàn trong SQL nội bộ.
-# Đầu vào: Path cần chèn vào câu SQL.
-# Đầu ra: Chuỗi đường dẫn tuyệt đối dạng POSIX.
-def _sql_path(path: Path) -> str:
-    return path.resolve().as_posix().replace("'", "''")
-
-
 # Mục đích: Tạo biểu thức DuckDB đọc CSV với mọi cột ban đầu là chuỗi.
 # Đầu vào: Đường dẫn CSV.
 # Đầu ra: Chuỗi biểu thức read_csv_auto(...).
 # Lưu ý: Ép kiểu được thực hiện rõ ràng ở query sau để phát hiện dữ liệu lỗi.
 def _csv_source(path: Path) -> str:
     return (
-        f"read_csv_auto('{_sql_path(path)}', header=true, "
+        f"read_csv_auto('{sql_path(path)}', header=true, "
         "all_varchar=true, nullstr='')"
     )
 
@@ -111,24 +105,6 @@ def _truths_sql(raw_dir: Path) -> str:
         UNION ALL
         SELECT *, 'test' AS source_partition FROM {test}
     """
-
-
-# Mục đích: Ghi kết quả query thành Parquet theo cách atomic.
-# Đầu vào: Kết nối DuckDB, câu SELECT và file đích.
-# Đầu ra: Không trả dữ liệu; tạo file Parquet hoàn chỉnh.
-# Lưu ý: File .part chỉ được đổi tên sau khi DuckDB ghi thành công.
-def _write_parquet(
-    connection: duckdb.DuckDBPyConnection,
-    query: str,
-    destination: Path,
-) -> None:
-    temporary = destination.with_name(destination.name + ".part")
-    temporary.unlink(missing_ok=True)
-    connection.execute(
-        f"COPY ({query}) TO '{_sql_path(temporary)}' "
-        "(FORMAT PARQUET, COMPRESSION ZSTD, ROW_GROUP_SIZE 1000000)"
-    )
-    temporary.replace(destination)
 
 
 # Mục đích: Kiểm tra quan hệ raw đủ rõ ràng để tạo node và label duy nhất.
@@ -227,7 +203,7 @@ def _validate_outputs(
     connection: duckdb.DuckDBPyConnection,
     output_dir: Path,
 ) -> dict[str, int]:
-    paths = {name: _sql_path(output_dir / name) for name in PARQUET_ARTIFACTS}
+    paths = {name: sql_path(output_dir / name) for name in PARQUET_ARTIFACTS}
     expected = DATASET_CONTRACT
     allowed_sources = ", ".join(f"'{value}'" for value in SOURCE_PARTITIONS)
     allowed_actions = ", ".join(f"'{value}'" for value in ACTIONS)
@@ -314,6 +290,7 @@ def _validate_outputs(
 # Mục đích: Chạy trọn Phase 1 từ CSV gốc đến bốn bảng canonical đã kiểm tra.
 # Đầu vào: Thư mục raw data và thư mục output processed.
 # Đầu ra: Report gồm dataset, observation window, file nguồn và artifact đã tạo.
+# Lưu ý: source_partition chỉ lưu train/test của file gốc; split học máy tạo ở split.py.
 # Lưu ý: Hàm luôn rebuild; thứ tự node_id ổn định theo enroll_id/source partition.
 def prepare_dataset(
     raw_dir: Path = RAW_DATA_DIR,
@@ -357,12 +334,12 @@ def prepare_dataset(
             JOIN labels l USING(enroll_id, source_partition)
             ORDER BY e.enroll_id, e.source_partition
         """
-        _write_parquet(connection, nodes_query, output_dir / "nodes.parquet")
+        copy_parquet_atomic(connection, nodes_query, output_dir / "nodes.parquet")
 
         users_query = f"""
             WITH selected AS (
                 SELECT DISTINCT user_id
-                FROM read_parquet('{_sql_path(output_dir / 'nodes.parquet')}')
+                FROM read_parquet('{sql_path(output_dir / 'nodes.parquet')}')
             ), users AS (
                 SELECT try_cast(user_id AS BIGINT) AS user_id,
                        nullif(trim(gender), '') AS gender,
@@ -374,12 +351,12 @@ def prepare_dataset(
             FROM users u JOIN selected s USING(user_id)
             ORDER BY u.user_id
         """
-        _write_parquet(connection, users_query, output_dir / "users.parquet")
+        copy_parquet_atomic(connection, users_query, output_dir / "users.parquet")
 
         courses_query = f"""
             WITH selected AS (
                 SELECT DISTINCT course_id
-                FROM read_parquet('{_sql_path(output_dir / 'nodes.parquet')}')
+                FROM read_parquet('{sql_path(output_dir / 'nodes.parquet')}')
             ), courses AS (
                 SELECT try_cast(id AS BIGINT) AS metadata_id,
                        course_id,
@@ -392,7 +369,7 @@ def prepare_dataset(
             SELECT c.* FROM courses c JOIN selected s USING(course_id)
             ORDER BY c.course_id
         """
-        _write_parquet(connection, courses_query, output_dir / "courses.parquet")
+        copy_parquet_atomic(connection, courses_query, output_dir / "courses.parquet")
 
         events_query = f"""
             WITH logs AS ({logs}), parsed AS (
@@ -408,15 +385,15 @@ def prepare_dataset(
                        date_diff('day', cast(c.course_start AS DATE),
                                         cast(p.event_time AS DATE)) AS course_day
                 FROM parsed p
-                JOIN read_parquet('{_sql_path(output_dir / 'nodes.parquet')}') n
+                JOIN read_parquet('{sql_path(output_dir / 'nodes.parquet')}') n
                   USING(enroll_id, source_partition)
-                JOIN read_parquet('{_sql_path(output_dir / 'courses.parquet')}') c
+                JOIN read_parquet('{sql_path(output_dir / 'courses.parquet')}') c
                   USING(course_id)
             )
             SELECT * FROM canonical
             WHERE course_day BETWEEN 0 AND {OBSERVATION_DAYS - 1}
         """
-        _write_parquet(connection, events_query, output_dir / "events_35d.parquet")
+        copy_parquet_atomic(connection, events_query, output_dir / "events_35d.parquet")
         row_counts = _validate_outputs(connection, output_dir)
     finally:
         connection.close()

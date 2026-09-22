@@ -1,4 +1,4 @@
-# Tổng hợp event canonical thành feature hành vi ở mức enrollment node.
+# Tổng hợp event theo từng node; chưa fit thống kê và không gán experiment split.
 from __future__ import annotations
 
 from pathlib import Path

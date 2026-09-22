@@ -8,9 +8,9 @@ SCHEMA_VERSION = "xuetangx-247-v1"
 OBSERVATION_DAYS = 35
 EARLY_OBSERVATION_DAYS = (7, 14, 21, 28, 35)
 
-# tập dataset ban đầu gồm train và test
+# Nhãn train/test này chỉ ghi file CSV gốc, không phải split dùng để huấn luyện.
 SOURCE_PARTITIONS = ("train", "test")
-# split dataset thành train validation và test để train
+# Split nghiên cứu được tạo riêng theo user_id trong split.py.
 EXPERIMENT_SPLITS = ("train", "validation", "test")
 # thực nghiệm trên 5 seed và lấy giá trị mean +- std
 EXPERIMENT_SEEDS = (1, 11, 111, 1111, 11111)

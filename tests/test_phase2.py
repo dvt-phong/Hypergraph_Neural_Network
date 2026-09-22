@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
 from config import DATASET_CONTRACT, EXPERIMENT_SEEDS, EXPERIMENT_SPLITS
-from data.split import UserGroup, assign_user_groups, integer_targets
+from split import UserGroup, assign_user_groups, integer_targets
 from paths import PROCESSED_DATA_DIR
 
 
