@@ -27,7 +27,9 @@ def total_loss(output, labels, positive_weight, indices, *, lambda_cl=0.1,
                temperature=0.2):
     bce = F.binary_cross_entropy_with_logits(output["logits"], labels,
                                              pos_weight=positive_weight)
-    cl = (contrastive_loss(output["z0"], output["z_star"], indices, temperature)
-          if lambda_cl > 0 else bce.new_zeros(()))
+    if lambda_cl > 0:
+        cl = contrastive_loss(output["z0"], output["z_star"], indices, temperature)
+    else:
+        cl = bce.new_zeros(())
     return bce + lambda_cl * cl, {"bce": float(bce.detach()),
                                   "contrastive": float(cl.detach())}
