@@ -58,6 +58,22 @@ logit + train label → weighted BCE
 total loss = BCE + λ × contrastive loss
 ```
 
+Trong source code, tên biến được viết đầy đủ để dễ theo dõi. Các ký hiệu ngắn
+chỉ còn được giữ ở tên artifact hoặc khóa checkpoint để tương thích với kết quả
+đã lưu:
+
+| Ký hiệu | Tên biến trong code | Ý nghĩa |
+|---|---|---|
+| `X` | `node_features` hoặc `train_node_features` | Ma trận đặc trưng node |
+| `H0` | `initial_incidence_matrix` | Incidence matrix trước HSL |
+| `Z0` | `initial_node_embeddings` | Embedding từ lượt HGNN đầu |
+| `H*` | `refined_hypergraph` | Incidence matrix sau HSL |
+| `Z*` | `refined_node_embeddings` | Embedding dùng để phân loại |
+
+Mỗi function có một dòng comment `#` ngay phía trên. Các bước lặp, rẽ nhánh và
+chọn giá trị được viết tường minh; source không dùng comprehension, `lambda`
+hoặc toán tử ba ngôi.
+
 `model.py` chỉ chứa phép truyền HGNN và `HGSLModel`. Việc dựng, lưu và nạp graph
 nằm trong `hypergraph.py`. `hsl.py` giữ các bước sampling, edge embedding,
 membership scoring, top-r và ghép `H*`.

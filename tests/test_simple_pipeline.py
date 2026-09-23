@@ -1,5 +1,6 @@
-"""Small checks for the research pipeline and its methodological invariants."""
+# Check the research pipeline and its methodological invariants.
 
+import ast
 import csv
 import io
 import sys
@@ -33,6 +34,56 @@ from model import HGSLModel
 from preprocess import preprocess, read_csv, split_nodes
 from train import test as evaluate_test
 from train import train
+
+
+class SourceReadabilityTest(unittest.TestCase):
+    # Require explicit control flow and a line comment above every source function.
+    def test_source_uses_explicit_readable_constructs(self):
+        source_dir = Path(__file__).resolve().parents[1] / "src"
+        compact_node_types = (
+            ast.ListComp,
+            ast.SetComp,
+            ast.DictComp,
+            ast.GeneratorExp,
+            ast.IfExp,
+            ast.Lambda,
+        )
+
+        problems = []
+        for source_path in sorted(source_dir.glob("*.py")):
+            source_text = source_path.read_text(encoding="utf-8")
+            source_lines = source_text.splitlines()
+            syntax_tree = ast.parse(source_text)
+
+            if '\"\"\"' in source_text or "'''" in source_text:
+                problems.append(f"{source_path.name}: triple-quoted text")
+
+            for syntax_node in ast.walk(syntax_tree):
+                if isinstance(syntax_node, compact_node_types):
+                    problems.append(
+                        f"{source_path.name}:{syntax_node.lineno}: "
+                        f"{type(syntax_node).__name__}"
+                    )
+                if not isinstance(syntax_node, ast.FunctionDef):
+                    continue
+
+                previous_line_index = syntax_node.lineno - 2
+                while (
+                    previous_line_index >= 0
+                    and not source_lines[previous_line_index].strip()
+                ):
+                    previous_line_index -= 1
+                has_comment = (
+                    previous_line_index >= 0
+                    and source_lines[previous_line_index].lstrip().startswith("#")
+                )
+                if not has_comment:
+                    problems.append(
+                        f"{source_path.name}:{syntax_node.lineno}: "
+                        f"missing comment above {syntax_node.name}"
+                    )
+
+        self.assertEqual(problems, [])
 
 
 def write_csv(path, columns, rows):

@@ -1,4 +1,4 @@
-"""Learn refined memberships and construct the sparse incidence matrix H*."""
+# Learn refined memberships and construct the sparse incidence matrix H*.
 
 from collections import defaultdict
 from math import sqrt
@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 
+# Map a hyperedge size to the sampling bucket used by HSL.
 def _edge_size_bucket(size):
     if size <= 10:
         return "small"
@@ -15,8 +16,8 @@ def _edge_size_bucket(size):
     return "large"
 
 
-def select_hyperedges(families, sizes, budget, rng):
-    """Sample across edge families and size buckets in round-robin order."""
+# Sample across edge families and size buckets in round-robin order.
+def select_hyperedges(families, sizes, budget, random_generator):
     if budget <= 0:
         raise ValueError("sampled_hyperedges must be positive")
 
@@ -27,7 +28,7 @@ def select_hyperedges(families, sizes, budget, rng):
 
     shuffled_groups = {}
     for key in sorted(groups):
-        shuffled_groups[key] = list(rng.permutation(groups[key]))
+        shuffled_groups[key] = list(random_generator.permutation(groups[key]))
 
     target_count = min(budget, len(families))
     selected = []
@@ -41,15 +42,15 @@ def select_hyperedges(families, sizes, budget, rng):
     return np.asarray(selected, dtype=np.int64)
 
 
+# Choose nodes that do not currently belong to the hyperedge.
 def sample_negative_nodes(
     node_count,
     incident_nodes,
     count,
-    rng,
+    random_generator,
     allowed_nodes=None,
     deterministic=False,
 ):
-    """Choose nodes that do not currently belong to the hyperedge."""
     if count == 0:
         return np.empty(0, dtype=np.int64)
 
@@ -62,15 +63,21 @@ def sample_negative_nodes(
         sample_size = min(count, len(candidates))
         if deterministic:
             return candidates[:sample_size]
-        sampled = rng.choice(candidates, sample_size, replace=False)
+        sampled = random_generator.choice(candidates, sample_size, replace=False)
         return np.sort(sampled)
 
-    incident_set = {int(node_id) for node_id in incident_nodes}
+    incident_set = set()
+    for node_id in incident_nodes:
+        incident_set.add(int(node_id))
     sample_size = min(count, node_count - len(incident_set))
     selected = set()
     while len(selected) < sample_size:
         remaining = sample_size - len(selected)
-        proposals = rng.integers(0, node_count, size=max(8, 2 * remaining))
+        proposals = random_generator.integers(
+            0,
+            node_count,
+            size=max(8, 2 * remaining),
+        )
         for node_id in proposals:
             node_id = int(node_id)
             if node_id in incident_set:
@@ -81,52 +88,68 @@ def sample_negative_nodes(
     return np.asarray(sorted(selected), dtype=np.int64)
 
 
+# Sample current members and non-members as candidates for one hyperedge.
 def _candidate_nodes(
     incident_nodes,
     node_count,
     positive_count,
     negative_count,
-    rng,
+    random_generator,
     allowed_nodes,
     deterministic,
 ):
     positive_size = min(positive_count, len(incident_nodes))
     if deterministic:
-        positive = np.sort(incident_nodes[:positive_size])
+        positive_node_ids = np.sort(incident_nodes[:positive_size])
     else:
-        positive = rng.choice(incident_nodes, positive_size, replace=False)
-        positive = np.sort(positive)
+        positive_node_ids = random_generator.choice(
+            incident_nodes,
+            positive_size,
+            replace=False,
+        )
+        positive_node_ids = np.sort(positive_node_ids)
 
-    negative = sample_negative_nodes(
+    negative_node_ids = sample_negative_nodes(
         node_count,
         incident_nodes,
         negative_count,
-        rng,
+        random_generator,
         allowed_nodes,
         deterministic,
     )
-    candidates = np.concatenate((positive, negative))
-    return positive, candidates
+    candidate_node_ids = np.concatenate((positive_node_ids, negative_node_ids))
+    return positive_node_ids, candidate_node_ids
 
 
+# Score candidate memberships against an embedding derived from known members.
 def _membership_scores(
-    z0,
-    positive,
-    candidates,
+    initial_node_embeddings,
+    positive_node_ids,
+    candidate_node_ids,
     node_projection,
     edge_projection,
     membership_bias,
 ):
-    positive_tensor = torch.as_tensor(positive, device=z0.device)
-    candidate_tensor = torch.as_tensor(candidates, device=z0.device)
-    edge_embedding = z0[positive_tensor].mean(dim=0, keepdim=True)
-    projected_nodes = node_projection(z0[candidate_tensor])
+    positive_tensor = torch.as_tensor(
+        positive_node_ids,
+        device=initial_node_embeddings.device,
+    )
+    candidate_tensor = torch.as_tensor(
+        candidate_node_ids,
+        device=initial_node_embeddings.device,
+    )
+    edge_embedding = initial_node_embeddings[positive_tensor].mean(
+        dim=0,
+        keepdim=True,
+    )
+    projected_nodes = node_projection(initial_node_embeddings[candidate_tensor])
     projected_edge = edge_projection(edge_embedding)
     scores = (projected_nodes * projected_edge).sum(dim=1)
-    scores = scores / sqrt(z0.shape[1])
+    scores = scores / sqrt(initial_node_embeddings.shape[1])
     return scores + membership_bias
 
 
+# Select candidate positions while retaining at least one known member.
 def _select_memberships(scores, positive_count, top_r, threshold):
     if threshold is None:
         selected = torch.topk(scores, min(top_r, len(scores))).indices
@@ -148,65 +171,170 @@ def _select_memberships(scores, positive_count, top_r, threshold):
     return torch.unique(selected)
 
 
-def _assemble_h_star(h0, selected_edges, rows, columns, learned_values, z0):
-    original = h0.tocoo(copy=False)
-    untouched = ~np.isin(original.col, selected_edges)
+# Assemble retained and learned memberships into the sparse refined matrix H*.
+def _assemble_h_star(
+    initial_incidence_matrix,
+    selected_edge_ids,
+    node_indices,
+    edge_indices,
+    learned_membership_values,
+    initial_node_embeddings,
+):
+    original = initial_incidence_matrix.tocoo(copy=False)
+    untouched = ~np.isin(original.col, selected_edge_ids)
     retained_rows = original.row[untouched]
     retained_columns = original.col[untouched]
 
-    rows = np.concatenate((retained_rows, np.asarray(rows, dtype=np.int64)))
-    columns = np.concatenate((
+    node_indices = np.concatenate((
+        retained_rows,
+        np.asarray(node_indices, dtype=np.int64),
+    ))
+    edge_indices = np.concatenate((
         retained_columns,
-        np.asarray(columns, dtype=np.int64),
+        np.asarray(edge_indices, dtype=np.int64),
     ))
 
     missing_nodes = np.flatnonzero(
-        np.bincount(rows, minlength=h0.shape[0]) == 0
+        np.bincount(node_indices, minlength=initial_incidence_matrix.shape[0]) == 0
     )
     restored_columns = []
     for node_id in missing_nodes:
-        restored_columns.append(h0.indices[h0.indptr[node_id]])
+        restored_columns.append(
+            initial_incidence_matrix.indices[initial_incidence_matrix.indptr[node_id]]
+        )
     restored_columns = np.asarray(restored_columns, dtype=np.int64)
-    rows = np.concatenate((rows, missing_nodes))
-    columns = np.concatenate((columns, restored_columns))
+    node_indices = np.concatenate((node_indices, missing_nodes))
+    edge_indices = np.concatenate((edge_indices, restored_columns))
 
     original_values = torch.ones(
         int(untouched.sum()),
-        device=z0.device,
-        dtype=z0.dtype,
+        device=initial_node_embeddings.device,
+        dtype=initial_node_embeddings.dtype,
     )
     restored_values = torch.ones(
         len(missing_nodes),
-        device=z0.device,
-        dtype=z0.dtype,
+        device=initial_node_embeddings.device,
+        dtype=initial_node_embeddings.dtype,
     )
     values = torch.cat((
         original_values,
-        torch.stack(learned_values),
+        torch.stack(learned_membership_values),
         restored_values,
     ))
     indices = torch.as_tensor(
-        np.stack((rows, columns)),
+        np.stack((node_indices, edge_indices)),
         dtype=torch.int64,
-        device=z0.device,
+        device=initial_node_embeddings.device,
     )
     return torch.sparse_coo_tensor(
         indices,
         values,
-        h0.shape,
+        initial_incidence_matrix.shape,
         check_invariants=False,
     ).coalesce()
 
 
+# Validate alignment and sampling settings before refining memberships.
+def _validate_refinement_inputs(
+    initial_node_embeddings,
+    initial_incidence_matrix,
+    families,
+    sizes,
+    positive_nodes,
+    negative_nodes,
+    top_r,
+    threshold,
+    node_groups,
+    edge_groups,
+):
+    if initial_incidence_matrix.shape[0] != len(initial_node_embeddings):
+        raise ValueError("H0 and node embeddings do not align")
+    if (
+        initial_incidence_matrix.shape[1] != len(families)
+        or len(sizes) != len(families)
+    ):
+        raise ValueError("H0 and edge metadata do not align")
+    if positive_nodes <= 0 or negative_nodes < 0 or top_r <= 0:
+        raise ValueError("Invalid node sampling or top-r budget")
+    if threshold is not None and not 0 <= threshold <= 1:
+        raise ValueError("Membership threshold must be in [0, 1]")
+    if (node_groups is None) != (edge_groups is None):
+        raise ValueError("Node and edge graph groups must be provided together")
+
+
+# Refine candidate memberships for one selected hyperedge.
+def _refine_one_edge(
+    edge_id,
+    incidence_by_edge,
+    initial_node_embeddings,
+    node_projection,
+    edge_projection,
+    membership_bias,
+    random_generator,
+    positive_nodes,
+    negative_nodes,
+    top_r,
+    threshold,
+    deterministic,
+    node_groups,
+    edge_groups,
+):
+    membership_start = incidence_by_edge.indptr[edge_id]
+    membership_stop = incidence_by_edge.indptr[edge_id + 1]
+    incident_node_ids = incidence_by_edge.indices[
+        membership_start:membership_stop
+    ]
+    if len(incident_node_ids) == 0:
+        raise ValueError("H0 contains an empty hyperedge")
+
+    allowed_node_ids = None
+    if node_groups is not None:
+        graph_id = edge_groups[edge_id]
+        allowed_node_ids = np.flatnonzero(node_groups == graph_id)
+
+    positive_node_ids, candidate_node_ids = _candidate_nodes(
+        incident_node_ids,
+        initial_node_embeddings.shape[0],
+        positive_nodes,
+        negative_nodes,
+        random_generator,
+        allowed_node_ids,
+        deterministic,
+    )
+    membership_scores = _membership_scores(
+        initial_node_embeddings,
+        positive_node_ids,
+        candidate_node_ids,
+        node_projection,
+        edge_projection,
+        membership_bias,
+    )
+    selected_positions = _select_memberships(
+        membership_scores,
+        len(positive_node_ids),
+        top_r,
+        threshold,
+    )
+
+    selected_numpy_positions = selected_positions.detach().cpu().numpy()
+    retained_node_ids = candidate_node_ids[selected_numpy_positions]
+    retained_edge_ids = [int(edge_id)] * len(selected_numpy_positions)
+    learned_values = torch.sigmoid(
+        membership_scores[selected_positions]
+    ).unbind()
+    return retained_node_ids, retained_edge_ids, learned_values
+
+
+# Score candidate memberships and return the differentiable sparse H*.
 def refine_hypergraph(
-    z0,
-    h0,
+    initial_node_embeddings,
+    initial_incidence_matrix,
     families,
     sizes,
     node_projection,
     edge_projection,
     membership_bias,
-    rng,
+    random_generator,
     *,
     sampled_hyperedges=96,
     positive_nodes=16,
@@ -217,79 +345,67 @@ def refine_hypergraph(
     node_groups=None,
     edge_groups=None,
 ):
-    """Score candidate memberships and return the differentiable sparse H*."""
-    h0 = h0.tocsr()
-    if h0.shape[0] != len(z0):
-        raise ValueError("H0 and node embeddings do not align")
-    if h0.shape[1] != len(families) or len(sizes) != len(families):
-        raise ValueError("H0 and edge metadata do not align")
-    if positive_nodes <= 0 or negative_nodes < 0 or top_r <= 0:
-        raise ValueError("Invalid node sampling or top-r budget")
-    if threshold is not None and not 0 <= threshold <= 1:
-        raise ValueError("Membership threshold must be in [0, 1]")
-    if (node_groups is None) != (edge_groups is None):
-        raise ValueError("Node and edge graph groups must be provided together")
+    initial_incidence_matrix = initial_incidence_matrix.tocsr()
+    _validate_refinement_inputs(
+        initial_node_embeddings,
+        initial_incidence_matrix,
+        families,
+        sizes,
+        positive_nodes,
+        negative_nodes,
+        top_r,
+        threshold,
+        node_groups,
+        edge_groups,
+    )
 
     if deterministic:
-        selected_edges = np.arange(h0.shape[1], dtype=np.int64)
+        selected_edge_ids = np.arange(
+            initial_incidence_matrix.shape[1],
+            dtype=np.int64,
+        )
     else:
-        selected_edges = select_hyperedges(
+        selected_edge_ids = select_hyperedges(
             families,
             sizes,
             sampled_hyperedges,
-            rng,
+            random_generator,
         )
 
-    columns = h0.tocsc()
-    retained_rows = []
-    retained_columns = []
-    learned_values = []
-    for edge_id in selected_edges:
-        start = columns.indptr[edge_id]
-        stop = columns.indptr[edge_id + 1]
-        incident_nodes = columns.indices[start:stop]
-        if len(incident_nodes) == 0:
-            raise ValueError("H0 contains an empty hyperedge")
-
-        allowed_nodes = None
-        if node_groups is not None:
-            graph_id = edge_groups[edge_id]
-            allowed_nodes = np.flatnonzero(node_groups == graph_id)
-
-        positive, candidates = _candidate_nodes(
-            incident_nodes,
-            h0.shape[0],
-            positive_nodes,
-            negative_nodes,
-            rng,
-            allowed_nodes,
-            deterministic,
-        )
-        scores = _membership_scores(
-            z0,
-            positive,
-            candidates,
+    incidence_by_edge = initial_incidence_matrix.tocsc()
+    retained_node_indices = []
+    retained_edge_indices = []
+    learned_membership_values = []
+    for edge_id in selected_edge_ids:
+        (
+            edge_node_ids,
+            edge_ids,
+            edge_membership_values,
+        ) = _refine_one_edge(
+            edge_id,
+            incidence_by_edge,
+            initial_node_embeddings,
             node_projection,
             edge_projection,
             membership_bias,
-        )
-        selected = _select_memberships(
-            scores,
-            len(positive),
+            random_generator,
+            positive_nodes,
+            negative_nodes,
             top_r,
             threshold,
+            deterministic,
+            node_groups,
+            edge_groups,
         )
-
-        selected_positions = selected.detach().cpu().numpy()
-        retained_rows.extend(candidates[selected_positions])
-        retained_columns.extend([int(edge_id)] * len(selected_positions))
-        learned_values.extend(torch.sigmoid(scores[selected]).unbind())
+        retained_node_indices.extend(edge_node_ids)
+        retained_edge_indices.extend(edge_ids)
+        learned_membership_values.extend(edge_membership_values)
 
     return _assemble_h_star(
-        h0,
-        selected_edges,
-        retained_rows,
-        retained_columns,
-        learned_values,
-        z0,
+        initial_incidence_matrix,
+        selected_edge_ids,
+        retained_node_indices,
+        retained_edge_indices,
+        learned_membership_values,
+        initial_node_embeddings,
     )

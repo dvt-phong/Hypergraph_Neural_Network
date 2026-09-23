@@ -1,4 +1,4 @@
-# Download raw dataset XuetangX
+# Download the raw XuetangX dataset.
 
 import argparse
 import urllib.request
@@ -15,26 +15,26 @@ FILES = {
     "course_info.csv":
         "https://lfs.aminer.cn/misc/moocdata/data/course_info.csv",
 }
+CLI_DESCRIPTION = "Download the raw XuetangX dataset."
 
 
+# Download every missing raw file into the requested directory.
 def download(raw_dir=RAW):
-    # Download dataset from url
-    # If dataset downloaded, code will skip this
     raw_dir = Path(raw_dir)
     raw_dir.mkdir(parents=True, exist_ok=True)
 
-    for name, url in FILES.items():
-        path = raw_dir / name
-        if path.is_file():
-            print(f"Already exists, skipping {name}", flush=True)
+    for file_name, download_url in FILES.items():
+        destination_path = raw_dir / file_name
+        if destination_path.is_file():
+            print(f"Already exists, skipping {file_name}", flush=True)
             continue
 
-        print(f"Downloading {name}", flush=True)
-        urllib.request.urlretrieve(url, path)
+        print(f"Downloading {file_name}", flush=True)
+        urllib.request.urlretrieve(download_url, destination_path)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=CLI_DESCRIPTION)
     parser.add_argument("--raw-dir", type=Path, default=RAW)
     arguments = parser.parse_args()
     download(arguments.raw_dir)

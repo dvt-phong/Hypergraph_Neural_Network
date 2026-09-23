@@ -1,4 +1,4 @@
-"""Build node features and fit numeric transforms on train nodes only."""
+# Build node features and fit numeric transforms on train nodes only.
 
 import argparse
 import csv
@@ -60,6 +60,7 @@ TOTAL_FEATURE_COUNT = COURSE_FEATURE_START + COURSE_FEATURE_COUNT
 BEHAVIOR_FEATURE_SLICE = slice(0, BEHAVIOR_FEATURE_COUNT)
 USER_FEATURE_SLICE = slice(USER_FEATURE_START, COURSE_FEATURE_START)
 COURSE_FEATURE_SLICE = slice(COURSE_FEATURE_START, TOTAL_FEATURE_COUNT)
+CLI_DESCRIPTION = "Build XuetangX node features for one experiment seed."
 
 OBJECT_ACTIONS = {}
 for family, actions in ACTION_GROUPS.items():
@@ -69,6 +70,7 @@ for family, actions in ACTION_GROUPS.items():
         OBJECT_ACTIONS[action] = family
 
 
+# Return feature names in the same order as columns in the saved matrix.
 def feature_names():
     names = []
     for day_number in range(DAY_FEATURE_COUNT):
@@ -96,8 +98,8 @@ def feature_names():
     return names
 
 
+# Return the columns belonging to one experimental feature set.
 def feature_columns(feature_set):
-    """Return the columns belonging to one experimental feature set."""
     if feature_set == "behavior":
         return BEHAVIOR_FEATURE_SLICE
     if feature_set == "behavior_user":
@@ -112,7 +114,8 @@ def feature_columns(feature_set):
     raise ValueError(f"Unknown feature set: {feature_set}")
 
 
-def _set_one_hot(matrix, row_index, value, vocabulary, feature_start):
+# Set the known, missing, or other one-hot column for one categorical value.
+def _set_one_hot(feature_matrix, row_index, value, vocabulary, feature_start):
     if not value:
         value_index = len(vocabulary)
     else:
@@ -120,29 +123,38 @@ def _set_one_hot(matrix, row_index, value, vocabulary, feature_start):
             value_index = vocabulary.index(value)
         except ValueError:
             value_index = len(vocabulary) + 1
-    matrix[row_index, feature_start + value_index] = 1.0
+    feature_matrix[row_index, feature_start + value_index] = 1.0
 
 
-def _scale_numeric(values, train_ids):
-    missing = ~np.isfinite(values)
-    observed_train_values = values[train_ids][~missing[train_ids]]
+# Impute and standardize a numeric feature using train nodes only.
+def _scale_numeric(raw_values, train_node_ids):
+    missing_mask = ~np.isfinite(raw_values)
+    train_values = raw_values[train_node_ids]
+    observed_train_values = train_values[~missing_mask[train_node_ids]]
     if observed_train_values.size == 0:
         raise ValueError("No observed train values for a numeric context feature")
 
     median = float(np.median(observed_train_values))
-    filled = np.where(missing, median, values)
-    mean = float(np.mean(filled[train_ids], dtype=np.float64))
-    std = float(np.std(filled[train_ids], dtype=np.float64))
-    if std == 0:
-        std = 1.0
+    filled_values = np.where(missing_mask, median, raw_values)
+    mean = float(np.mean(filled_values[train_node_ids], dtype=np.float64))
+    standard_deviation = float(
+        np.std(filled_values[train_node_ids], dtype=np.float64)
+    )
+    if standard_deviation == 0:
+        standard_deviation = 1.0
 
-    scaled = ((filled - mean) / std).astype(np.float32)
-    missing_indicator = missing.astype(np.float32)
-    statistics = {"median": median, "mean": mean, "std": std}
-    return scaled, missing_indicator, statistics
+    scaled_values = ((filled_values - mean) / standard_deviation).astype(np.float32)
+    missing_indicator = missing_mask.astype(np.float32)
+    statistics = {
+        "median": median,
+        "mean": mean,
+        "std": standard_deviation,
+    }
+    return scaled_values, missing_indicator, statistics
 
 
-def _write_event_buckets(output_dir, nodes, behavior, bucket_paths):
+# Aggregate daily and action counts while distributing events into disk buckets.
+def _write_event_buckets(output_dir, nodes, behavior_features, bucket_paths):
     node_by_enrollment = {}
     for node in nodes:
         key = (int(node["enroll_id"]), node["source_partition"])
@@ -176,8 +188,8 @@ def _write_event_buckets(output_dir, nodes, behavior, bucket_paths):
                 action = event["action"]
                 if action not in action_indices:
                     raise ValueError(f"Unknown action in clean events: {action}")
-                behavior[node_id, course_day] += 1
-                behavior[node_id, action_indices[action]] += 1
+                behavior_features[node_id, course_day] += 1
+                behavior_features[node_id, action_indices[action]] += 1
 
                 object_type = OBJECT_ACTIONS.get(action, "")
                 writers[node_id % len(bucket_paths)].writerow((
@@ -193,7 +205,8 @@ def _write_event_buckets(output_dir, nodes, behavior, bucket_paths):
     return event_count
 
 
-def _summarize_event_buckets(bucket_paths, behavior, object_path):
+# Count unique sessions and objects, then write object memberships from buckets.
+def _summarize_event_buckets(bucket_paths, behavior_features, object_path):
     with gzip.open(
         object_path,
         "wt",
@@ -225,17 +238,18 @@ def _summarize_event_buckets(bucket_paths, behavior, object_path):
                             )
 
             for node_id, session_ids in sessions_by_node.items():
-                behavior[node_id, SESSION_FEATURE_INDEX] = len(session_ids)
+                behavior_features[node_id, SESSION_FEATURE_INDEX] = len(session_ids)
             for node_id, object_ids in objects_by_node.items():
-                behavior[node_id, OBJECT_FEATURE_INDEX] = len(object_ids)
+                behavior_features[node_id, OBJECT_FEATURE_INDEX] = len(object_ids)
             writer.writerows(sorted(memberships))
 
 
+# Build split-independent behavior counts without retaining all events in memory.
 def _build_behavior_features(output_dir, nodes, buckets, object_path):
     if buckets <= 0:
         raise ValueError("buckets must be positive")
 
-    behavior = np.zeros(
+    behavior_features = np.zeros(
         (len(nodes), BEHAVIOR_FEATURE_COUNT),
         dtype=np.int32,
     )
@@ -251,19 +265,22 @@ def _build_behavior_features(output_dir, nodes, buckets, object_path):
         event_count = _write_event_buckets(
             output_dir,
             nodes,
-            behavior,
+            behavior_features,
             bucket_paths,
         )
-        _summarize_event_buckets(bucket_paths, behavior, object_path)
+        _summarize_event_buckets(bucket_paths, behavior_features, object_path)
 
-    daily_total = int(behavior[:, :ACTION_FEATURE_START].sum())
+    daily_total = int(behavior_features[:, :ACTION_FEATURE_START].sum())
     action_stop = ACTION_FEATURE_START + ACTION_FEATURE_COUNT
-    action_total = int(behavior[:, ACTION_FEATURE_START:action_stop].sum())
+    action_total = int(
+        behavior_features[:, ACTION_FEATURE_START:action_stop].sum()
+    )
     if daily_total != event_count or action_total != event_count:
         raise ValueError("Daily or action feature counts do not match the event count")
-    return behavior, event_count
+    return behavior_features, event_count
 
 
+# Build raw user and course context features for every node.
 def _build_context_features(output_dir, nodes):
     users = {}
     for row in read_csv(output_dir / "users.csv"):
@@ -322,8 +339,8 @@ def _build_context_features(output_dir, nodes):
     return user_context, course_context, ages, durations
 
 
+# Build split-independent counts and context without rereading them per seed.
 def build_feature_base(output_dir=PROCESSED, *, buckets=64):
-    """Build split-independent counts and context without rereading them per seed."""
     output_dir = Path(output_dir)
     base_path = output_dir / "feature_base.npz"
     object_path = output_dir / "node_objects.csv.gz"
@@ -333,7 +350,7 @@ def build_feature_base(output_dir=PROCESSED, *, buckets=64):
         return report
 
     nodes = list(read_csv(output_dir / "nodes.csv"))
-    behavior, event_count = _build_behavior_features(
+    behavior_features, event_count = _build_behavior_features(
         output_dir,
         nodes,
         buckets,
@@ -346,7 +363,7 @@ def build_feature_base(output_dir=PROCESSED, *, buckets=64):
     context = np.concatenate((user_context, course_context), axis=1)
     np.savez_compressed(
         base_path,
-        raw=behavior,
+        raw=behavior_features,
         context=context,
         ages=ages,
         durations=durations,
@@ -357,8 +374,64 @@ def build_feature_base(output_dir=PROCESSED, *, buckets=64):
     return report
 
 
+# Normalize log-transformed behavior counts using train nodes only.
+def _normalize_behavior_features(raw_behavior_features, train_node_ids):
+    logged_behavior = np.log1p(raw_behavior_features.astype(np.float32))
+    behavior_mean = np.mean(
+        logged_behavior[train_node_ids],
+        axis=0,
+        dtype=np.float64,
+    ).astype(np.float32)
+    behavior_standard_deviation = np.std(
+        logged_behavior[train_node_ids],
+        axis=0,
+        dtype=np.float64,
+    ).astype(np.float32)
+    behavior_standard_deviation[behavior_standard_deviation == 0] = 1.0
+    normalized_behavior = (
+        logged_behavior - behavior_mean
+    ) / behavior_standard_deviation
+    return normalized_behavior, behavior_mean, behavior_standard_deviation
+
+
+# Scale age and duration, then place their values and missing flags into context.
+def _scale_context_features(context_features, ages, durations, train_node_ids):
+    expected_context_columns = USER_FEATURE_COUNT + COURSE_FEATURE_COUNT
+    if context_features.shape[1] != expected_context_columns:
+        raise ValueError(f"Unexpected context feature shape: {context_features.shape}")
+
+    user_context = context_features[:, :USER_FEATURE_COUNT].copy()
+    course_context = context_features[:, USER_FEATURE_COUNT:].copy()
+    scaled_ages, missing_ages, age_statistics = _scale_numeric(
+        ages,
+        train_node_ids,
+    )
+    scaled_durations, missing_durations, duration_statistics = _scale_numeric(
+        durations,
+        train_node_ids,
+    )
+    user_context[:, AGE_FEATURE_INDEX] = scaled_ages
+    user_context[:, AGE_MISSING_FEATURE_INDEX] = missing_ages
+    course_context[:, DURATION_FEATURE_INDEX] = scaled_durations
+    course_context[:, DURATION_MISSING_FEATURE_INDEX] = missing_durations
+    return user_context, course_context, age_statistics, duration_statistics
+
+
+# Combine feature blocks and validate the final matrix before saving it.
+def _combine_feature_blocks(normalized_behavior, user_context, course_context, node_count):
+    node_features = np.concatenate(
+        (normalized_behavior, user_context, course_context),
+        axis=1,
+    ).astype(np.float32, copy=False)
+    if node_features.shape != (node_count, TOTAL_FEATURE_COUNT):
+        raise ValueError(f"Unexpected feature shape: {node_features.shape}")
+    if not np.isfinite(node_features).all():
+        raise ValueError("Node features contain NaN or infinity")
+    return node_features
+
+
+# Normalize one seed's features using only its train nodes.
 def build_features(output_dir=PROCESSED, *, seed=1, buckets=64, split=None):
-    """Normalize one seed's features using only its train nodes."""
     output_dir = Path(output_dir)
     build_feature_base(output_dir, buckets=buckets)
 
@@ -369,62 +442,46 @@ def build_features(output_dir=PROCESSED, *, seed=1, buckets=64, split=None):
         raise ValueError("Split and node counts differ")
 
     split_array = np.asarray(split)
-    train_ids = np.flatnonzero(split_array == "train")
-    if len(train_ids) == 0:
+    train_node_ids = np.flatnonzero(split_array == "train")
+    if len(train_node_ids) == 0:
         raise ValueError("The train split is empty")
 
-    with np.load(output_dir / "feature_base.npz") as base:
-        behavior = base["raw"]
-        context = base["context"]
-        ages = base["ages"]
-        durations = base["durations"]
-    if context.shape != (len(nodes), USER_FEATURE_COUNT + COURSE_FEATURE_COUNT):
-        raise ValueError(f"Unexpected context feature shape: {context.shape}")
-    user_context = context[:, :USER_FEATURE_COUNT].copy()
-    course_context = context[:, USER_FEATURE_COUNT:].copy()
+    with np.load(output_dir / "feature_base.npz") as feature_base:
+        raw_behavior_features = feature_base["raw"]
+        context_features = feature_base["context"]
+        ages = feature_base["ages"]
+        durations = feature_base["durations"]
+    if context_features.shape[0] != len(nodes):
+        raise ValueError(f"Unexpected context feature shape: {context_features.shape}")
 
-    logged_behavior = np.log1p(behavior.astype(np.float32))
-    behavior_mean = np.mean(
-        logged_behavior[train_ids],
-        axis=0,
-        dtype=np.float64,
-    ).astype(np.float32)
-    behavior_std = np.std(
-        logged_behavior[train_ids],
-        axis=0,
-        dtype=np.float64,
-    ).astype(np.float32)
-    behavior_std[behavior_std == 0] = 1.0
-    normalized_behavior = (logged_behavior - behavior_mean) / behavior_std
-
-    age, age_missing, age_statistics = _scale_numeric(ages, train_ids)
-    duration, duration_missing, duration_statistics = _scale_numeric(
-        durations,
-        train_ids,
+    normalized_behavior, behavior_mean, behavior_standard_deviation = (
+        _normalize_behavior_features(raw_behavior_features, train_node_ids)
     )
-    user_context[:, AGE_FEATURE_INDEX] = age
-    user_context[:, AGE_MISSING_FEATURE_INDEX] = age_missing
-    course_context[:, DURATION_FEATURE_INDEX] = duration
-    course_context[:, DURATION_MISSING_FEATURE_INDEX] = duration_missing
+    user_context, course_context, age_statistics, duration_statistics = (
+        _scale_context_features(
+            context_features,
+            ages,
+            durations,
+            train_node_ids,
+        )
+    )
+    node_features = _combine_feature_blocks(
+        normalized_behavior,
+        user_context,
+        course_context,
+        len(nodes),
+    )
 
-    x = np.concatenate(
-        (normalized_behavior, user_context, course_context),
-        axis=1,
-    ).astype(np.float32, copy=False)
-    if x.shape != (len(nodes), TOTAL_FEATURE_COUNT):
-        raise ValueError(f"Unexpected feature shape: {x.shape}")
-    if not np.isfinite(x).all():
-        raise ValueError("Node features contain NaN or infinity")
-
-    np.save(output_dir / f"X_seed_{seed}.npy", x)
+    feature_path = output_dir / f"X_seed_{seed}.npy"
+    np.save(feature_path, node_features)
     statistics = {
         "seed": seed,
         "names": feature_names(),
         "behavior_mean": behavior_mean.tolist(),
-        "behavior_std": behavior_std.tolist(),
+        "behavior_std": behavior_standard_deviation.tolist(),
         "age": age_statistics,
         "duration": duration_statistics,
-        "train_nodes": len(train_ids),
+        "train_nodes": len(train_node_ids),
     }
     statistics_path = output_dir / f"feature_stats_seed_{seed}.json"
     statistics_path.write_text(json.dumps(statistics, indent=2), encoding="utf-8")
@@ -433,14 +490,14 @@ def build_features(output_dir=PROCESSED, *, seed=1, buckets=64, split=None):
         "seed": seed,
         "nodes": len(nodes),
         "features": TOTAL_FEATURE_COUNT,
-        "output": str(output_dir / f"X_seed_{seed}.npy"),
+        "output": str(feature_path),
     }
     print(report, flush=True)
     return report
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=CLI_DESCRIPTION)
     parser.add_argument("--output-dir", type=Path, default=PROCESSED)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--buckets", type=int, default=64)
