@@ -1,4 +1,16 @@
 # 4. Build and load Course, Object, and Behavioral hypergraphs.
+# Tham khảo từ project/bài báo:
+# - HGNN, AAAI 2019: https://doi.org/10.1609/aaai.v33i01.33013558
+#   Code: https://github.com/iMoonLab/HGNN
+# - SIG-Net, ACM SAC 2024: https://doi.org/10.1145/3605098.3636002
+#   Code: https://github.com/Noverse0/SIG-Net
+# - CA-TFHN, ICONIP 2023: https://doi.org/10.1007/978-981-99-8184-7_31
+#   Code: https://github.com/codeds27/CA-TFHN
+# - MST-GCN, Scientific Reports 2026:
+#   https://doi.org/10.1038/s41598-026-40502-w
+#   Code: https://github.com/wudongze9/MST-GCN
+# Course, Object và Behavioral hyperedges là cách điều chỉnh riêng của project
+# từ ý tưởng quan hệ bậc cao, student interaction và classmates similarity.
 
 import argparse
 import csv
@@ -15,11 +27,12 @@ config = import_module("0_config")
 preprocess_module = import_module("2_preprocess")
 feature_module = import_module("3_features")
 read_csv = preprocess_module.read_csv
+load_nodes = preprocess_module.load_nodes
 feature_columns = feature_module.feature_columns
 
 
 # Find each query node's nearest train nodes by behavioral cosine similarity.
-def _behavioral_neighbors(
+def behavioral_neighbors(
     train_features,
     query_features,
     maximum_neighbor_count,
@@ -75,46 +88,44 @@ def _behavioral_neighbors(
 
 
 # Group train node identifiers by course.
-def _course_groups(nodes):
+def course_groups(nodes):
     groups = defaultdict(set)
     for node in nodes:
         groups[node["course_id"]].add(int(node["node_id"]))
     return groups
 
 
-# Group node identifiers by observed course object from one event file.
-def _object_groups(event_path):
+# Group node identifiers by observed course object from one split CSV.
+def object_groups(data_path):
     groups = defaultdict(set)
-    with gzip.open(event_path, "rt", newline="", encoding="utf-8") as source:
-        for event in csv.DictReader(source):
-            object_type = config.OBJECT_ACTIONS.get(event["action"], "")
-            object_id = event["object_id"].strip()
-            if object_type and object_id.lower() not in config.MISSING_VALUES:
-                key = (event["course_id"], object_id, object_type)
-                groups[key].add(int(event["node_id"]))
+    for event in read_csv(data_path):
+        object_type = config.OBJECT_ACTIONS.get(event["action"], "")
+        object_id = event["object_id"].strip()
+        if object_type and object_id.lower() not in config.MISSING_VALUES:
+            key = (event["course_id"], object_id, object_type)
+            groups[key].add(int(event["node_id"]))
     return groups
 
 
 # Group each target node's observed course objects.
-def _objects_by_node(event_path):
+def objects_by_node(data_path):
     objects_by_node = defaultdict(set)
-    with gzip.open(event_path, "rt", newline="", encoding="utf-8") as source:
-        for event in csv.DictReader(source):
-            object_type = config.OBJECT_ACTIONS.get(event["action"], "")
-            object_id = event["object_id"].strip()
-            if object_type and object_id.lower() not in config.MISSING_VALUES:
-                key = (event["course_id"], object_id, object_type)
-                objects_by_node[int(event["node_id"])].add(key)
+    for event in read_csv(data_path):
+        object_type = config.OBJECT_ACTIONS.get(event["action"], "")
+        object_id = event["object_id"].strip()
+        if object_type and object_id.lower() not in config.MISSING_VALUES:
+            key = (event["course_id"], object_id, object_type)
+            objects_by_node[int(event["node_id"])].add(key)
     return objects_by_node
 
 
 # Sort object keys by course, object type, and object identifier.
-def _object_key_sort_key(object_key):
+def object_key_sort_key(object_key):
     return object_key[0], object_key[2], object_key[1]
 
 
 # Write one non-singleton hyperedge and return the next edge identifier.
-def _write_edge(
+def write_edge(
     edge_writer,
     metadata_writer,
     family_counts,
@@ -146,7 +157,7 @@ def _write_edge(
 
 
 # Write train Course, Object, and Behavioral hyperedges.
-def _write_hyperedges(
+def write_hyperedges(
     output_dir,
     train_count,
     course_groups,
@@ -180,7 +191,7 @@ def _write_hyperedges(
         edge_id = 0
 
         for course_id in sorted(course_groups):
-            edge_id = _write_edge(
+            edge_id = write_edge(
                 edge_writer,
                 metadata_writer,
                 family_counts,
@@ -190,9 +201,9 @@ def _write_hyperedges(
                 course_id=course_id,
             )
 
-        object_keys = sorted(object_groups, key=_object_key_sort_key)
+        object_keys = sorted(object_groups, key=object_key_sort_key)
         for course_id, object_id, object_type in object_keys:
-            edge_id = _write_edge(
+            edge_id = write_edge(
                 edge_writer,
                 metadata_writer,
                 family_counts,
@@ -216,7 +227,7 @@ def _write_hyperedges(
             unique_behavioral_edges.setdefault(member_tuple, anchor_node_id)
 
         for members in sorted(unique_behavioral_edges):
-            edge_id = _write_edge(
+            edge_id = write_edge(
                 edge_writer,
                 metadata_writer,
                 family_counts,
@@ -230,7 +241,7 @@ def _write_hyperedges(
 
 
 # Turn train edge memberships into the sparse initial incidence matrix H0.
-def _build_h0(output_dir, train_count):
+def build_h0(output_dir, train_count):
     metadata = list(read_csv(output_dir / "edge_meta.csv"))
     rows = []
     columns = []
@@ -253,10 +264,10 @@ def _build_h0(output_dir, train_count):
 def build_hypergraph(output_dir=config.PROCESSED, *, k=10, k_max=20):
     output_dir = Path(output_dir)
     train_dir = output_dir / "train"
-    train_nodes = list(read_csv(train_dir / "nodes.csv"))
+    train_nodes = load_nodes(output_dir / "train.csv")
     train_features = np.load(train_dir / "X.npy")
 
-    train_neighbors = _behavioral_neighbors(
+    train_neighbors = behavioral_neighbors(
         train_features,
         train_features,
         k_max,
@@ -267,24 +278,24 @@ def build_hypergraph(output_dir=config.PROCESSED, *, k=10, k_max=20):
     for split_name in ("validation", "test"):
         split_dir = output_dir / split_name
         target_features = np.load(split_dir / "X.npy")
-        target_neighbors = _behavioral_neighbors(
+        target_neighbors = behavioral_neighbors(
             train_features,
             target_features,
             k_max,
         )
         np.save(split_dir / "neighbors.npy", target_neighbors)
 
-    course_groups = _course_groups(train_nodes)
-    object_groups = _object_groups(train_dir / "events_35d.csv.gz")
-    edge_count, family_counts = _write_hyperedges(
+    train_course_groups = course_groups(train_nodes)
+    train_object_groups = object_groups(output_dir / "train.csv")
+    edge_count, family_counts = write_hyperedges(
         output_dir,
         len(train_nodes),
-        course_groups,
-        object_groups,
+        train_course_groups,
+        train_object_groups,
         train_neighbors,
         k,
     )
-    initial_incidence_matrix = _build_h0(output_dir, len(train_nodes))
+    initial_incidence_matrix = build_h0(output_dir, len(train_nodes))
 
     report = {
         "k": k,
@@ -312,7 +323,7 @@ def load_train_graph(output_dir=config.PROCESSED, *, feature_set="behavior"):
     train_node_features = np.asarray(node_features[:, columns], dtype=np.float32)
 
     labels = []
-    for node in read_csv(train_dir / "nodes.csv"):
+    for node in load_nodes(output_dir / "train.csv"):
         labels.append(int(node["label"]))
     labels = np.asarray(labels, dtype=np.float32)
 
@@ -336,8 +347,8 @@ def load_evaluation_data(
     output_dir = Path(output_dir)
     train_dir = output_dir / "train"
     target_dir = output_dir / split_name
-    train_nodes = list(read_csv(train_dir / "nodes.csv"))
-    target_nodes = list(read_csv(target_dir / "nodes.csv"))
+    train_nodes = load_nodes(output_dir / "train.csv")
+    target_nodes = load_nodes(output_dir / f"{split_name}.csv")
 
     course_references = defaultdict(list)
     for node in train_nodes:
@@ -349,11 +360,11 @@ def load_evaluation_data(
     return {
         "nodes": target_nodes,
         "course_references": course_references,
-        "object_references": _object_groups(
-            train_dir / "events_35d.csv.gz"
+        "object_references": object_groups(
+            output_dir / "train.csv"
         ),
-        "objects_by_node": _objects_by_node(
-            target_dir / "events_35d.csv.gz"
+        "objects_by_node": objects_by_node(
+            output_dir / f"{split_name}.csv"
         ),
         "neighbors": np.load(target_dir / "neighbors.npy"),
         "train_x": np.load(train_dir / "X.npy"),

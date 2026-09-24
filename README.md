@@ -10,7 +10,7 @@ Code chính gồm một file cấu hình và tám bước pipeline:
 |---|---|---|
 | 0 | `0_config.py` | Quản lý đường dẫn, split, action và chỉ số feature |
 | 1 | `1_download.py` | Tải ba raw file nếu chưa tồn tại |
-| 2 | `2_preprocess.py` | Giữ test gốc, chia raw train thành train/validation |
+| 2 | `2_preprocess.py` | Ghép metadata, giữ test gốc và tạo ba split CSV |
 | 3 | `3_features.py` | Tạo ba ma trận feature, fit transform trên train |
 | 4 | `4_hypergraph.py` | Tạo ba loại hyperedge và sparse `H0` |
 | 5 | `5_model.py` | HGNN propagation và `HGSLModel` |
@@ -18,7 +18,10 @@ Code chính gồm một file cấu hình và tám bước pipeline:
 | 7 | `7_losses.py` | Weighted BCE và contrastive loss |
 | 8 | `8_train.py` | Train, validation, early stopping và test |
 
-Xem [sơ đồ mô hình](docs/assets/hypergraph-neural-network-v3.png).
+Xem [tài liệu giải thích code](docs/code-guide.md),
+[dòng chảy dữ liệu và các cột](docs/data-flow-columns.md),
+[nguồn tham khảo của code](docs/references.md), và
+[sơ đồ mô hình](docs/assets/hypergraph-neural-network-v3.png).
 
 ## Cài đặt và chạy
 
@@ -40,16 +43,18 @@ rồi chạy lại.
 
 `2_preprocess.py` giữ nguyên `test_log.csv` làm test cuối cùng. Chỉ các enrollment
 trong `train_log.csv` được shuffle một lần và chia 80/20 thành train/validation.
-Mỗi split có thư mục riêng, `node_id` riêng và không cần `source_partition`.
+Kết quả là `train.csv`, `validation.csv`, `test.csv`; mỗi dòng là một event đã
+ghép enrollment, label, user và course. Mỗi split có `node_id` riêng và không
+cần `source_partition`.
 
 Feature và hypergraph không phụ thuộc seed huấn luyện nên chỉ cần tạo một lần.
 Các seed trong `0_config.py` chỉ điều khiển quá trình train mô hình.
 
 ## Các artifact được giữ
 
-- Metadata dùng chung: `users.csv`, `courses.csv`, `feature_names.csv`.
-- Mỗi thư mục `train/`, `validation/`, `test/`: `nodes.csv`,
-  `events_35d.csv.gz`, `X.npy`, `neighbors.npy`.
+- Dữ liệu preprocess: `train.csv`, `validation.csv`, `test.csv`.
+- Metadata feature: `feature_names.csv`.
+- Mỗi thư mục `train/`, `validation/`, `test/`: `X.npy`, `neighbors.npy`.
 - Hypergraph train: `edge_memberships.csv.gz`, `edge_meta.csv`, `H0.npz` và
   `graph_config.json`.
 - Experiment: checkpoint và train/test report trong `outputs/`.
@@ -71,11 +76,8 @@ hash, fingerprint, timestamp state hay run ID để quyết định artifact có
 - Validation AUC chọn checkpoint; test chỉ chạy sau khi checkpoint đã được chọn.
 - `--no-hsl` chạy HGNN ablation với cùng encoder.
 
-## Kiểm tra
+## Kiểm tra cú pháp
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m py_compile src/*.py
 ```
-
-Test nhỏ kiểm tra toàn bộ pipeline trên một archive giả lập, data leakage và việc
-`torch.sparse.mm()` truyền gradient tới membership scorer.

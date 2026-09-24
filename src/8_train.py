@@ -1,4 +1,14 @@
 # 8. Train HGSL, select a checkpoint on validation, then evaluate on test.
+# Tham khảo từ project/bài báo:
+# - SIG-Net, ACM SAC 2024: https://doi.org/10.1145/3605098.3636002
+#   Code: https://github.com/Noverse0/SIG-Net
+# - MST-GCN, Scientific Reports 2026:
+#   https://doi.org/10.1038/s41598-026-40502-w
+#   Code: https://github.com/wudongze9/MST-GCN
+# - CA-TFHN, ICONIP 2023: https://doi.org/10.1007/978-981-99-8184-7_31
+#   Code: https://github.com/codeds27/CA-TFHN
+# Quy trình train/validation/test và checkpoint trong file này được viết riêng
+# cho pipeline HGNN + HSL hiện tại.
 
 import argparse
 import json

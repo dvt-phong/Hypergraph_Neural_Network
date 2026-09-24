@@ -1,4 +1,11 @@
 # 7. Define weighted BCE, symmetric contrastive loss, and their sum.
+# Tham khảo từ project/bài báo:
+# - HSL, Cai et al., IJCAI 2022:
+#   https://doi.org/10.24963/ijcai.2022/267
+#   Code: https://github.com/pkualpha/HSL
+# Contrastive consistency giữa embedding trước và sau khi học cấu trúc được lấy
+# cảm hứng từ HSL. Symmetric contrastive loss ở đây là cách triển khai riêng.
+# Weighted BCE dùng hàm chuẩn của PyTorch cho dữ liệu lệch lớp.
 
 import torch
 from torch.nn import functional as F

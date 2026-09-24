@@ -1,4 +1,11 @@
 # 6. Learn refined memberships and construct the sparse incidence matrix H*.
+# Tham khảo từ project/bài báo:
+# - HSL, Cai et al., "Hypergraph Structure Learning for Hypergraph Neural
+#   Networks", IJCAI 2022: https://doi.org/10.24963/ijcai.2022/267
+#   Code: https://github.com/pkualpha/HSL
+# File này là bản điều chỉnh: dùng stratified edge sampling, candidate nodes,
+# sigmoid membership và top-r; không tái hiện nguyên bản Gumbel-Softmax hai
+# giai đoạn của bài báo.
 
 from collections import defaultdict
 from math import sqrt

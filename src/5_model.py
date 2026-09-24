@@ -1,4 +1,13 @@
 # 5. Define HGNN propagation and the two-pass HGSL dropout model.
+# Tham khảo từ project/bài báo:
+# - HGNN, Feng et al., AAAI 2019:
+#   https://doi.org/10.1609/aaai.v33i01.33013558
+#   Code: https://github.com/iMoonLab/HGNN
+# - HSL, Cai et al., IJCAI 2022:
+#   https://doi.org/10.24963/ijcai.2022/267
+#   Code: https://github.com/pkualpha/HSL
+# Phép lan truyền dùng dạng chuẩn hóa của HGNN. Luồng encode H0, học H* rồi
+# encode lại được điều chỉnh từ ý tưởng HSL cho bài toán MOOC dropout.
 
 import numpy as np
 import torch

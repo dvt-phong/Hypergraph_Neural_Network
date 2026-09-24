@@ -1,8 +1,16 @@
 # 3. Build separate train, validation, and test node features.
+# Tham khảo từ project/bài báo:
+# - SIG-Net, ACM SAC 2024: https://doi.org/10.1145/3605098.3636002
+#   Code: https://github.com/Noverse0/SIG-Net
+# - MST-GCN, Scientific Reports 2026:
+#   https://doi.org/10.1038/s41598-026-40502-w
+#   Code: https://github.com/wudongze9/MST-GCN
+# - CA-TFHN, ICONIP 2023: https://doi.org/10.1007/978-981-99-8184-7_31
+#   Code: https://github.com/codeds27/CA-TFHN
+# Các nguồn trên gợi ý cách biểu diễn hành vi theo thời gian và ngữ cảnh học viên.
+# Bộ 94 features trong file này là phiên bản đơn giản hóa riêng của project.
 
 import argparse
-import csv
-import gzip
 from datetime import date
 from importlib import import_module
 from pathlib import Path
@@ -30,7 +38,7 @@ def feature_columns(feature_set):
 
 
 # Build readable names and source descriptions in matrix-column order.
-def _feature_metadata():
+def feature_metadata():
     metadata = []
 
     for day_number in range(config.DAY_FEATURE_COUNT):
@@ -78,7 +86,7 @@ def _feature_metadata():
 
 
 # Set the known, missing, or other one-hot column for one categorical value.
-def _set_one_hot(feature_matrix, row_index, value, vocabulary, feature_start):
+def set_one_hot(feature_matrix, row_index, value, vocabulary, feature_start):
     if not value:
         value_index = len(vocabulary)
     else:
@@ -90,7 +98,7 @@ def _set_one_hot(feature_matrix, row_index, value, vocabulary, feature_start):
 
 
 # Fit median, mean, and standard deviation on one train numeric feature.
-def _numeric_statistics(train_values):
+def numeric_statistics(train_values):
     observed_values = train_values[np.isfinite(train_values)]
     median = float(np.median(observed_values))
     filled_values = np.where(np.isfinite(train_values), train_values, median)
@@ -102,7 +110,7 @@ def _numeric_statistics(train_values):
 
 
 # Impute and standardize one numeric feature with train statistics.
-def _scale_numeric(raw_values, statistics):
+def scale_numeric(raw_values, statistics):
     median, mean, standard_deviation = statistics
     missing_mask = ~np.isfinite(raw_values)
     filled_values = np.where(missing_mask, median, raw_values)
@@ -110,57 +118,55 @@ def _scale_numeric(raw_values, statistics):
     return scaled_values, missing_mask.astype(np.float32)
 
 
-# Count activity by course day and action for one dataset split.
-def _build_behavior_features(split_dir, node_count):
-    behavior_features = np.zeros(
-        (node_count, config.BEHAVIOR_FEATURE_COUNT),
-        dtype=np.int32,
-    )
+# Build behavior, user, and course inputs from one complete split CSV.
+def build_split_features(data_path):
     action_indices = {}
     for offset, action in enumerate(config.ACTIONS):
         action_indices[action] = config.ACTION_FEATURE_START + offset
 
-    event_path = split_dir / "events_35d.csv.gz"
-    with gzip.open(event_path, "rt", newline="", encoding="utf-8") as source:
-        for event in csv.DictReader(source):
-            node_id = int(event["node_id"])
-            course_day = int(event["course_day"])
-            action = event["action"]
-            behavior_features[node_id, course_day] += 1
-            behavior_features[node_id, action_indices[action]] += 1
-    return behavior_features
+    nodes = {}
+    behavior_by_node = {}
+    for row in read_csv(data_path):
+        node_id = int(row["node_id"])
+        if node_id not in nodes:
+            nodes[node_id] = row
+            behavior_by_node[node_id] = np.zeros(
+                config.BEHAVIOR_FEATURE_COUNT,
+                dtype=np.int32,
+            )
 
+        action = row["action"].strip()
+        if action:
+            course_day = int(row["course_day"])
+            behavior_by_node[node_id][course_day] += 1
+            behavior_by_node[node_id][action_indices[action]] += 1
 
-# Build raw user and course context features for one dataset split.
-def _build_context_features(output_dir, nodes):
-    users = {}
-    for row in read_csv(output_dir / "users.csv"):
-        users[int(row["user_id"])] = row
-    courses = {}
-    for row in read_csv(output_dir / "courses.csv"):
-        courses[row["course_id"]] = row
+    node_count = len(nodes)
+    behavior_features = np.zeros(
+        (node_count, config.BEHAVIOR_FEATURE_COUNT),
+        dtype=np.int32,
+    )
 
     user_context = np.zeros(
-        (len(nodes), config.USER_FEATURE_COUNT),
+        (node_count, config.USER_FEATURE_COUNT),
         dtype=np.float32,
     )
     course_context = np.zeros(
-        (len(nodes), config.COURSE_FEATURE_COUNT),
+        (node_count, config.COURSE_FEATURE_COUNT),
         dtype=np.float32,
     )
-    ages = np.full(len(nodes), np.nan, dtype=np.float64)
-    durations = np.full(len(nodes), np.nan, dtype=np.float64)
+    ages = np.full(node_count, np.nan, dtype=np.float64)
+    durations = np.full(node_count, np.nan, dtype=np.float64)
 
-    for node in nodes:
-        node_id = int(node["node_id"])
-        user = users[int(node["user_id"])]
-        course = courses[node["course_id"]]
+    for node_id in sorted(nodes):
+        node = nodes[node_id]
+        behavior_features[node_id] = behavior_by_node[node_id]
 
-        gender = user["gender"].strip()
-        education = user["education"].strip()
-        category = course["category"].strip()
-        birth = user["birth"].strip()
-        course_end = course["end"].strip()
+        gender = node["gender"].strip()
+        education = node["education"].strip()
+        category = node["category"].strip()
+        birth = node["birth"].strip()
+        course_end = node["course_end"].strip()
         if gender.lower() in config.MISSING_VALUES:
             gender = ""
         if education.lower() in config.MISSING_VALUES:
@@ -172,21 +178,21 @@ def _build_context_features(output_dir, nodes):
         if course_end.lower() in config.MISSING_VALUES:
             course_end = ""
 
-        _set_one_hot(
+        set_one_hot(
             user_context,
             node_id,
             gender,
             config.GENDERS,
             config.GENDER_FEATURE_START,
         )
-        _set_one_hot(
+        set_one_hot(
             user_context,
             node_id,
             education,
             config.EDUCATIONS,
             config.EDUCATION_FEATURE_START,
         )
-        _set_one_hot(
+        set_one_hot(
             course_context,
             node_id,
             category,
@@ -194,7 +200,7 @@ def _build_context_features(output_dir, nodes):
             config.CATEGORY_FEATURE_START,
         )
 
-        course_start = date.fromisoformat(course["start"][:10])
+        course_start = date.fromisoformat(node["course_start"][:10])
         if course_end:
             course_end_date = date.fromisoformat(course_end[:10])
             duration = (course_end_date - course_start).days
@@ -206,7 +212,7 @@ def _build_context_features(output_dir, nodes):
             if 10 <= age <= 100:
                 ages[node_id] = age
 
-    return user_context, course_context, ages, durations
+    return behavior_features, user_context, course_context, ages, durations
 
 
 # Build all three feature matrices with transforms fitted on train only.
@@ -216,11 +222,9 @@ def build_features(output_dir=config.PROCESSED):
 
     for split_name in config.SPLITS:
         split_dir = output_dir / split_name
-        nodes = list(read_csv(split_dir / "nodes.csv"))
-        behavior = _build_behavior_features(split_dir, len(nodes))
-        user, course, ages, durations = _build_context_features(
-            output_dir,
-            nodes,
+        split_dir.mkdir(parents=True, exist_ok=True)
+        behavior, user, course, ages, durations = build_split_features(
+            output_dir / f"{split_name}.csv"
         )
         feature_data[split_name] = {
             "behavior": behavior,
@@ -236,8 +240,8 @@ def build_features(output_dir=config.PROCESSED):
     behavior_mean = np.mean(train_behavior, axis=0, dtype=np.float64)
     behavior_std = np.std(train_behavior, axis=0, dtype=np.float64)
     behavior_std[behavior_std == 0] = 1.0
-    age_statistics = _numeric_statistics(feature_data["train"]["ages"])
-    duration_statistics = _numeric_statistics(
+    age_statistics = numeric_statistics(feature_data["train"]["ages"])
+    duration_statistics = numeric_statistics(
         feature_data["train"]["durations"]
     )
 
@@ -253,11 +257,11 @@ def build_features(output_dir=config.PROCESSED):
 
         user_context = split_data["user"]
         course_context = split_data["course"]
-        scaled_ages, missing_ages = _scale_numeric(
+        scaled_ages, missing_ages = scale_numeric(
             split_data["ages"],
             age_statistics,
         )
-        scaled_durations, missing_durations = _scale_numeric(
+        scaled_durations, missing_durations = scale_numeric(
             split_data["durations"],
             duration_statistics,
         )
@@ -278,7 +282,7 @@ def build_features(output_dir=config.PROCESSED):
         print(f"Saved {feature_path}", flush=True)
 
     feature_rows = []
-    for feature_index, metadata in enumerate(_feature_metadata()):
+    for feature_index, metadata in enumerate(feature_metadata()):
         feature_name, feature_source = metadata
         feature_rows.append((feature_index, feature_name, feature_source))
     write_csv(
