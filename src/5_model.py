@@ -1,11 +1,13 @@
-# Define HGNN propagation and the two-pass HGSL dropout model.
+# 5. Define HGNN propagation and the two-pass HGSL dropout model.
 
 import numpy as np
 import torch
+from importlib import import_module
 from torch import nn
 from torch.nn import functional as F
 
-from hsl import refine_hypergraph
+hsl_module = import_module("6_hsl")
+refine_hypergraph = hsl_module.refine_hypergraph
 
 
 # Convert a SciPy sparse matrix to a coalesced PyTorch sparse tensor.

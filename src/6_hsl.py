@@ -1,4 +1,4 @@
-# Learn refined memberships and construct the sparse incidence matrix H*.
+# 6. Learn refined memberships and construct the sparse incidence matrix H*.
 
 from collections import defaultdict
 from math import sqrt

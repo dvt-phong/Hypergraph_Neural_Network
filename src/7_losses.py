@@ -1,4 +1,4 @@
-# Define weighted BCE, symmetric contrastive loss, and their sum.
+# 7. Define weighted BCE, symmetric contrastive loss, and their sum.
 
 import torch
 from torch.nn import functional as F

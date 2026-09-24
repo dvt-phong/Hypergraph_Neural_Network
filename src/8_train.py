@@ -1,23 +1,26 @@
-# Train HGSL, select a checkpoint on validation, then evaluate on test.
+# 8. Train HGSL, select a checkpoint on validation, then evaluate on test.
 
 import argparse
 import json
 import random
+from importlib import import_module
 from pathlib import Path
 
 import numpy as np
 from scipy import sparse
 import torch
 
-from hypergraph import build_local_graph, load_evaluation_data, load_train_graph
-from losses import total_loss, train_pos_weight
-from model import HGSLModel
-from preprocess import PROCESSED, ROOT, SEEDS
+config = import_module("0_config")
+hypergraph_module = import_module("4_hypergraph")
+model_module = import_module("5_model")
+loss_module = import_module("7_losses")
 
-
-RUNS = ROOT / "outputs" / "runs"
-REPORTS = ROOT / "outputs" / "reports"
-CLI_DESCRIPTION = "Train HGSL, select on validation, and evaluate on test."
+build_local_graph = hypergraph_module.build_local_graph
+load_evaluation_data = hypergraph_module.load_evaluation_data
+load_train_graph = hypergraph_module.load_train_graph
+HGSLModel = model_module.HGSLModel
+total_loss = loss_module.total_loss
+train_pos_weight = loss_module.train_pos_weight
 
 
 # Assign average ranks to tied prediction scores.
@@ -151,12 +154,8 @@ def _batch_graphs(graphs):
 
 
 # Select deterministic evaluation targets and preserve both label classes.
-def _evaluation_targets(evaluation_data, split_name, seed, limit):
-    targets = []
-    for node_id, node_split in enumerate(evaluation_data["split"]):
-        if node_split == split_name:
-            targets.append(node_id)
-    targets = np.asarray(targets, dtype=np.int64)
+def _evaluation_targets(evaluation_data, seed, limit):
+    targets = np.arange(len(evaluation_data["nodes"]), dtype=np.int64)
 
     if not limit:
         return targets
@@ -191,7 +190,6 @@ def _evaluation_targets(evaluation_data, split_name, seed, limit):
 def evaluate(
     model,
     evaluation_data,
-    split_name,
     *,
     seed,
     device,
@@ -200,7 +198,7 @@ def evaluate(
     hsl=True,
     refinement=None,
 ):
-    targets = _evaluation_targets(evaluation_data, split_name, seed, limit)
+    targets = _evaluation_targets(evaluation_data, seed, limit)
     probabilities = []
     labels = []
 
@@ -463,7 +461,6 @@ def _run_training_epochs(
         validation_metrics, validation_target_count = evaluate(
             model,
             evaluation_data,
-            "validation",
             seed=settings["seed"],
             device=device,
             batch_size=settings["validation_batch_size"],
@@ -521,10 +518,10 @@ def _initialize_training_components(
         train_labels,
         edge_families,
         edge_sizes,
-    ) = load_train_graph(output_dir, seed=seed, feature_set=feature_set)
+    ) = load_train_graph(output_dir, feature_set=feature_set)
     evaluation_data = load_evaluation_data(
         output_dir,
-        seed=seed,
+        split_name="validation",
         feature_set=feature_set,
     )
     node_feature_tensor = torch.as_tensor(train_node_features, device=device)
@@ -598,7 +595,7 @@ def train(
     feature_set="behavior",
     epochs=50,
     patience=5,
-    output_dir=PROCESSED,
+    output_dir=config.PROCESSED,
     device_name="auto",
     validation_limit=0,
     validation_batch_size=4,
@@ -611,8 +608,8 @@ def train(
     contrastive_nodes=512,
     hsl=True,
     refinement=None,
-    runs_dir=RUNS,
-    reports_dir=REPORTS,
+    runs_dir=config.RUNS,
+    reports_dir=config.REPORTS,
 ):
     if epochs <= 0 or patience <= 0:
         raise ValueError("epochs and patience must be positive")
@@ -702,11 +699,11 @@ def train(
 def test(
     checkpoint,
     *,
-    output_dir=PROCESSED,
+    output_dir=config.PROCESSED,
     device_name="auto",
     test_limit=0,
     batch_size=4,
-    reports_dir=REPORTS,
+    reports_dir=config.REPORTS,
 ):
     device = _device(device_name)
     checkpoint_data = torch.load(
@@ -724,13 +721,12 @@ def test(
 
     evaluation_data = load_evaluation_data(
         output_dir,
-        seed=settings["seed"],
+        split_name="test",
         feature_set=settings["feature_set"],
     )
     test_metrics, target_count = evaluate(
         model,
         evaluation_data,
-        "test",
         seed=settings["seed"],
         device=device,
         batch_size=batch_size,
@@ -753,12 +749,12 @@ def test(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=CLI_DESCRIPTION)
+    parser = argparse.ArgumentParser(description=config.TRAIN_CLI_DESCRIPTION)
     parser.add_argument("--mode", choices=("train", "test", "both"), default="train")
     parser.add_argument("--checkpoint", type=Path)
-    parser.add_argument("--output-dir", type=Path, default=PROCESSED)
-    parser.add_argument("--seed", type=int, choices=SEEDS, default=1)
-    parser.add_argument("--seeds", type=int, nargs="+", choices=SEEDS)
+    parser.add_argument("--output-dir", type=Path, default=config.PROCESSED)
+    parser.add_argument("--seed", type=int, choices=config.SEEDS, default=1)
+    parser.add_argument("--seeds", type=int, nargs="+", choices=config.SEEDS)
     parser.add_argument(
         "--feature-set",
         choices=("behavior", "behavior_user", "behavior_course", "full"),
