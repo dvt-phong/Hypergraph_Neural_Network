@@ -18,8 +18,7 @@ Code chính gồm một file cấu hình và tám bước pipeline:
 | 7 | `7_losses.py` | Weighted BCE và contrastive loss |
 | 8 | `8_train.py` | Train, validation, early stopping và test |
 
-Xem [tài liệu giải thích code](docs/code-guide.md),
-[dòng chảy dữ liệu và các cột](docs/data-flow-columns.md),
+Xem [dòng chảy dữ liệu và các cột](docs/data-flow-columns.md),
 [nguồn tham khảo của code](docs/references.md), và
 [sơ đồ mô hình](docs/assets/hypergraph-neural-network-v3.png).
 
