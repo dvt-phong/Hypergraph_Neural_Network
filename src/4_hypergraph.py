@@ -9,8 +9,7 @@
 # - MST-GCN, Scientific Reports 2026:
 #   https://doi.org/10.1038/s41598-026-40502-w
 #   Code: https://github.com/wudongze9/MST-GCN
-# Course, Object và Behavioral hyperedges là cách điều chỉnh riêng của project
-# từ ý tưởng quan hệ bậc cao, student interaction và classmates similarity.
+
 
 import argparse
 import csv

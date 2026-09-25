@@ -7,8 +7,7 @@
 #   Code: https://github.com/wudongze9/MST-GCN
 # - CA-TFHN, ICONIP 2023: https://doi.org/10.1007/978-981-99-8184-7_31
 #   Code: https://github.com/codeds27/CA-TFHN
-# Các nguồn trên được dùng để đối chiếu cách tổ chức dữ liệu tương tác MOOC.
-# Cách chia split và CSV hợp nhất trong file này là thiết kế của project.
+
 
 import argparse
 import codecs

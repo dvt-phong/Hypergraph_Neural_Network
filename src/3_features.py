@@ -7,8 +7,7 @@
 #   Code: https://github.com/wudongze9/MST-GCN
 # - CA-TFHN, ICONIP 2023: https://doi.org/10.1007/978-981-99-8184-7_31
 #   Code: https://github.com/codeds27/CA-TFHN
-# Các nguồn trên gợi ý cách biểu diễn hành vi theo thời gian và ngữ cảnh học viên.
-# Bộ 94 features trong file này là phiên bản đơn giản hóa riêng của project.
+
 
 import argparse
 from datetime import date
