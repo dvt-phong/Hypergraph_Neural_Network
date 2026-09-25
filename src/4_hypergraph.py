@@ -1,25 +1,16 @@
-# 4. Build and load Course, Object, and Behavioral hypergraphs.
-# Tham khảo từ project/bài báo:
-# - HGNN, AAAI 2019: https://doi.org/10.1609/aaai.v33i01.33013558
-#   Code: https://github.com/iMoonLab/HGNN
-# - SIG-Net, ACM SAC 2024: https://doi.org/10.1145/3605098.3636002
-#   Code: https://github.com/Noverse0/SIG-Net
-# - CA-TFHN, ICONIP 2023: https://doi.org/10.1007/978-981-99-8184-7_31
-#   Code: https://github.com/codeds27/CA-TFHN
-# - MST-GCN, Scientific Reports 2026:
-#   https://doi.org/10.1038/s41598-026-40502-w
-#   Code: https://github.com/wudongze9/MST-GCN
-
+# 4. Build Course, Object, and Behavioral hyperedges, then create sparse H0.
+#
+# H0 columns always follow this order:
+#   Course hyperedges -> Object hyperedges -> Behavioral hyperedges.
 
 import argparse
-import csv
-import gzip
-import json
+import time
 from collections import defaultdict
 from importlib import import_module
 from pathlib import Path
 
 import numpy as np
+import torch
 from scipy import sparse
 
 config = import_module("0_config")
@@ -29,17 +20,46 @@ read_csv = preprocess_module.read_csv
 load_nodes = preprocess_module.load_nodes
 feature_columns = feature_module.feature_columns
 
+HYPERGRAPH_FILE_NAME = "hypergraph.npz"
 
-# Find each query node's nearest train nodes by behavioral cosine similarity.
+
+def log_event(scope, message):
+    print(f"[{time.strftime('%H:%M:%S')}][{scope}] {message}", flush=True)
+
+
+def resolve_device(device_name):
+    if device_name == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        return torch.device("cpu")
+    if device_name == "cuda" and not torch.cuda.is_available():
+        raise ValueError("CUDA was requested but is not available")
+    return torch.device(device_name)
+
+
+# Find exact cosine neighbors in batches so the full N x N matrix is never stored.
 def behavioral_neighbors(
     train_features,
     query_features,
     maximum_neighbor_count,
+    *,
     exclude_self=False,
+    device_name="auto",
+    batch_size=256,
+    progress_name="behavioral kNN",
 ):
-    import faiss
+    train_count = len(train_features)
+    query_count = len(query_features)
+    available_references = train_count - int(exclude_self)
+    if maximum_neighbor_count <= 0:
+        raise ValueError("maximum_neighbor_count must be positive")
+    if maximum_neighbor_count > available_references:
+        raise ValueError("Not enough train nodes for the requested neighbor count")
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    if exclude_self and query_count != train_count:
+        raise ValueError("Self-exclusion requires aligned train queries")
 
-    # Use only the 35 daily counts and 23 action counts for similarity.
     train_behavior = np.asarray(
         train_features[:, config.BEHAVIOR_FEATURE_SLICE],
         dtype=np.float32,
@@ -49,434 +69,510 @@ def behavioral_neighbors(
         dtype=np.float32,
     ).copy()
 
-    # Compute one L2 norm per node: ||x|| = sqrt(sum(x_i^2)).
     train_norms = np.linalg.norm(train_behavior, axis=1, keepdims=True)
     query_norms = np.linalg.norm(query_behavior, axis=1, keepdims=True)
-
-    # After L2 normalization, inner product equals cosine similarity.
-    np.divide(train_behavior, train_norms, out=train_behavior, where=train_norms != 0)
-    np.divide(query_behavior, query_norms, out=query_behavior, where=query_norms != 0)
-
-    # Build an approximate HNSW index with 32 graph links per node.
-    index = faiss.IndexHNSWFlat(
-        train_behavior.shape[1],
-        32,
-        faiss.METRIC_INNER_PRODUCT,
+    np.divide(
+        train_behavior,
+        train_norms,
+        out=train_behavior,
+        where=train_norms != 0,
     )
-    # Larger ef values improve neighbor recall but require more work.
-    index.hnsw.efConstruction = 100
-    index.hnsw.efSearch = 128
-    # FAISS expects a contiguous float32 matrix of reference vectors.
-    index.add(np.ascontiguousarray(train_behavior))
+    np.divide(
+        query_behavior,
+        query_norms,
+        out=query_behavior,
+        where=query_norms != 0,
+    )
+    zero_query_rows = query_norms.ravel() == 0
 
-    search_count = maximum_neighbor_count
-    # Search for one extra result because a train node finds itself first.
-    if exclude_self:
-        search_count += 1
-    # Row i stores the train node IDs nearest to query node i.
+    device = resolve_device(device_name)
+    started_at = time.perf_counter()
+    log_event(
+        "hypergraph",
+        f"{progress_name}: queries={query_count:,}, references={train_count:,}, "
+        f"k_max={maximum_neighbor_count}, device={device}, batch={batch_size}",
+    )
+
+    train_tensor = torch.as_tensor(
+        np.ascontiguousarray(train_behavior),
+        device=device,
+    )
+    train_tensor_transposed = train_tensor.transpose(0, 1)
     neighbor_node_ids = np.empty(
-        (len(query_features), maximum_neighbor_count),
+        (query_count, maximum_neighbor_count),
         dtype=np.int32,
     )
-    # Search in batches to limit peak memory on large datasets.
-    batch_size = 25_000
-    for batch_start in range(0, len(query_features), batch_size):
-        batch_stop = min(batch_start + batch_size, len(query_features))
-        # FAISS returns (similarity scores, reference node IDs).
-        search_results = index.search(
-            np.ascontiguousarray(query_behavior[batch_start:batch_stop]),
-            search_count,
-        )
-        # Only neighbor IDs are needed; similarity scores are not saved.
-        nearest_positions = search_results[1]
+    all_train_node_ids = np.arange(train_count, dtype=np.int32)
 
-        for offset, positions in enumerate(nearest_positions):
-            query_node_id = batch_start + offset
-            # Remove the query itself during train-to-train search.
-            if exclude_self:
-                positions = positions[positions != query_node_id]
-            neighbor_node_ids[query_node_id] = positions[:maximum_neighbor_count]
+    next_progress_percent = 10
+    with torch.inference_mode():
+        for batch_start in range(0, query_count, batch_size):
+            batch_stop = min(batch_start + batch_size, query_count)
+            batch_zero_rows = zero_query_rows[batch_start:batch_stop]
+            nonzero_positions = np.flatnonzero(~batch_zero_rows)
+
+            if len(nonzero_positions) > 0:
+                query_tensor = torch.as_tensor(
+                    query_behavior[batch_start:batch_stop][nonzero_positions],
+                    device=device,
+                )
+                cosine_similarities = query_tensor @ train_tensor_transposed
+
+                if exclude_self:
+                    local_query_ids = torch.arange(
+                        len(nonzero_positions),
+                        device=device,
+                    )
+                    global_query_ids = torch.as_tensor(
+                        batch_start + nonzero_positions,
+                        dtype=torch.int64,
+                        device=device,
+                    )
+                    cosine_similarities[local_query_ids, global_query_ids] = (
+                        -torch.inf
+                    )
+
+                top_scores, top_node_ids = torch.topk(
+                    cosine_similarities,
+                    maximum_neighbor_count,
+                    dim=1,
+                    largest=True,
+                    sorted=True,
+                )
+                top_scores = top_scores.cpu().numpy()
+                top_node_ids = top_node_ids.cpu().numpy().astype(
+                    np.int32,
+                    copy=False,
+                )
+
+                # Node ID is the stable tie-breaker for equal cosine scores.
+                for result_row, local_position in enumerate(nonzero_positions):
+                    order = np.lexsort(
+                        (top_node_ids[result_row], -top_scores[result_row])
+                    )
+                    query_node_id = batch_start + int(local_position)
+                    neighbor_node_ids[query_node_id] = top_node_ids[
+                        result_row,
+                        order,
+                    ]
+
+            # A zero behavior vector has equal cosine similarity to every node.
+            for local_position in np.flatnonzero(batch_zero_rows):
+                query_node_id = batch_start + int(local_position)
+                valid_node_ids = all_train_node_ids
+                if exclude_self:
+                    valid_node_ids = all_train_node_ids[
+                        all_train_node_ids != query_node_id
+                    ]
+                neighbor_node_ids[query_node_id] = valid_node_ids[
+                    :maximum_neighbor_count
+                ]
+
+            completed_percent = int(100 * batch_stop / max(query_count, 1))
+            if completed_percent >= next_progress_percent or batch_stop == query_count:
+                log_event(
+                    "hypergraph",
+                    f"{progress_name}: {batch_stop:,}/{query_count:,} "
+                    f"({completed_percent}%) in "
+                    f"{time.perf_counter() - started_at:.1f}s",
+                )
+                while next_progress_percent <= completed_percent:
+                    next_progress_percent += 10
+
     return neighbor_node_ids
 
 
-# Group train node identifiers by course.
-def course_groups(nodes):
-    groups = defaultdict(set)
-    # All train nodes in the same course form one course hyperedge.
+# Enrollment nodes from the same course form one Course hyperedge.
+def build_course_hyperedges(nodes):
+    members_by_course = defaultdict(list)
     for node in nodes:
-        groups[node["course_id"]].add(int(node["node_id"]))
-    return groups
+        members_by_course[node["course_id"]].append(int(node["node_id"]))
+
+    course_hyperedges = {}
+    for course_id in sorted(members_by_course):
+        course_hyperedges[course_id] = sorted(set(members_by_course[course_id]))
+    return course_hyperedges
 
 
-# Group node identifiers by observed course object from one split CSV.
-def object_groups(data_path):
-    groups = defaultdict(set)
-    for event in read_csv(data_path):
-        # Web-page actions do not create object hyperedges.
+# Enrollment nodes using the same object in the same course form one Object edge.
+def build_object_hyperedges(data_path):
+    started_at = time.perf_counter()
+    members_by_object = defaultdict(set)
+    event_count = 0
+
+    for event_count, event in enumerate(read_csv(data_path), start=1):
         object_type = config.OBJECT_ACTIONS.get(event["action"], "")
         object_id = event["object_id"].strip()
         if object_type and object_id.lower() not in config.MISSING_VALUES:
-            # Include course and type so equal object IDs do not collide.
-            key = (event["course_id"], object_id, object_type)
-            groups[key].add(int(event["node_id"]))
-    return groups
+            # Course and object type prevent unrelated objects from being merged.
+            object_key = (event["course_id"], object_type, object_id)
+            members_by_object[object_key].add(int(event["node_id"]))
+
+        if event_count % 1_000_000 == 0:
+            log_event(
+                "hypergraph",
+                f"object grouping: scanned {event_count:,} events",
+            )
+
+    object_hyperedges = {}
+    for object_key in sorted(members_by_object):
+        object_hyperedges[object_key] = sorted(members_by_object[object_key])
+
+    log_event(
+        "hypergraph",
+        f"object grouping completed: events={event_count:,}, "
+        f"objects={len(object_hyperedges):,}, "
+        f"elapsed={time.perf_counter() - started_at:.1f}s",
+    )
+    return object_hyperedges
 
 
-# Group each target node's observed course objects.
-def objects_by_node(data_path):
-    objects_by_node = defaultdict(set)
-    for event in read_csv(data_path):
-        object_type = config.OBJECT_ACTIONS.get(event["action"], "")
-        object_id = event["object_id"].strip()
-        if object_type and object_id.lower() not in config.MISSING_VALUES:
-            # Save each valid object observed by this target node.
-            key = (event["course_id"], object_id, object_type)
-            objects_by_node[int(event["node_id"])].add(key)
-    return objects_by_node
+# One Behavioral edge contains its anchor and the first k saved neighbors.
+def build_behavioral_hyperedges(neighbor_node_ids, neighbor_count):
+    behavioral_hyperedges = []
+    for anchor_node_id in range(len(neighbor_node_ids)):
+        members = [anchor_node_id]
+        for neighbor_node_id in neighbor_node_ids[anchor_node_id, :neighbor_count]:
+            members.append(int(neighbor_node_id))
+        behavioral_hyperedges.append(sorted(set(members)))
+    return behavioral_hyperedges
 
 
-# Sort object keys by course, object type, and object identifier.
-def object_key_sort_key(object_key):
-    return object_key[0], object_key[2], object_key[1]
-
-
-# Write one non-singleton hyperedge and return the next edge identifier.
-def write_edge(
-    edge_writer,
-    metadata_writer,
-    family_counts,
-    edge_id,
-    family,
-    members,
-    course_id="",
-    object_id="",
-    object_type="",
-    anchor_id="",
+# Convert the three ordered hyperedge families directly to sparse CSR H0.
+def build_h0(
+    node_count,
+    course_hyperedges,
+    object_hyperedges,
+    behavioral_hyperedges,
 ):
-    sorted_members = sorted(members)
-    # A singleton cannot model a relation between different nodes.
-    if len(sorted_members) < 2:
-        return edge_id
+    hyperedges = []
+    edge_families = []
 
-    # Store one metadata row for the hyperedge itself.
-    metadata_writer.writerow((
-        edge_id,
-        family,
-        course_id,
-        object_id,
-        object_type,
-        anchor_id,
-        len(sorted_members),
-    ))
-    # Store one incidence row for every node that belongs to the edge.
-    for node_id in sorted_members:
-        edge_writer.writerow((edge_id, node_id))
-    family_counts[family] += 1
-    return edge_id + 1
+    for members in course_hyperedges.values():
+        if len(members) >= 2:
+            hyperedges.append(members)
+            edge_families.append("course")
 
+    for members in object_hyperedges.values():
+        if len(members) >= 2:
+            hyperedges.append(members)
+            edge_families.append("object")
 
-# Write train Course, Object, and Behavioral hyperedges.
-def write_hyperedges(
-    output_dir,
-    train_count,
-    course_groups,
-    object_groups,
-    neighbor_node_ids,
-    neighbor_count,
-):
-    edge_path = output_dir / "edge_memberships.csv.gz"
-    metadata_path = output_dir / "edge_meta.csv"
-    # Count saved edges separately for each relation family.
-    family_counts = {"course": 0, "object": 0, "behavioral": 0}
+    for members in behavioral_hyperedges:
+        if len(members) >= 2:
+            hyperedges.append(members)
+            edge_families.append("behavioral")
 
-    with gzip.open(
-        edge_path,
-        "wt",
-        newline="",
-        encoding="utf-8",
-        compresslevel=1,
-    ) as edge_file, open(
-        metadata_path,
-        "w",
-        newline="",
-        encoding="utf-8",
-    ) as metadata_file:
-        edge_writer = csv.writer(edge_file)
-        metadata_writer = csv.writer(metadata_file)
-        edge_writer.writerow(("edge_id", "node_id"))
-        metadata_writer.writerow((
-            "edge_id", "family", "course_id", "object_id",
-            "object_type", "anchor_id", "size",
-        ))
-        edge_id = 0
+    if not hyperedges:
+        raise ValueError("No non-singleton hyperedges were constructed")
 
-        # Write one shared-course hyperedge for each course.
-        for course_id in sorted(course_groups):
-            edge_id = write_edge(
-                edge_writer,
-                metadata_writer,
-                family_counts,
-                edge_id,
-                "course",
-                course_groups[course_id],
-                course_id=course_id,
-            )
-
-        # Write one shared-object hyperedge for each course object.
-        object_keys = sorted(object_groups, key=object_key_sort_key)
-        for course_id, object_id, object_type in object_keys:
-            edge_id = write_edge(
-                edge_writer,
-                metadata_writer,
-                family_counts,
-                edge_id,
-                "object",
-                object_groups[(course_id, object_id, object_type)],
-                course_id=course_id,
-                object_id=object_id,
-                object_type=object_type,
-            )
-
-        # A behavioral edge contains one anchor and its top-k neighbors.
-        unique_behavioral_edges = {}
-        for anchor_node_id in range(train_count):
-            members = {anchor_node_id}
-            for neighbor_node_id in neighbor_node_ids[
-                anchor_node_id,
-                :neighbor_count,
-            ]:
-                members.add(int(neighbor_node_id))
-            # Sets remove repeated nodes and sorting gives a stable edge key.
-            member_tuple = tuple(sorted(members))
-            # Keep only one copy when two anchors create the same member set.
-            unique_behavioral_edges.setdefault(member_tuple, anchor_node_id)
-
-        # Write each unique behavioral member set as one hyperedge.
-        for members in sorted(unique_behavioral_edges):
-            edge_id = write_edge(
-                edge_writer,
-                metadata_writer,
-                family_counts,
-                edge_id,
-                "behavioral",
-                members,
-                anchor_id=unique_behavioral_edges[members],
-            )
-
-    return edge_id, family_counts
-
-
-# Turn train edge memberships into the sparse initial incidence matrix H0.
-def build_h0(output_dir, train_count):
-    metadata = list(read_csv(output_dir / "edge_meta.csv"))
     rows = []
     columns = []
-    membership_path = output_dir / "edge_memberships.csv.gz"
-    # Each CSV pair (node, edge) becomes a nonzero position in H0.
-    with gzip.open(membership_path, "rt", newline="", encoding="utf-8") as source:
-        for membership in csv.DictReader(source):
-            rows.append(int(membership["node_id"]))
-            columns.append(int(membership["edge_id"]))
+    edge_sizes = []
+    for edge_id, members in enumerate(hyperedges):
+        edge_sizes.append(len(members))
+        for node_id in members:
+            rows.append(node_id)
+            columns.append(edge_id)
 
-    # H0[v, e] = 1 means node v belongs to hyperedge e.
     values = np.ones(len(rows), dtype=np.uint8)
     initial_incidence_matrix = sparse.coo_matrix(
         (values, (rows, columns)),
-        shape=(train_count, len(metadata)),
+        shape=(node_count, len(hyperedges)),
     ).tocsr()
-    # CSR format supports efficient row-based hypergraph operations.
-    sparse.save_npz(output_dir / "H0.npz", initial_incidence_matrix)
-    return initial_incidence_matrix
+
+    edge_families = np.asarray(edge_families, dtype="<U10")
+    edge_sizes = np.asarray(edge_sizes, dtype=np.int32)
+    family_counts = {
+        "course": int(np.count_nonzero(edge_families == "course")),
+        "object": int(np.count_nonzero(edge_families == "object")),
+        "behavioral": int(np.count_nonzero(edge_families == "behavioral")),
+    }
+    return initial_incidence_matrix, edge_families, edge_sizes, family_counts
 
 
-# Build the train hypergraph and train-reference neighbors for evaluation.
-def build_hypergraph(output_dir=config.PROCESSED, *, k=10, k_max=20):
+def build_hypergraph(
+    output_dir=config.PROCESSED,
+    *,
+    k=10,
+    k_max=20,
+    device_name="auto",
+    neighbor_batch_size=256,
+):
+    started_at = time.perf_counter()
     output_dir = Path(output_dir)
-    train_dir = output_dir / "train"
-    train_nodes = load_nodes(output_dir / "train.csv")
-    train_features = np.load(train_dir / "X.npy")
+    if k <= 0 or k_max <= 0 or k > k_max:
+        raise ValueError("Require 0 < k <= k_max")
 
-    # Find train neighbors from train references and remove self-matches.
+    train_nodes = load_nodes(output_dir / "train.csv")
+    train_features = np.load(output_dir / "train" / "X.npy")
+    if len(train_nodes) != len(train_features):
+        raise ValueError("Train nodes and feature rows do not align")
+    if k_max >= len(train_nodes):
+        raise ValueError("k_max must be smaller than the train node count")
+
+    log_event(
+        "hypergraph",
+        f"build started: train_nodes={len(train_nodes):,}, k={k}, k_max={k_max}",
+    )
     train_neighbors = behavioral_neighbors(
         train_features,
         train_features,
         k_max,
         exclude_self=True,
+        device_name=device_name,
+        batch_size=neighbor_batch_size,
+        progress_name="train-to-train neighbors",
     )
-    np.save(train_dir / "neighbors.npy", train_neighbors)
 
-    # Validation and test nodes may only use train nodes as references.
+    evaluation_neighbors = {}
     for split_name in ("validation", "test"):
-        split_dir = output_dir / split_name
-        target_features = np.load(split_dir / "X.npy")
-        target_neighbors = behavioral_neighbors(
+        target_features = np.load(output_dir / split_name / "X.npy")
+        target_nodes = load_nodes(output_dir / f"{split_name}.csv")
+        if len(target_nodes) != len(target_features):
+            raise ValueError(f"{split_name} nodes and feature rows do not align")
+        evaluation_neighbors[split_name] = behavioral_neighbors(
             train_features,
             target_features,
             k_max,
+            device_name=device_name,
+            batch_size=neighbor_batch_size,
+            progress_name=f"{split_name}-to-train neighbors",
         )
-        np.save(split_dir / "neighbors.npy", target_neighbors)
 
-    # Build the three train-only relation families.
-    train_course_groups = course_groups(train_nodes)
-    train_object_groups = object_groups(output_dir / "train.csv")
-    edge_count, family_counts = write_hyperedges(
-        output_dir,
+    course_hyperedges = build_course_hyperedges(train_nodes)
+    object_hyperedges = build_object_hyperedges(output_dir / "train.csv")
+    behavioral_hyperedges = build_behavioral_hyperedges(train_neighbors, k)
+    (
+        initial_incidence_matrix,
+        edge_families,
+        edge_sizes,
+        family_counts,
+    ) = build_h0(
         len(train_nodes),
-        train_course_groups,
-        train_object_groups,
-        train_neighbors,
-        k,
+        course_hyperedges,
+        object_hyperedges,
+        behavioral_hyperedges,
     )
-    # Convert saved memberships into the initial sparse incidence matrix.
-    initial_incidence_matrix = build_h0(output_dir, len(train_nodes))
+
+    # H0: [num_train_nodes, num_hyperedges]
+    log_event(
+        "hypergraph",
+        f"H0 ready: shape={initial_incidence_matrix.shape}, "
+        f"nnz={initial_incidence_matrix.nnz:,}, families={family_counts}",
+    )
+
+    bundle_path = output_dir / HYPERGRAPH_FILE_NAME
+    matrix = initial_incidence_matrix.tocsr()
+    np.savez_compressed(
+        bundle_path,
+        h0_data=matrix.data,
+        h0_indices=matrix.indices,
+        h0_indptr=matrix.indptr,
+        h0_shape=np.asarray(matrix.shape, dtype=np.int64),
+        edge_families=edge_families,
+        edge_sizes=edge_sizes,
+        train_neighbors=train_neighbors,
+        validation_neighbors=evaluation_neighbors["validation"],
+        test_neighbors=evaluation_neighbors["test"],
+        k=np.asarray(k, dtype=np.int32),
+        k_max=np.asarray(k_max, dtype=np.int32),
+        neighbor_backend=np.asarray("torch_exact_cosine"),
+    )
 
     report = {
+        "artifact": str(bundle_path),
+        "neighbor_backend": "torch_exact_cosine",
         "k": k,
         "k_max": k_max,
         "train_nodes": len(train_nodes),
-        "edges": edge_count,
+        "edges": initial_incidence_matrix.shape[1],
         "incidences": initial_incidence_matrix.nnz,
         "families": family_counts,
+        "elapsed_seconds": time.perf_counter() - started_at,
     }
-    (output_dir / "graph_config.json").write_text(
-        json.dumps(report, indent=2),
-        encoding="utf-8",
+    log_event(
+        "hypergraph",
+        f"build completed in {report['elapsed_seconds']:.1f}s: {report}",
     )
-    print(report, flush=True)
     return report
 
 
-# Load train features, H0, labels, and edge metadata.
 def load_train_graph(output_dir=config.PROCESSED, *, feature_set="behavior"):
+    started_at = time.perf_counter()
     output_dir = Path(output_dir)
-    train_dir = output_dir / "train"
-    initial_incidence_matrix = sparse.load_npz(output_dir / "H0.npz")
-    node_features = np.load(train_dir / "X.npy")
-    # Select behavior, user, course, or full columns for this experiment.
-    columns = feature_columns(feature_set)
-    train_node_features = np.asarray(node_features[:, columns], dtype=np.float32)
+    with np.load(output_dir / HYPERGRAPH_FILE_NAME, allow_pickle=False) as bundle:
+        matrix_shape = tuple(int(value) for value in bundle["h0_shape"])
+        initial_incidence_matrix = sparse.csr_matrix(
+            (
+                bundle["h0_data"],
+                bundle["h0_indices"],
+                bundle["h0_indptr"],
+            ),
+            shape=matrix_shape,
+        )
+        edge_families = bundle["edge_families"].copy()
+        edge_sizes = bundle["edge_sizes"].astype(np.int64, copy=True)
 
-    labels = []
-    # Node IDs are local and contiguous, so sorted node rows align with X.
-    for node in load_nodes(output_dir / "train.csv"):
-        labels.append(int(node["label"]))
-    labels = np.asarray(labels, dtype=np.float32)
+    all_features = np.load(output_dir / "train" / "X.npy")
+    selected_columns = feature_columns(feature_set)
+    node_features = np.asarray(
+        all_features[:, selected_columns],
+        dtype=np.float32,
+    )
+    labels = np.asarray(
+        [int(node["label"]) for node in load_nodes(output_dir / "train.csv")],
+        dtype=np.float32,
+    )
 
-    families = []
-    sizes = []
-    for metadata_row in read_csv(output_dir / "edge_meta.csv"):
-        families.append(metadata_row["family"])
-        sizes.append(int(metadata_row["size"]))
-    families = np.asarray(families)
-    sizes = np.asarray(sizes, dtype=np.int64)
-    return train_node_features, initial_incidence_matrix, labels, families, sizes
+    if initial_incidence_matrix.shape[0] != len(node_features):
+        raise ValueError("H0 and train features do not align")
+    if initial_incidence_matrix.shape[1] != len(edge_families):
+        raise ValueError("H0 and edge metadata do not align")
+
+    log_event(
+        "hypergraph",
+        f"train graph loaded: X={node_features.shape}, "
+        f"H0={initial_incidence_matrix.shape}, nnz={initial_incidence_matrix.nnz:,}, "
+        f"elapsed={time.perf_counter() - started_at:.1f}s",
+    )
+    return {
+        "features": node_features,
+        "incidence_matrix": initial_incidence_matrix,
+        "labels": labels,
+        "families": edge_families,
+        "sizes": edge_sizes,
+    }
 
 
-# Load one evaluation split and its train-only graph references.
+# Load one target split while keeping every graph reference in the train split.
 def load_evaluation_data(
     output_dir=config.PROCESSED,
     *,
     split_name="validation",
     feature_set="behavior",
 ):
+    if split_name not in ("validation", "test"):
+        raise ValueError("split_name must be validation or test")
+
+    started_at = time.perf_counter()
     output_dir = Path(output_dir)
-    train_dir = output_dir / "train"
-    target_dir = output_dir / split_name
     train_nodes = load_nodes(output_dir / "train.csv")
     target_nodes = load_nodes(output_dir / f"{split_name}.csv")
+    with np.load(output_dir / HYPERGRAPH_FILE_NAME, allow_pickle=False) as bundle:
+        neighbors = bundle[f"{split_name}_neighbors"].copy()
+        neighbor_count = int(bundle["k"])
 
-    # Build train-only course references for each evaluation target.
-    course_references = defaultdict(list)
-    for node in train_nodes:
-        course_references[node["course_id"]].append(int(node["node_id"]))
+    target_objects = defaultdict(set)
+    for event in read_csv(output_dir / f"{split_name}.csv"):
+        object_type = config.OBJECT_ACTIONS.get(event["action"], "")
+        object_id = event["object_id"].strip()
+        if object_type and object_id.lower() not in config.MISSING_VALUES:
+            object_key = (event["course_id"], object_type, object_id)
+            target_objects[int(event["node_id"])].add(object_key)
 
-    graph_settings = json.loads(
-        (output_dir / "graph_config.json").read_text(encoding="utf-8")
-    )
-    return {
+    if len(neighbors) != len(target_nodes):
+        raise ValueError("Evaluation nodes and neighbor rows do not align")
+
+    evaluation_data = {
+        "split_name": split_name,
         "nodes": target_nodes,
-        "course_references": course_references,
-        "object_references": object_groups(
-            output_dir / "train.csv"
-        ),
-        "objects_by_node": objects_by_node(
-            output_dir / f"{split_name}.csv"
-        ),
-        "neighbors": np.load(target_dir / "neighbors.npy"),
-        "train_x": np.load(train_dir / "X.npy"),
-        "target_x": np.load(target_dir / "X.npy"),
-        "columns": feature_columns(feature_set),
-        "k": int(graph_settings["k"]),
+        "course_references": build_course_hyperedges(train_nodes),
+        "object_references": build_object_hyperedges(output_dir / "train.csv"),
+        "target_objects": target_objects,
+        "neighbors": neighbors,
+        "train_features": np.load(output_dir / "train" / "X.npy"),
+        "target_features": np.load(output_dir / split_name / "X.npy"),
+        "selected_columns": feature_columns(feature_set),
+        "neighbor_count": neighbor_count,
     }
+    log_event(
+        "hypergraph",
+        f"{split_name} data loaded: targets={len(target_nodes):,}, "
+        f"neighbors={neighbors.shape}, elapsed={time.perf_counter() - started_at:.1f}s",
+    )
+    return evaluation_data
 
 
-# Build one evaluation target graph using train nodes as references.
+# Build: one target validation/test node + train reference nodes -> local graph.
 def build_local_graph(evaluation_data, target_node_id):
     target_node = evaluation_data["nodes"][target_node_id]
-    edges = []
-    # Add train nodes that share the target course.
-    course_nodes = evaluation_data["course_references"][target_node["course_id"]]
+    local_edges = []
+
+    course_nodes = evaluation_data["course_references"].get(
+        target_node["course_id"],
+        [],
+    )
     if course_nodes:
-        edges.append(("course", course_nodes))
+        local_edges.append(("course", course_nodes))
 
-    # Add one train-reference edge for each object observed by the target.
-    for object_key in sorted(evaluation_data["objects_by_node"][target_node_id]):
-        object_nodes = evaluation_data["object_references"][object_key]
+    object_keys = sorted(evaluation_data["target_objects"].get(target_node_id, []))
+    for object_key in object_keys:
+        object_nodes = evaluation_data["object_references"].get(object_key, [])
         if object_nodes:
-            edges.append(("object", object_nodes))
+            local_edges.append(("object", object_nodes))
 
-    # Add the top-k behaviorally similar train nodes.
-    behavioral_nodes = evaluation_data["neighbors"][target_node_id, :evaluation_data["k"]]
-    edges.append(("behavioral", behavioral_nodes))
+    behavioral_nodes = evaluation_data["neighbors"][
+        target_node_id,
+        :evaluation_data["neighbor_count"],
+    ]
+    local_edges.append(("behavioral", behavioral_nodes))
 
-    # Merge references so each train node appears once in the local graph.
-    reference_set = set()
-    for edge_data in edges:
-        for node_id in edge_data[1]:
-            reference_set.add(int(node_id))
-    references = sorted(reference_set)
+    train_reference_ids = set()
+    for _, node_ids in local_edges:
+        for node_id in node_ids:
+            train_reference_ids.add(int(node_id))
+    train_reference_ids = sorted(train_reference_ids)
 
-    positions = {}
-    # Local row 0 is the target; train references start from row 1.
-    for local_position, node_id in enumerate(references, start=1):
-        positions[node_id] = local_position
+    local_position = {}
+    for position, train_node_id in enumerate(train_reference_ids, start=1):
+        local_position[train_node_id] = position
 
     rows = []
     columns = []
-    # Put the target and all matching train references into each local edge.
-    for edge_id, edge_data in enumerate(edges):
-        rows.append(0)
+    for edge_id, (_, train_node_ids) in enumerate(local_edges):
+        rows.append(0)  # The target node is always local row 0.
         columns.append(edge_id)
-        for node_id in edge_data[1]:
-            rows.append(positions[int(node_id)])
+        for train_node_id in train_node_ids:
+            rows.append(local_position[int(train_node_id)])
             columns.append(edge_id)
 
-    # Local H0 has one row for the target plus one row per train reference.
     values = np.ones(len(rows), dtype=np.uint8)
     initial_incidence_matrix = sparse.coo_matrix(
         (values, (rows, columns)),
-        shape=(len(references) + 1, len(edges)),
+        shape=(len(train_reference_ids) + 1, len(local_edges)),
     ).tocsr()
 
-    # Keep target first so its prediction is always read from local row 0.
-    selected_columns = evaluation_data["columns"]
-    target_features = evaluation_data["target_x"][
+    selected_columns = evaluation_data["selected_columns"]
+    target_features = evaluation_data["target_features"][
         target_node_id:target_node_id + 1,
         selected_columns,
     ]
-    reference_features = evaluation_data["train_x"][references][:, selected_columns]
+    train_features = evaluation_data["train_features"][train_reference_ids][
+        :,
+        selected_columns,
+    ]
     node_features = np.concatenate(
-        (target_features, reference_features),
+        (target_features, train_features),
         axis=0,
     ).astype(np.float32, copy=False)
 
-    families = []
-    for edge_data in edges:
-        families.append(edge_data[0])
-    families = np.asarray(families)
-    sizes = np.asarray(initial_incidence_matrix.sum(axis=0)).ravel().astype(np.int64)
-    label = int(target_node["label"])
-    return node_features, initial_incidence_matrix, families, sizes, label
+    # X_local: [1 target + train references, input_dim]
+    # H0_local: [1 target + train references, local_hyperedges]
+    edge_families = np.asarray(
+        [family for family, _ in local_edges],
+        dtype="<U10",
+    )
+    edge_sizes = np.asarray(
+        initial_incidence_matrix.sum(axis=0)
+    ).ravel().astype(np.int64)
+    return {
+        "features": node_features,
+        "incidence_matrix": initial_incidence_matrix,
+        "families": edge_families,
+        "sizes": edge_sizes,
+        "label": int(target_node["label"]),
+    }
 
 
 if __name__ == "__main__":
@@ -484,9 +580,13 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir", type=Path, default=config.PROCESSED)
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--k-max", type=int, default=20)
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument("--neighbor-batch-size", type=int, default=256)
     arguments = parser.parse_args()
     build_hypergraph(
         arguments.output_dir,
         k=arguments.k,
         k_max=arguments.k_max,
+        device_name=arguments.device,
+        neighbor_batch_size=arguments.neighbor_batch_size,
     )

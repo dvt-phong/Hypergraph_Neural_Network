@@ -1,18 +1,9 @@
-# 8. Train HGSL, select a checkpoint on validation, then evaluate on test.
-# Tham khảo từ project/bài báo:
-# - SIG-Net, ACM SAC 2024: https://doi.org/10.1145/3605098.3636002
-#   Code: https://github.com/Noverse0/SIG-Net
-# - MST-GCN, Scientific Reports 2026:
-#   https://doi.org/10.1038/s41598-026-40502-w
-#   Code: https://github.com/wudongze9/MST-GCN
-# - CA-TFHN, ICONIP 2023: https://doi.org/10.1007/978-981-99-8184-7_31
-#   Code: https://github.com/codeds27/CA-TFHN
-# Quy trình train/validation/test và checkpoint trong file này được viết riêng
-# cho pipeline HGNN + HSL hiện tại.
+# 8. Train on the full train hypergraph, select on validation, then test.
 
 import argparse
 import json
 import random
+import time
 from importlib import import_module
 from pathlib import Path
 
@@ -33,35 +24,66 @@ total_loss = loss_module.total_loss
 train_pos_weight = loss_module.train_pos_weight
 
 
-# Assign average ranks to tied prediction scores.
-def _average_ranks(prediction_scores):
+def log_event(scope, message):
+    print(f"[{time.strftime('%H:%M:%S')}][{scope}] {message}", flush=True)
+
+
+def memory_summary(device):
+    if device.type != "cuda":
+        return "device=cpu"
+    allocated = torch.cuda.memory_allocated(device) / 1024 ** 3
+    reserved = torch.cuda.memory_reserved(device) / 1024 ** 3
+    return f"cuda_allocated={allocated:.2f}GiB, cuda_reserved={reserved:.2f}GiB"
+
+
+def set_seed(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def resolve_device(device_name):
+    if device_name == "auto":
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        return torch.device("cpu")
+    if device_name == "cuda" and not torch.cuda.is_available():
+        raise ValueError("CUDA was requested but is not available")
+    return torch.device(device_name)
+
+
+# AUC, AUPRC, Precision, Recall, and F1 without another dependency.
+def classification_metrics(labels, prediction_scores):
+    labels = np.asarray(labels, dtype=np.int8)
+    prediction_scores = np.asarray(prediction_scores, dtype=np.float64)
+    if len(labels) != len(prediction_scores):
+        raise ValueError("Labels and predictions have different lengths")
+    if len(np.unique(labels)) != 2:
+        raise ValueError("Metrics require both label classes")
+
+    # ROC-AUC from average ranks. Equal scores receive the same average rank.
     ascending_order = np.argsort(prediction_scores, kind="mergesort")
-    ranks = np.empty(len(prediction_scores), dtype=np.float64)
     sorted_scores = prediction_scores[ascending_order]
+    ranks = np.empty(len(prediction_scores), dtype=np.float64)
     tie_starts = np.r_[0, np.flatnonzero(np.diff(sorted_scores) != 0) + 1]
     tie_stops = np.r_[tie_starts[1:], len(prediction_scores)]
     for tie_start, tie_stop in zip(tie_starts, tie_stops):
         average_rank = (tie_start + 1 + tie_stop) / 2
         ranks[ascending_order[tie_start:tie_stop]] = average_rank
-    return ranks
 
-
-# Compute ROC AUC from binary labels and prediction ranks.
-def _roc_auc(binary_labels, prediction_scores):
-    ranks = _average_ranks(prediction_scores)
-    positive_count = int(binary_labels.sum())
-    negative_count = len(binary_labels) - positive_count
-    positive_rank_sum = ranks[binary_labels == 1].sum()
+    positive_count = int(labels.sum())
+    negative_count = len(labels) - positive_count
+    positive_rank_sum = ranks[labels == 1].sum()
     minimum_positive_rank_sum = positive_count * (positive_count + 1) / 2
-    return (
+    auc = (
         positive_rank_sum - minimum_positive_rank_sum
     ) / (positive_count * negative_count)
 
-
-# Compute area under the precision-recall curve from ranked predictions.
-def _average_precision(binary_labels, prediction_scores):
+    # AUPRC from precision at each distinct score threshold.
     descending_order = np.argsort(-prediction_scores, kind="mergesort")
-    ordered_labels = binary_labels[descending_order]
+    ordered_labels = labels[descending_order]
     ordered_scores = prediction_scores[descending_order]
     threshold_ends = np.r_[
         np.flatnonzero(np.diff(ordered_scores) != 0),
@@ -69,23 +91,20 @@ def _average_precision(binary_labels, prediction_scores):
     ]
     true_positives = np.cumsum(ordered_labels)[threshold_ends]
     precision_curve = true_positives / (threshold_ends + 1)
-    positive_count = int(binary_labels.sum())
     recall_curve = true_positives / positive_count
     recall_steps = np.diff(np.r_[0.0, recall_curve])
-    return np.sum(recall_steps * precision_curve)
+    auprc = np.sum(recall_steps * precision_curve)
 
-
-# Compute precision, recall, and F1 at the fixed probability threshold.
-def _threshold_metrics(binary_labels, prediction_scores):
+    # Classification metrics use the fixed probability threshold 0.5.
     predicted_positive = prediction_scores >= 0.5
     true_positive_count = int(
-        np.count_nonzero(predicted_positive & (binary_labels == 1))
+        np.count_nonzero(predicted_positive & (labels == 1))
     )
     false_positive_count = int(
-        np.count_nonzero(predicted_positive & (binary_labels == 0))
+        np.count_nonzero(predicted_positive & (labels == 0))
     )
     false_negative_count = int(
-        np.count_nonzero(~predicted_positive & (binary_labels == 1))
+        np.count_nonzero(~predicted_positive & (labels == 1))
     )
     precision = true_positive_count / max(
         true_positive_count + false_positive_count,
@@ -96,24 +115,7 @@ def _threshold_metrics(binary_labels, prediction_scores):
         1,
     )
     f1_score = 2 * precision * recall / max(precision + recall, 1e-12)
-    return precision, recall, f1_score
 
-
-# Compute binary classification metrics without an extra dependency.
-def metrics(labels, scores):
-    binary_labels = np.asarray(labels, dtype=np.int8)
-    prediction_scores = np.asarray(scores, dtype=np.float64)
-    if len(binary_labels) != len(prediction_scores):
-        raise ValueError("Labels and predictions have different lengths")
-    if len(np.unique(binary_labels)) != 2:
-        raise ValueError("Metrics require both label classes")
-
-    auc = _roc_auc(binary_labels, prediction_scores)
-    auprc = _average_precision(binary_labels, prediction_scores)
-    precision, recall, f1_score = _threshold_metrics(
-        binary_labels,
-        prediction_scores,
-    )
     return {
         "auc": float(auc),
         "auprc": float(auprc),
@@ -123,8 +125,8 @@ def metrics(labels, scores):
     }
 
 
-# Combine independent local graphs into one block-diagonal evaluation batch.
-def _batch_graphs(graphs):
+# Batch independent local graphs without creating edges between target nodes.
+def batch_local_graphs(local_graphs):
     feature_blocks = []
     incidence_blocks = []
     family_blocks = []
@@ -135,68 +137,44 @@ def _batch_graphs(graphs):
     labels = []
     node_offset = 0
 
-    for graph_id, graph in enumerate(graphs):
-        node_features, initial_incidence_matrix, families, sizes, label = graph
+    for local_graph_id, local_graph in enumerate(local_graphs):
+        node_features = local_graph["features"]
+        incidence_matrix = local_graph["incidence_matrix"]
+
         feature_blocks.append(node_features)
-        incidence_blocks.append(initial_incidence_matrix)
-        family_blocks.append(families)
-        size_blocks.append(sizes)
+        incidence_blocks.append(incidence_matrix)
+        family_blocks.append(local_graph["families"])
+        size_blocks.append(local_graph["sizes"])
         target_positions.append(node_offset)
         node_group_blocks.append(
-            np.full(len(node_features), graph_id, dtype=np.int64)
+            np.full(len(node_features), local_graph_id, dtype=np.int64)
         )
         edge_group_blocks.append(
-            np.full(initial_incidence_matrix.shape[1], graph_id, dtype=np.int64)
+            np.full(
+                incidence_matrix.shape[1],
+                local_graph_id,
+                dtype=np.int64,
+            )
         )
-        labels.append(label)
+        labels.append(local_graph["label"])
         node_offset += len(node_features)
 
-    return (
-        np.concatenate(feature_blocks),
-        sparse.block_diag(incidence_blocks, format="csr"),
-        np.concatenate(family_blocks),
-        np.concatenate(size_blocks),
-        np.asarray(target_positions, dtype=np.int64),
-        np.concatenate(node_group_blocks),
-        np.concatenate(edge_group_blocks),
-        np.asarray(labels, dtype=np.int8),
-    )
+    return {
+        "features": np.concatenate(feature_blocks),
+        "incidence_matrix": sparse.block_diag(
+            incidence_blocks,
+            format="csr",
+        ),
+        "families": np.concatenate(family_blocks),
+        "sizes": np.concatenate(size_blocks),
+        "target_positions": np.asarray(target_positions, dtype=np.int64),
+        "node_groups": np.concatenate(node_group_blocks),
+        "edge_groups": np.concatenate(edge_group_blocks),
+        "labels": np.asarray(labels, dtype=np.int8),
+    }
 
 
-# Select deterministic evaluation targets and preserve both label classes.
-def _evaluation_targets(evaluation_data, seed, limit):
-    targets = np.arange(len(evaluation_data["nodes"]), dtype=np.int64)
-
-    if not limit:
-        return targets
-    if limit < 2:
-        raise ValueError("Evaluation limit must be zero or at least two")
-
-    negative = []
-    positive = []
-    for node_id in targets:
-        if evaluation_data["nodes"][node_id]["label"] == "1":
-            positive.append(node_id)
-        else:
-            negative.append(node_id)
-    if not negative or not positive:
-        raise ValueError("Limited evaluation requires both label classes")
-
-    random_generator = np.random.default_rng(seed)
-    selected = [
-        int(random_generator.choice(negative)),
-        int(random_generator.choice(positive)),
-    ]
-    remaining = np.setdiff1d(targets, selected)
-    extra_count = min(limit - 2, len(remaining))
-    if extra_count:
-        extra = random_generator.choice(remaining, extra_count, replace=False)
-        for node_id in extra:
-            selected.append(int(node_id))
-    return np.sort(np.asarray(selected, dtype=np.int64))
-
-
-# Evaluate a model on local leakage-free graphs for one dataset split.
+# Each prediction graph contains one target node and train reference nodes only.
 def evaluate(
     model,
     evaluation_data,
@@ -208,123 +186,134 @@ def evaluate(
     hsl=True,
     refinement=None,
 ):
-    targets = _evaluation_targets(evaluation_data, seed, limit)
-    probabilities = []
-    labels = []
+    started_at = time.perf_counter()
+    split_name = evaluation_data.get("split_name", "evaluation")
+    target_ids = np.arange(len(evaluation_data["nodes"]), dtype=np.int64)
 
+    if limit:
+        if limit < 2:
+            raise ValueError("Evaluation limit must be zero or at least two")
+        negative_target_ids = []
+        positive_target_ids = []
+        for target_id in target_ids:
+            if evaluation_data["nodes"][target_id]["label"] == "1":
+                positive_target_ids.append(target_id)
+            else:
+                negative_target_ids.append(target_id)
+        if not negative_target_ids or not positive_target_ids:
+            raise ValueError("Limited evaluation requires both label classes")
+
+        random_generator = np.random.default_rng(seed)
+        selected_target_ids = [
+            int(random_generator.choice(negative_target_ids)),
+            int(random_generator.choice(positive_target_ids)),
+        ]
+        remaining_target_ids = np.setdiff1d(target_ids, selected_target_ids)
+        extra_count = min(limit - 2, len(remaining_target_ids))
+        if extra_count > 0:
+            extra_target_ids = random_generator.choice(
+                remaining_target_ids,
+                extra_count,
+                replace=False,
+            )
+            for target_id in extra_target_ids:
+                selected_target_ids.append(int(target_id))
+        target_ids = np.sort(np.asarray(selected_target_ids, dtype=np.int64))
+
+    total_batches = (len(target_ids) + batch_size - 1) // batch_size
+    log_event(
+        split_name,
+        f"started: targets={len(target_ids):,}, batches={total_batches:,}, "
+        f"batch_size={batch_size}, hsl={hsl}",
+    )
+
+    all_probabilities = []
+    all_labels = []
+    last_progress_at = started_at
     model.eval()
-    with torch.no_grad():
-        for start in range(0, len(targets), batch_size):
-            graphs = []
-            for target in targets[start:start + batch_size]:
-                graphs.append(build_local_graph(evaluation_data, int(target)))
 
-            (
-                node_features,
-                initial_incidence_matrix,
-                families,
-                sizes,
-                positions,
-                node_groups,
-                edge_groups,
-                batch_labels,
-            ) = _batch_graphs(graphs)
+    with torch.no_grad():
+        for batch_number, batch_start in enumerate(
+            range(0, len(target_ids), batch_size),
+            start=1,
+        ):
+            local_graphs = []
+            batch_target_ids = target_ids[
+                batch_start:batch_start + batch_size
+            ]
+            for target_id in batch_target_ids:
+                local_graphs.append(
+                    build_local_graph(evaluation_data, int(target_id))
+                )
+            batch = batch_local_graphs(local_graphs)
+
             model_output = model(
-                torch.as_tensor(node_features, device=device),
-                initial_incidence_matrix,
-                families,
-                sizes,
+                torch.as_tensor(batch["features"], device=device),
+                batch["incidence_matrix"],
+                batch["families"],
+                batch["sizes"],
                 np.random.default_rng(seed),
                 hsl=hsl,
                 deterministic=True,
                 refinement=refinement,
-                node_groups=node_groups,
-                edge_groups=edge_groups,
+                node_groups=batch["node_groups"],
+                edge_groups=batch["edge_groups"],
             )
-            batch_probabilities = torch.sigmoid(
-                model_output["logits"][positions]
+            target_positions = torch.as_tensor(
+                batch["target_positions"],
+                dtype=torch.int64,
+                device=device,
             )
-            probabilities.extend(batch_probabilities.cpu().tolist())
-            labels.extend(batch_labels.tolist())
-    return metrics(labels, probabilities), len(targets)
+            probabilities = torch.sigmoid(
+                model_output["logits"][target_positions]
+            )
+            all_probabilities.extend(probabilities.cpu().tolist())
+            all_labels.extend(batch["labels"].tolist())
 
+            now = time.perf_counter()
+            if (
+                batch_number == 1
+                or batch_number == total_batches
+                or now - last_progress_at >= 10
+            ):
+                completed = min(batch_start + batch_size, len(target_ids))
+                log_event(
+                    split_name,
+                    f"{completed:,}/{len(target_ids):,} targets "
+                    f"({100 * completed / max(len(target_ids), 1):.1f}%), "
+                    f"local_nodes={len(batch['features']):,}, "
+                    f"elapsed={now - started_at:.1f}s, {memory_summary(device)}",
+                )
+                last_progress_at = now
 
-# Seed Python, NumPy, and PyTorch random number generators.
-def _set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-# Resolve the requested training device, including automatic CUDA selection.
-def _device(device_name):
-    if device_name == "auto":
-        if torch.cuda.is_available():
-            return torch.device("cuda")
-        return torch.device("cpu")
-    return torch.device(device_name)
-
-
-# Verify that finite nonzero gradients reach the HSL membership scorer.
-def _check_hsl_gradients(model):
-    parameters = (
-        model.node_projection.weight,
-        model.edge_projection.weight,
-        model.membership_bias,
+    evaluation_metrics = classification_metrics(
+        all_labels,
+        all_probabilities,
     )
-    squared_norm = torch.zeros((), device=model.membership_bias.device)
-    for parameter in parameters:
-        if parameter.grad is None:
-            raise ValueError("No gradient reached the HSL membership scorer")
-        if not torch.isfinite(parameter.grad).all():
-            raise ValueError("HSL membership scorer has a non-finite gradient")
-        squared_norm = squared_norm + parameter.grad.square().sum()
-    if squared_norm <= 0:
-        raise ValueError("HSL membership scorer has a zero gradient")
+    log_event(
+        split_name,
+        f"completed in {time.perf_counter() - started_at:.1f}s: "
+        f"{evaluation_metrics}",
+    )
+    return evaluation_metrics, len(target_ids)
 
 
-# Merge caller overrides into the default HSL refinement settings.
-def _refinement_settings(overrides):
-    settings = {
-        "sampled_hyperedges": 96,
-        "positive_nodes": 16,
-        "negative_nodes": 16,
-        "top_r": 8,
-        "threshold": None,
-    }
-    if overrides is not None:
-        settings.update(overrides)
-    return settings
-
-
-# Return the stable model name used in checkpoint and report filenames.
-def _model_variant_name(hsl_enabled):
-    if hsl_enabled:
-        return "hgsl"
-    return "hgnn"
-
-
-# Train the model for one full-batch epoch and return detached loss details.
-def _train_one_epoch(
+def train_one_epoch(
     model,
     optimizer,
+    train_graph,
     node_feature_tensor,
-    initial_incidence_matrix,
-    edge_families,
-    edge_sizes,
     label_tensor,
     positive_weight,
     random_generator,
-    contrastive_nodes,
-    hsl_enabled,
-    refinement_settings,
-    contrastive_weight,
-    temperature,
+    settings,
     device,
 ):
-    sampled_node_count = min(contrastive_nodes, len(label_tensor))
+    epoch_started_at = time.perf_counter()
+    sampled_node_count = min(
+        settings["contrastive_nodes"],
+        len(label_tensor),
+    )
     sampled_node_ids = random_generator.choice(
         len(label_tensor),
         sampled_node_count,
@@ -338,267 +327,78 @@ def _train_one_epoch(
 
     model.train()
     optimizer.zero_grad(set_to_none=True)
+    log_event("train", f"forward started; {memory_summary(device)}")
+    forward_started_at = time.perf_counter()
     model_output = model(
         node_feature_tensor,
-        initial_incidence_matrix,
-        edge_families,
-        edge_sizes,
+        train_graph["incidence_matrix"],
+        train_graph["families"],
+        train_graph["sizes"],
         random_generator,
-        hsl=hsl_enabled,
-        refinement=refinement_settings,
+        hsl=settings["hsl"],
+        refinement=settings["refinement"],
     )
-    active_contrastive_weight = 0.0
-    if hsl_enabled:
-        active_contrastive_weight = contrastive_weight
+    log_event(
+        "train",
+        f"forward completed in {time.perf_counter() - forward_started_at:.1f}s; "
+        f"{memory_summary(device)}",
+    )
+
+    contrastive_weight = settings["lambda_cl"] if settings["hsl"] else 0.0
     loss, loss_components = total_loss(
         model_output,
         label_tensor,
         positive_weight,
         sampled_node_ids,
-        lambda_cl=active_contrastive_weight,
-        temperature=temperature,
+        lambda_cl=contrastive_weight,
+        temperature=settings["temperature"],
     )
     if not torch.isfinite(loss):
         raise ValueError("Training loss is not finite")
 
+    log_event(
+        "train",
+        f"backward started: loss={float(loss.detach()):.4f}, "
+        f"bce={loss_components['bce']:.4f}, "
+        f"contrastive={loss_components['contrastive']:.4f}",
+    )
+    backward_started_at = time.perf_counter()
     loss.backward()
-    if hsl_enabled:
-        _check_hsl_gradients(model)
+    log_event(
+        "train",
+        f"backward completed in {time.perf_counter() - backward_started_at:.1f}s; "
+        f"{memory_summary(device)}",
+    )
+
+    if settings["hsl"]:
+        hsl_parameters = (
+            model.node_projection.weight,
+            model.edge_projection.weight,
+            model.membership_bias,
+        )
+        hsl_gradient_norm = torch.zeros(
+            (),
+            device=model.membership_bias.device,
+        )
+        for parameter in hsl_parameters:
+            if parameter.grad is None:
+                raise ValueError("No gradient reached the HSL membership scorer")
+            if not torch.isfinite(parameter.grad).all():
+                raise ValueError("HSL membership scorer has a non-finite gradient")
+            hsl_gradient_norm = hsl_gradient_norm + parameter.grad.square().sum()
+        if hsl_gradient_norm <= 0:
+            raise ValueError("HSL membership scorer has a zero gradient")
+
     torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
     optimizer.step()
-    return loss, loss_components
-
-
-# Save one validation-selected checkpoint without changing its file schema.
-def _save_checkpoint(
-    checkpoint_path,
-    model,
-    epoch,
-    validation_metrics,
-    input_dimension,
-    settings,
-):
-    torch.save({
-        "state_dict": model.state_dict(),
-        "epoch": epoch,
-        "validation": validation_metrics,
-        "input_dim": input_dimension,
-        "settings": settings,
-    }, checkpoint_path)
-
-
-# Collect serializable experiment settings for checkpoints and reports.
-def _build_training_settings(
-    seed,
-    feature_set,
-    epochs,
-    patience,
-    validation_limit,
-    validation_batch_size,
-    hidden_dim,
-    dropout,
-    learning_rate,
-    weight_decay,
-    lambda_cl,
-    temperature,
-    contrastive_nodes,
-    hsl_enabled,
-    refinement_settings,
-):
-    return {
-        "seed": seed,
-        "feature_set": feature_set,
-        "epochs": epochs,
-        "patience": patience,
-        "validation_limit": validation_limit,
-        "validation_batch_size": validation_batch_size,
-        "hidden_dim": hidden_dim,
-        "dropout": dropout,
-        "learning_rate": learning_rate,
-        "weight_decay": weight_decay,
-        "lambda_cl": lambda_cl,
-        "temperature": temperature,
-        "contrastive_nodes": contrastive_nodes,
-        "hsl": hsl_enabled,
-        "refinement": refinement_settings,
-    }
-
-
-# Run training epochs, validate each epoch, and save every new best checkpoint.
-def _run_training_epochs(
-    *,
-    model,
-    optimizer,
-    train_node_features,
-    node_feature_tensor,
-    initial_incidence_matrix,
-    edge_families,
-    edge_sizes,
-    label_tensor,
-    positive_weight,
-    evaluation_data,
-    checkpoint_path,
-    settings,
-    device,
-):
-    history = []
-    best_auc = -float("inf")
-    best_epoch = 0
-    stale_epoch_count = 0
-    validation_target_count = 0
-
-    for epoch in range(1, settings["epochs"] + 1):
-        random_generator = np.random.default_rng(
-            settings["seed"] * 100_003 + epoch
-        )
-        loss, loss_components = _train_one_epoch(
-            model,
-            optimizer,
-            node_feature_tensor,
-            initial_incidence_matrix,
-            edge_families,
-            edge_sizes,
-            label_tensor,
-            positive_weight,
-            random_generator,
-            settings["contrastive_nodes"],
-            settings["hsl"],
-            settings["refinement"],
-            settings["lambda_cl"],
-            settings["temperature"],
-            device,
-        )
-        validation_metrics, validation_target_count = evaluate(
-            model,
-            evaluation_data,
-            seed=settings["seed"],
-            device=device,
-            batch_size=settings["validation_batch_size"],
-            limit=settings["validation_limit"],
-            hsl=settings["hsl"],
-            refinement=settings["refinement"],
-        )
-        epoch_record = {
-            "epoch": epoch,
-            "loss": float(loss.detach()),
-            **loss_components,
-            "validation": validation_metrics,
-        }
-        history.append(epoch_record)
-        print(
-            f"epoch {epoch}: loss={float(loss.detach()):.4f} "
-            f"val_auc={validation_metrics['auc']:.4f}",
-            flush=True,
-        )
-
-        if validation_metrics["auc"] > best_auc:
-            best_auc = validation_metrics["auc"]
-            best_epoch = epoch
-            stale_epoch_count = 0
-            _save_checkpoint(
-                checkpoint_path,
-                model,
-                epoch,
-                validation_metrics,
-                train_node_features.shape[1],
-                settings,
-            )
-        else:
-            stale_epoch_count += 1
-            if stale_epoch_count >= settings["patience"]:
-                break
-
-    return history, best_epoch, validation_target_count
-
-
-# Load graph data and initialize tensors, model, optimizer, and class weight.
-def _initialize_training_components(
-    output_dir,
-    seed,
-    feature_set,
-    hidden_dim,
-    dropout,
-    learning_rate,
-    weight_decay,
-    device,
-):
-    (
-        train_node_features,
-        initial_incidence_matrix,
-        train_labels,
-        edge_families,
-        edge_sizes,
-    ) = load_train_graph(output_dir, feature_set=feature_set)
-    evaluation_data = load_evaluation_data(
-        output_dir,
-        split_name="validation",
-        feature_set=feature_set,
+    log_event(
+        "train",
+        f"optimizer step completed; epoch compute time="
+        f"{time.perf_counter() - epoch_started_at:.1f}s",
     )
-    node_feature_tensor = torch.as_tensor(train_node_features, device=device)
-    label_tensor = torch.as_tensor(train_labels, device=device)
-    positive_weight = train_pos_weight(label_tensor)
-    model = HGSLModel(train_node_features.shape[1], hidden_dim, dropout).to(device)
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=learning_rate,
-        weight_decay=weight_decay,
-    )
-    return (
-        train_node_features,
-        initial_incidence_matrix,
-        train_labels,
-        edge_families,
-        edge_sizes,
-        evaluation_data,
-        node_feature_tensor,
-        label_tensor,
-        positive_weight,
-        model,
-        optimizer,
-    )
+    return float(loss.detach()), loss_components
 
 
-# Create output directories and resolve the stable run and checkpoint names.
-def _prepare_training_paths(runs_dir, reports_dir, hsl_enabled, feature_set, seed):
-    runs_dir = Path(runs_dir)
-    reports_dir = Path(reports_dir)
-    runs_dir.mkdir(parents=True, exist_ok=True)
-    reports_dir.mkdir(parents=True, exist_ok=True)
-    model_name = _model_variant_name(hsl_enabled)
-    run_name = f"simple_{model_name}_{feature_set}_seed_{seed}"
-    checkpoint_path = runs_dir / f"{run_name}.pt"
-    return reports_dir, run_name, checkpoint_path
-
-
-# Build and save the final training report without changing its schema.
-def _write_training_report(
-    reports_dir,
-    run_name,
-    checkpoint_path,
-    best_epoch,
-    validation_target_count,
-    train_node_count,
-    positive_weight,
-    history,
-    settings,
-):
-    report = {
-        "checkpoint": str(checkpoint_path),
-        "best_epoch": best_epoch,
-        "best_validation": history[best_epoch - 1]["validation"],
-        "validation_targets": validation_target_count,
-        "train_nodes": train_node_count,
-        "positive_weight": float(positive_weight),
-        "history": history,
-        "settings": settings,
-    }
-    report_path = reports_dir / f"{run_name}_train.json"
-    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    print(f"Saved validation-selected checkpoint: {checkpoint_path}", flush=True)
-    return report
-
-
-# Run full-batch training and select the best validation-AUC checkpoint.
 def train(
     *,
     seed=1,
@@ -621,91 +421,192 @@ def train(
     runs_dir=config.RUNS,
     reports_dir=config.REPORTS,
 ):
+    started_at = time.perf_counter()
     if epochs <= 0 or patience <= 0:
         raise ValueError("epochs and patience must be positive")
 
+    device = resolve_device(device_name)
+    set_seed(seed)
     output_dir = Path(output_dir)
-    device = _device(device_name)
-    _set_seed(seed)
-    (
-        train_node_features,
-        initial_incidence_matrix,
-        train_labels,
-        edge_families,
-        edge_sizes,
-        evaluation_data,
-        node_feature_tensor,
-        label_tensor,
-        positive_weight,
-        model,
-        optimizer,
-    ) = _initialize_training_components(
+    log_event(
+        "train",
+        f"run started: seed={seed}, feature_set={feature_set}, epochs={epochs}, "
+        f"patience={patience}, hsl={hsl}, device={device}",
+    )
+
+    # Load X_train, H0_train, labels, and validation references.
+    train_graph = load_train_graph(output_dir, feature_set=feature_set)
+    validation_data = load_evaluation_data(
         output_dir,
-        seed,
-        feature_set,
-        hidden_dim,
-        dropout,
-        learning_rate,
-        weight_decay,
-        device,
+        split_name="validation",
+        feature_set=feature_set,
     )
-    refinement = _refinement_settings(refinement)
-
-    settings = _build_training_settings(
-        seed,
-        feature_set,
-        epochs,
-        patience,
-        validation_limit,
-        validation_batch_size,
-        hidden_dim,
-        dropout,
-        learning_rate,
-        weight_decay,
-        lambda_cl,
-        temperature,
-        contrastive_nodes,
-        hsl,
-        refinement,
-    )
-    reports_dir, run_name, checkpoint = _prepare_training_paths(
-        runs_dir,
-        reports_dir,
-        hsl,
-        feature_set,
-        seed,
-    )
-
-    history, best_epoch, validation_count = _run_training_epochs(
-        model=model,
-        optimizer=optimizer,
-        train_node_features=train_node_features,
-        node_feature_tensor=node_feature_tensor,
-        initial_incidence_matrix=initial_incidence_matrix,
-        edge_families=edge_families,
-        edge_sizes=edge_sizes,
-        label_tensor=label_tensor,
-        positive_weight=positive_weight,
-        evaluation_data=evaluation_data,
-        checkpoint_path=checkpoint,
-        settings=settings,
+    node_feature_tensor = torch.as_tensor(
+        train_graph["features"],
         device=device,
     )
+    label_tensor = torch.as_tensor(train_graph["labels"], device=device)
+    positive_weight = train_pos_weight(label_tensor)
 
-    return _write_training_report(
-        reports_dir,
-        run_name,
-        checkpoint,
-        best_epoch,
-        validation_count,
-        len(train_labels),
-        positive_weight,
-        history,
-        settings,
+    model = HGSLModel(
+        train_graph["features"].shape[1],
+        hidden_dim,
+        dropout,
+    ).to(device)
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=learning_rate,
+        weight_decay=weight_decay,
     )
 
+    refinement_settings = {
+        "sampled_hyperedges": 96,
+        "positive_nodes": 16,
+        "negative_nodes": 16,
+        "top_r": 8,
+    }
+    if refinement is not None:
+        unknown_settings = set(refinement) - set(refinement_settings)
+        if unknown_settings:
+            raise ValueError(
+                f"Unknown refinement settings: {sorted(unknown_settings)}"
+            )
+        refinement_settings.update(refinement)
 
-# Evaluate a validation-selected checkpoint on the held-out test split.
+    settings = {
+        "seed": seed,
+        "feature_set": feature_set,
+        "epochs": epochs,
+        "patience": patience,
+        "validation_limit": validation_limit,
+        "validation_batch_size": validation_batch_size,
+        "hidden_dim": hidden_dim,
+        "dropout": dropout,
+        "learning_rate": learning_rate,
+        "weight_decay": weight_decay,
+        "lambda_cl": lambda_cl,
+        "temperature": temperature,
+        "contrastive_nodes": contrastive_nodes,
+        "hsl": hsl,
+        "refinement": refinement_settings,
+    }
+
+    runs_dir = Path(runs_dir)
+    reports_dir = Path(reports_dir)
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    model_name = "hgsl" if hsl else "hgnn"
+    run_name = f"simple_{model_name}_{feature_set}_seed_{seed}"
+    checkpoint_path = runs_dir / f"{run_name}.pt"
+
+    parameter_count = sum(parameter.numel() for parameter in model.parameters())
+    log_event(
+        "setup",
+        f"X={train_graph['features'].shape}, "
+        f"H0={train_graph['incidence_matrix'].shape}, "
+        f"nnz={train_graph['incidence_matrix'].nnz:,}, "
+        f"parameters={parameter_count:,}, "
+        f"positive_weight={float(positive_weight):.4f}, {memory_summary(device)}",
+    )
+
+    # Train -> validate -> save the best validation-AUC checkpoint.
+    history = []
+    best_auc = -float("inf")
+    best_epoch = 0
+    best_validation = None
+    stale_epoch_count = 0
+    validation_target_count = 0
+
+    for epoch in range(1, epochs + 1):
+        epoch_started_at = time.perf_counter()
+        log_event(
+            "train",
+            f"epoch {epoch}/{epochs} started; best_auc={best_auc:.4f}, "
+            f"stale={stale_epoch_count}/{patience}",
+        )
+        random_generator = np.random.default_rng(seed * 100_003 + epoch)
+        train_loss, loss_components = train_one_epoch(
+            model,
+            optimizer,
+            train_graph,
+            node_feature_tensor,
+            label_tensor,
+            positive_weight,
+            random_generator,
+            settings,
+            device,
+        )
+
+        validation_metrics, validation_target_count = evaluate(
+            model,
+            validation_data,
+            seed=seed,
+            device=device,
+            batch_size=validation_batch_size,
+            limit=validation_limit,
+            hsl=hsl,
+            refinement=refinement_settings,
+        )
+        history.append({
+            "epoch": epoch,
+            "loss": train_loss,
+            **loss_components,
+            "validation": validation_metrics,
+        })
+        log_event(
+            "train",
+            f"epoch {epoch} completed in "
+            f"{time.perf_counter() - epoch_started_at:.1f}s: "
+            f"loss={train_loss:.4f}, val_auc={validation_metrics['auc']:.4f}",
+        )
+
+        if validation_metrics["auc"] > best_auc:
+            best_auc = validation_metrics["auc"]
+            best_epoch = epoch
+            best_validation = validation_metrics
+            stale_epoch_count = 0
+            torch.save({
+                "state_dict": model.state_dict(),
+                "epoch": epoch,
+                "validation": validation_metrics,
+                "input_dim": train_graph["features"].shape[1],
+                "settings": settings,
+            }, checkpoint_path)
+            log_event(
+                "checkpoint",
+                f"new best epoch={epoch}, val_auc={best_auc:.4f}; "
+                f"saved to {checkpoint_path}",
+            )
+        else:
+            stale_epoch_count += 1
+            if stale_epoch_count >= patience:
+                log_event(
+                    "train",
+                    f"early stopping after {stale_epoch_count} stale epochs",
+                )
+                break
+
+    report = {
+        "checkpoint": str(checkpoint_path),
+        "best_epoch": best_epoch,
+        "best_validation": best_validation,
+        "validation_targets": validation_target_count,
+        "train_nodes": len(train_graph["labels"]),
+        "positive_weight": float(positive_weight),
+        "history": history,
+        "settings": settings,
+    }
+    report_path = reports_dir / f"{run_name}_train.json"
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    log_event(
+        "train",
+        f"run completed in {time.perf_counter() - started_at:.1f}s; "
+        f"best_epoch={best_epoch}, report={report_path}",
+    )
+    return report
+
+
+# Test is called only after validation has selected the checkpoint.
 def test(
     checkpoint,
     *,
@@ -715,13 +616,16 @@ def test(
     batch_size=4,
     reports_dir=config.REPORTS,
 ):
-    device = _device(device_name)
+    started_at = time.perf_counter()
+    device = resolve_device(device_name)
+    log_event("test", f"loading checkpoint {checkpoint} on device={device}")
     checkpoint_data = torch.load(
         checkpoint,
         map_location=device,
         weights_only=False,
     )
     settings = checkpoint_data["settings"]
+
     model = HGSLModel(
         checkpoint_data["input_dim"],
         settings["hidden_dim"],
@@ -729,14 +633,14 @@ def test(
     ).to(device)
     model.load_state_dict(checkpoint_data["state_dict"])
 
-    evaluation_data = load_evaluation_data(
+    test_data = load_evaluation_data(
         output_dir,
         split_name="test",
         feature_set=settings["feature_set"],
     )
     test_metrics, target_count = evaluate(
         model,
-        evaluation_data,
+        test_data,
         seed=settings["seed"],
         device=device,
         batch_size=batch_size,
@@ -744,6 +648,7 @@ def test(
         hsl=settings["hsl"],
         refinement=settings["refinement"],
     )
+
     report = {
         "checkpoint": str(checkpoint),
         "checkpoint_epoch": checkpoint_data["epoch"],
@@ -755,6 +660,11 @@ def test(
     reports_dir.mkdir(parents=True, exist_ok=True)
     report_path = reports_dir / f"{Path(checkpoint).stem}_test.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    log_event(
+        "test",
+        f"completed in {time.perf_counter() - started_at:.1f}s; "
+        f"report={report_path}, metrics={test_metrics}",
+    )
     return report
 
 
@@ -788,11 +698,12 @@ if __name__ == "__main__":
             test_limit=arguments.test_limit,
         ), flush=True)
     else:
-        seeds = arguments.seeds
-        if seeds is None:
-            seeds = [arguments.seed]
-        for experiment_seed in seeds:
-            result = train(
+        experiment_seeds = arguments.seeds
+        if experiment_seeds is None:
+            experiment_seeds = [arguments.seed]
+
+        for experiment_seed in experiment_seeds:
+            train_report = train(
                 seed=experiment_seed,
                 feature_set=arguments.feature_set,
                 epochs=arguments.epochs,
@@ -804,7 +715,7 @@ if __name__ == "__main__":
             )
             if arguments.mode == "both":
                 print(test(
-                    result["checkpoint"],
+                    train_report["checkpoint"],
                     output_dir=arguments.output_dir,
                     device_name=arguments.device,
                     test_limit=arguments.test_limit,

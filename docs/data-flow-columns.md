@@ -43,11 +43,7 @@ Ba file tải xuống
                            ▼
                      4_hypergraph.py
                            │
-                           ├── neighbors.npy
-                           ├── edge_meta.csv
-                           ├── edge_memberships.csv.gz
-                           ├── H0.npz
-                           └── graph_config.json
+                           └── hypergraph.npz
                                   │
                                   ▼
                              8_train.py
@@ -64,8 +60,7 @@ Ba file tải xuống
 | Raw log | Một hành động của một enrollment |
 | Processed CSV | Một hành động đã ghép user, course và label |
 | `X.npy` | Một enrollment, tức một node |
-| `edge_memberships.csv.gz` | Một quan hệ node thuộc hyperedge |
-| `H0.npz` | Ma trận node × hyperedge |
+| `hypergraph.npz` | Sparse H0, edge metadata, evaluation neighbors và kNN settings |
 | Model output | Một dropout logit cho mỗi node được dự đoán |
 
 ---
@@ -676,10 +671,11 @@ Ba họ hyperedge được tạo như sau:
 
 Web-page action vẫn có behavior feature nhưng không tạo Object hyperedge.
 
-### 8.1 `neighbors.npy`
+### 8.1 Exact behavioral neighbors
 
-Mỗi row lưu ID các train node gần nhất theo cosine similarity của 58 behavior
-features.
+Mỗi row lưu ID các train node gần nhất theo exact cosine similarity của 58
+behavior features. Tính toán dùng PyTorch theo query batch, nên không tạo toàn bộ
+ma trận similarity `N × N` trong bộ nhớ.
 
 Ví dụ với `k_max=3`:
 
@@ -698,61 +694,20 @@ validation_neighbors[0] = [2, 5, 1]
 
 Nghĩa là validation node 0 giống các train node 2, 5 và 1 nhất.
 
-### 8.2 `edge_meta.csv`
+### 8.2 Thứ tự hyperedge
 
-Schema:
+Edge ID được cấp theo ba block liên tục và cố định:
 
-| Cột | Ý nghĩa |
-|---|---|
-| `edge_id` | ID hyperedge |
-| `family` | `course`, `object` hoặc `behavioral` |
-| `course_id` | Có giá trị cho course/object edge |
-| `object_id` | Có giá trị cho object edge |
-| `object_type` | `video`, `assignment` hoặc `forum` |
-| `anchor_id` | Train node tạo behavioral edge |
-| `size` | Số node thuộc edge |
+1. Tất cả Course hyperedge, sort theo `course_id`.
+2. Tất cả Object hyperedge, sort theo course, object type và object ID.
+3. Một Behavioral kNN hyperedge cho mỗi train anchor.
 
-Ví dụ:
+Hai anchor có cùng member set vẫn giữ hai behavioral hyperedge riêng. Với `k=10`,
+mỗi behavioral edge gồm anchor và tối đa 10 train neighbors.
 
-```csv
-edge_id,family,course_id,object_id,object_type,anchor_id,size
-0,course,course-A,,,,3
-1,object,course-A,video-01,video,,2
-2,behavioral,,,,0,4
-```
+### 8.3 Sparse H0
 
-### 8.3 `edge_memberships.csv.gz`
-
-Schema:
-
-```csv
-edge_id,node_id
-```
-
-Ví dụ:
-
-```csv
-edge_id,node_id
-0,0
-0,1
-0,2
-1,0
-1,2
-2,0
-2,1
-2,3
-2,5
-```
-
-Diễn giải:
-
-- Edge 0 chứa node `{0, 1, 2}`.
-- Edge 1 chứa node `{0, 2}`.
-- Edge 2 chứa node `{0, 1, 3, 5}`.
-
-### 8.4 `H0.npz`
-
-`H0` là sparse incidence matrix:
+`H0` là sparse CSR incidence matrix:
 
 ```text
 rows    = train node IDs
@@ -760,7 +715,7 @@ columns = edge IDs
 value   = 1 nếu node thuộc edge, ngược lại 0
 ```
 
-Từ ví dụ trên, một phần `H0` là:
+Ví dụ một phần `H0`:
 
 ```text
           edge 0  edge 1  edge 2
@@ -780,26 +735,21 @@ H0.shape == (train_node_count, hyperedge_count)
 Validation/test không được thêm thành row trong train `H0`. Mỗi target được dựng
 một local graph với train nodes làm reference.
 
-### 8.5 `graph_config.json`
+### 8.4 `hypergraph.npz`
 
-Ví dụ:
+Một bundle duy nhất chứa:
 
-```json
-{
-  "k": 10,
-  "k_max": 20,
-  "train_nodes": 100000,
-  "edges": 250000,
-  "incidences": 3000000,
-  "families": {
-    "course": 200,
-    "object": 150000,
-    "behavioral": 99800
-  }
-}
-```
+| Array/scalar | Ý nghĩa |
+|---|---|
+| `h0_data`, `h0_indices`, `h0_indptr`, `h0_shape` | Thành phần CSR của H0 |
+| `edge_families`, `edge_sizes` | Metadata thẳng hàng với cột H0 |
+| `train_neighbors` | `k_max` train-neighbor IDs cho mỗi train node |
+| `validation_neighbors`, `test_neighbors` | `k_max` train-reference neighbor IDs |
+| `k`, `k_max` | Kích thước neighbor đang dùng và kích thước đã lưu |
+| `neighbor_backend` | `torch_exact_cosine` |
 
-Các con số chỉ minh họa format.
+`k_max` quyết định số neighbor được tính và lưu; `k` quyết định số neighbor đầu
+tiên thực sự tham gia Behavioral hyperedge.
 
 ---
 
@@ -810,10 +760,10 @@ Khi train, `load_train_graph()` trả:
 | Biến | Shape ví dụ | Nguồn |
 |---|---|---|
 | `train_node_features` | `(N, F)` | `train/X.npy` sau chọn feature-set |
-| `initial_incidence_matrix` | `(N, E)` | `H0.npz` |
+| `initial_incidence_matrix` | `(N, E)` | CSR arrays trong `hypergraph.npz` |
 | `labels` | `(N,)` | Một label cho mỗi node trong `train.csv` |
-| `families` | `(E,)` | `edge_meta.csv:family` |
-| `sizes` | `(E,)` | `edge_meta.csv:size` |
+| `families` | `(E,)` | `hypergraph.npz:edge_families` |
+| `sizes` | `(E,)` | `hypergraph.npz:edge_sizes` |
 
 Với `feature_set="full"`:
 

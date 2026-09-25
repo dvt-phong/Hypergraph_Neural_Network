@@ -138,7 +138,7 @@ chính:
 - Chọn hyperedge theo family và size bucket, không học hyperedge sampling bằng
   Gumbel-Softmax.
 - Lấy positive/negative candidate nodes rồi tính membership score.
-- Dùng sigmoid membership và top-r hoặc threshold.
+- Dùng sigmoid membership và chỉ giữ top-r candidate.
 - Giữ nguyên các hyperedge không được chọn trong epoch.
 - Khôi phục membership để tránh isolated node.
 - `7_losses.py` dùng symmetric node-level contrastive loss; đây không phải đúng

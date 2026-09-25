@@ -3,8 +3,8 @@
 # - HSL, Cai et al., IJCAI 2022:
 #   https://doi.org/10.24963/ijcai.2022/267
 #   Code: https://github.com/pkualpha/HSL
-# Contrastive consistency giữa embedding trước và sau khi học cấu trúc được lấy
-# cảm hứng từ HSL. Symmetric contrastive loss ở đây là cách triển khai riêng.
+# Contrastive consistency compares the same enrollment before and after
+# structure refinement. It does not group nodes by class label.
 # Weighted BCE dùng hàm chuẩn của PyTorch cho dữ liệu lệch lớp.
 
 import torch
@@ -20,7 +20,7 @@ def train_pos_weight(labels):
     return negatives / positives
 
 
-# Compare initial and refined embeddings for the sampled nodes.
+# Positive pair i is z0[i] <-> z_star[i] for the same enrollment.
 def contrastive_loss(
     initial_node_embeddings,
     refined_node_embeddings,
@@ -38,17 +38,17 @@ def contrastive_loss(
         dim=1,
     )
     similarity_matrix = initial_embeddings @ refined_embeddings.T / temperature
-    matching_positions = torch.arange(
+    same_node_positions = torch.arange(
         len(sampled_node_indices),
         device=initial_node_embeddings.device,
     )
     initial_to_refined_loss = F.cross_entropy(
         similarity_matrix,
-        matching_positions,
+        same_node_positions,
     )
     refined_to_initial_loss = F.cross_entropy(
         similarity_matrix.T,
-        matching_positions,
+        same_node_positions,
     )
     return (initial_to_refined_loss + refined_to_initial_loss) / 2
 

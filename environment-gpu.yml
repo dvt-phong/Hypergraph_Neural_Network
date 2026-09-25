@@ -11,4 +11,3 @@ dependencies:
       - torch==2.9.1+cu130
       - numpy==2.2.5
       - scipy==1.15.3
-      - faiss-cpu==1.13.2
