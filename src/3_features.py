@@ -41,18 +41,22 @@ def feature_columns(feature_set):
 def feature_metadata():
     metadata = []
 
+    # Daily-count columns: total valid events on each observed course day.
     for day_number in range(config.DAY_FEATURE_COUNT):
         metadata.append((
             f"activity_day_{day_number}",
             f"course_day={day_number}",
         ))
 
+    # Action-count columns: total occurrences of each action across all days.
     for family, actions in config.ACTION_GROUPS.items():
         action_number = 1
+        # Keep action names in the same order as the behavior matrix columns.
         for action_name in actions:
             metadata.append((f"action_{family}_{action_number}", action_name))
             action_number += 1
 
+    # User-context columns: one-hot gender, followed by missing and other.
     for gender in config.GENDERS:
         metadata.append((f"gender_{gender}", f"gender={gender}"))
     metadata.extend((
@@ -60,6 +64,7 @@ def feature_metadata():
         ("gender_other", "gender outside vocabulary"),
     ))
 
+    # User-context columns: one-hot education, then age-related columns.
     for education in config.EDUCATIONS:
         clean_education = education.lower().replace("'", "").replace(" ", "_")
         metadata.append((
@@ -73,6 +78,7 @@ def feature_metadata():
         ("age_missing", "birth is missing or invalid"),
     ))
 
+    # Course-context columns: one-hot category, then duration-related columns.
     for category in config.CATEGORIES:
         clean_category = category.replace(" ", "_")
         metadata.append((f"category_{clean_category}", f"category={category}"))
@@ -121,11 +127,13 @@ def scale_numeric(raw_values, statistics):
 # Build behavior, user, and course inputs from one complete split CSV.
 def build_split_features(data_path):
     action_indices = {}
+    # Map every action to its action-count column after the daily-count block.
     for offset, action in enumerate(config.ACTIONS):
         action_indices[action] = config.ACTION_FEATURE_START + offset
 
     nodes = {}
     behavior_by_node = {}
+    # Aggregate every event row into daily counts and action counts per node.
     for row in read_csv(data_path):
         node_id = int(row["node_id"])
         if node_id not in nodes:
@@ -138,6 +146,7 @@ def build_split_features(data_path):
         action = row["action"].strip()
         if action:
             course_day = int(row["course_day"])
+            # One event increments its day column and its action column once.
             behavior_by_node[node_id][course_day] += 1
             behavior_by_node[node_id][action_indices[action]] += 1
 
@@ -158,6 +167,7 @@ def build_split_features(data_path):
     ages = np.full(node_count, np.nan, dtype=np.float64)
     durations = np.full(node_count, np.nan, dtype=np.float64)
 
+    # Copy behavior counts and encode user/course context for every node.
     for node_id in sorted(nodes):
         node = nodes[node_id]
         behavior_features[node_id] = behavior_by_node[node_id]
@@ -220,6 +230,7 @@ def build_features(output_dir=config.PROCESSED):
     output_dir = Path(output_dir)
     feature_data = {}
 
+    # Build raw feature groups independently for train, validation, and test.
     for split_name in config.SPLITS:
         split_dir = output_dir / split_name
         split_dir.mkdir(parents=True, exist_ok=True)
@@ -246,6 +257,7 @@ def build_features(output_dir=config.PROCESSED):
     )
 
     feature_paths = {}
+    # Apply train-fitted transforms and save one final matrix per split.
     for split_name in config.SPLITS:
         split_data = feature_data[split_name]
         logged_behavior = np.log1p(
@@ -282,6 +294,7 @@ def build_features(output_dir=config.PROCESSED):
         print(f"Saved {feature_path}", flush=True)
 
     feature_rows = []
+    # Number metadata rows so feature_names.csv matches X.npy column indices.
     for feature_index, metadata in enumerate(feature_metadata()):
         feature_name, feature_source = metadata
         feature_rows.append((feature_index, feature_name, feature_source))

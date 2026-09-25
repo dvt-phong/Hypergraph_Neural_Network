@@ -76,7 +76,7 @@ def split_train_enrollments(enrollment_ids):
     return split_by_enrollment
 
 
-# Stream both raw logs into three complete split CSV files.
+# Stream valid events from both raw logs into three split CSV files.
 def stream_events(
     prediction_data_path,
     output_dir,
@@ -84,12 +84,8 @@ def stream_events(
     courses,
     labels,
     split_by_enrollment,
-    node_by_enrollment,
 ):
-    event_counts = {"train": 0, "validation": 0, "test": 0}
-    written_enrollments = {"train": set(), "validation": set(), "test": set()}
-    enrollment_metadata = {}
-    raw_event_count = 0
+    node_ids = {split_name: {} for split_name in config_constant.SPLITS}
     columns = (
         "node_id", "enroll_id", "user_id", "course_id", "label",
         "gender", "education", "birth", "course_start", "course_end",
@@ -112,17 +108,10 @@ def stream_events(
         for writer in writers.values():
             writer.writerow(columns)
 
-        for log_name, row in read_prediction_data(prediction_data_path, config_constant.LOG_FILES):
-            raw_event_count += 1
+        for _, row in read_prediction_data(prediction_data_path, config_constant.LOG_FILES):
             enrollment_id = int(row["enroll_id"])
-            if log_name == "test_log.csv":
-                split_name = "test"
-            else:
-                split_name = split_by_enrollment[enrollment_id]
-
             user_id = int(row["username"])
             course_id = row["course_id"]
-            enrollment_metadata[enrollment_id] = (user_id, course_id)
 
             action = row["action"]
             if action not in config_constant.ACTIONS:
@@ -132,10 +121,15 @@ def stream_events(
             course_start = date.fromisoformat(courses[course_id]["start"][:10])
             course_day = (event_date - course_start).days
             if 0 <= course_day < config_constant.OBSERVATION_DAYS:
+                split_name = split_by_enrollment[enrollment_id]
+                split_node_ids = node_ids[split_name]
+                if enrollment_id not in split_node_ids:
+                    split_node_ids[enrollment_id] = len(split_node_ids)
+
                 user = users[user_id]
                 course = courses[course_id]
                 writers[split_name].writerow((
-                    node_by_enrollment[enrollment_id],
+                    split_node_ids[enrollment_id],
                     enrollment_id,
                     user_id,
                     course_id,
@@ -150,37 +144,6 @@ def stream_events(
                     row["object"].strip(),
                     course_day,
                 ))
-                event_counts[split_name] += 1
-                written_enrollments[split_name].add(enrollment_id)
-
-        empty_event_rows = {"train": 0, "validation": 0, "test": 0}
-        for enrollment_id in sorted(split_by_enrollment):
-            split_name = split_by_enrollment[enrollment_id]
-            if enrollment_id in written_enrollments[split_name]:
-                continue
-
-            user_id, course_id = enrollment_metadata[enrollment_id]
-            user = users[user_id]
-            course = courses[course_id]
-            writers[split_name].writerow((
-                node_by_enrollment[enrollment_id],
-                enrollment_id,
-                user_id,
-                course_id,
-                labels[enrollment_id],
-                user["gender"],
-                user["education"],
-                user["birth"],
-                course["start"],
-                course["end"],
-                course["category"],
-                "",
-                "",
-                "",
-            ))
-            empty_event_rows[split_name] += 1
-
-    return raw_event_count, event_counts, empty_event_rows
 
 
 # Run preprocessing and write explicit train, validation, and test datasets.
@@ -192,14 +155,9 @@ def preprocess(raw_dir=config_constant.RAW, output_dir=config_constant.PROCESSED
     course_path = raw_dir / "course_info.csv"
 
     output_paths = [output_dir / f"{split_name}.csv" for split_name in config_constant.SPLITS]
-    outputs_exist = True
-    for path in output_paths:
-        if not path.is_file():
-            outputs_exist = False
-    if outputs_exist:
-        report = {"skipped": True, "output_dir": str(output_dir)}
-        print(report, flush=True)
-        return report
+    if all(path.is_file() for path in output_paths):
+        print(f"Skipped existing outputs in {output_dir}", flush=True)
+        return
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -225,40 +183,18 @@ def preprocess(raw_dir=config_constant.RAW, output_dir=config_constant.PROCESSED
     for enrollment_id in test_labels:
         split_by_enrollment[enrollment_id] = "test"
 
-    enrollments_by_split = {"train": [], "validation": [], "test": []}
-    for enrollment_id in sorted(split_by_enrollment):
-        split_name = split_by_enrollment[enrollment_id]
-        enrollments_by_split[split_name].append(enrollment_id)
-
-    node_by_enrollment = {}
-    for split_name in config_constant.SPLITS:
-        for node_id, enrollment_id in enumerate(enrollments_by_split[split_name]):
-            node_by_enrollment[enrollment_id] = node_id
-
     labels = {}
     labels.update(train_labels)
     labels.update(test_labels)
-    raw_event_count, event_counts, empty_event_rows = stream_events(
+    stream_events(
         prediction_data_path,
         output_dir,
         users,
         courses,
         labels,
         split_by_enrollment,
-        node_by_enrollment,
     )
-
-    report = {
-        "enrollments": {
-            split_name: len(enrollments_by_split[split_name])
-            for split_name in config_constant.SPLITS
-        },
-        "raw_events": raw_event_count,
-        "events_35d": event_counts,
-        "empty_event_rows": empty_event_rows,
-    }
-    print(report, flush=True)
-    return report
+    print(f"Saved preprocessed data to {output_dir}", flush=True)
 
 
 if __name__ == "__main__":
