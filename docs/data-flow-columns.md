@@ -4,7 +4,7 @@ Tài liệu này trả lời bốn câu hỏi:
 
 1. Dataset ban đầu có những bảng và cột nào được project sử dụng?
 2. Một raw event biến thành một dòng processed CSV như thế nào?
-3. Một enrollment biến thành vector 94 chiều trong `X.npy` như thế nào?
+3. Một enrollment biến thành vector 92 chiều trong `X.npy` như thế nào?
 4. Từ `X.npy`, dữ liệu được đưa vào hypergraph và mô hình ra sao?
 
 Các dòng dữ liệu bên dưới là **ví dụ minh họa nhất quán**, không phải dòng thật
@@ -58,9 +58,9 @@ Ba file tải xuống
 | Giai đoạn | Một dòng hoặc một row đại diện cho |
 |---|---|
 | Raw log | Một hành động của một enrollment |
-| Processed CSV | Một hành động đã ghép user, course và label |
+| Processed CSV | Một hành động đã ghép metadata, hoặc dòng đại diện cho enrollment có zero observed events |
 | `X.npy` | Một enrollment, tức một node |
-| `hypergraph.npz` | Sparse H0, edge metadata, evaluation neighbors và kNN settings |
+| `hypergraph.npz` | Memberships của H0, loại/khóa hyperedge, evaluation neighbors và `k` |
 | Model output | Một dropout logit cho mỗi node được dự đoán |
 
 ---
@@ -119,7 +119,8 @@ course-B,2024-02-01,2024-04-01,math
 ```
 
 `start` là bắt buộc đối với code hiện tại vì nó được dùng để tính
-`course_day`. `end` có thể thiếu; khi đó duration sẽ được impute ở bước feature.
+`course_day`. `end` vẫn được giữ trong processed CSV để có thể dùng trong các thí
+nghiệm tương lai, nhưng chưa được dùng làm feature ở phiên bản hiện tại.
 
 ### 2.3 `train_truth.csv` và `test_truth.csv` trong archive
 
@@ -288,9 +289,8 @@ Với một split có `N` node:
 |---|---|---|---|
 | `behavior_features` | `(N, 58)` | `int32` | 35 day counts + 23 action counts |
 | `user_context` | `(N, 15)` | `float32` | Gender, education, age, missing flag |
-| `course_context` | `(N, 21)` | `float32` | Category, duration, missing flag |
+| `course_context` | `(N, 19)` | `float32` | Category, missing và other flag |
 | `ages` | `(N,)` | `float64` | Tuổi thô hoặc `NaN` |
-| `durations` | `(N,)` | `float64` | Số ngày thô hoặc `NaN` |
 
 Các array này chỉ tồn tại trong RAM, không được ghi thành file riêng.
 
@@ -349,18 +349,12 @@ age_missing         = 0
 Raw context:
 
 ```text
-category     = computer
-course_start = 2024-01-01
-course_end   = 2024-03-01
+category = computer
 ```
 
-Năm 2024 là năm nhuận nên ví dụ này có:
-
 ```text
-category_computer       = 1
-các category khác       = 0
-course_duration_days    = 60
-course_duration_missing = 0
+category_computer = 1
+các category khác = 0
 ```
 
 ### 4.5 Missing và other
@@ -383,8 +377,7 @@ Ví dụ:
 | `category="law"` | `category_other` |
 
 Birth thuộc danh sách missing hoặc tạo age ngoài `[10, 100]` làm `age=NaN`.
-Course end thuộc danh sách missing hoặc sớm hơn course start làm `duration=NaN`.
-Hai giá trị này được xử lý ở bước kế tiếp. Code hiện tại giả định các giá trị
+Giá trị này được xử lý ở bước kế tiếp. Code hiện tại giả định các giá trị
 không thiếu vẫn đúng định dạng số/ngày; chuỗi sai định dạng có thể làm chương
 trình dừng thay vì tự sửa.
 
@@ -419,7 +412,7 @@ X[0, activity_day_1] = (1.0986 - 0.50) / 0.40
 
 `0.50` và `0.40` chỉ là số minh họa. Code tính thống kê thật từ toàn bộ train.
 
-### 5.2 Age và duration
+### 5.2 Age
 
 Train được dùng để fit ba giá trị:
 
@@ -458,7 +451,7 @@ One-hot columns không qua mean/std nên vẫn là `0` hoặc `1`.
 
 ---
 
-## 6. Toàn bộ 94 columns trong `X.npy`
+## 6. Toàn bộ 92 columns trong `X.npy`
 
 `X.npy` không có header. Ý nghĩa từng index được lưu trong `feature_names.csv`.
 
@@ -554,7 +547,7 @@ Tất cả 23 cột này cũng được `log1p` rồi chuẩn hóa bằng train 
 | 71 | `age_at_course_start` | Age sau impute và standardize |
 | 72 | `age_missing` | 1 nếu birth thiếu hoặc age không hợp lệ |
 
-### 6.4 Course context: index 73–93
+### 6.4 Course context: index 73–91
 
 | Index | Feature name | Giá trị |
 |---:|---|---|
@@ -577,13 +570,11 @@ Tất cả 23 cột này cũng được `log1p` rồi chuẩn hóa bằng train 
 | 89 | `category_social_science` | 1 nếu `social science` |
 | 90 | `category_missing` | 1 nếu category thiếu |
 | 91 | `category_other` | 1 nếu category ngoài vocabulary |
-| 92 | `course_duration_days` | Duration sau impute và standardize |
-| 93 | `course_duration_missing` | 1 nếu end date thiếu/không hợp lệ |
 
 Tổng số cột:
 
 ```text
-35 day + 23 action + 15 user + 21 course = 94
+35 day + 23 action + 15 user + 19 course = 92
 ```
 
 ### 6.5 Ví dụ một row trong `X.npy`
@@ -591,7 +582,7 @@ Tổng số cột:
 `X.npy` là NumPy array:
 
 ```python
-X.shape == (node_count, 94)
+X.shape == (node_count, 92)
 X.dtype == np.float32
 ```
 
@@ -609,7 +600,6 @@ X[0, 58] =  1.0000  # gender_female
 X[0, 63] =  1.0000  # education_bachelors
 X[0, 71] = -0.6000  # age 29 sau scale, giá trị minh họa
 X[0, 77] =  1.0000  # category_computer
-X[0, 92] =  0.5000  # duration 60 sau scale, giá trị minh họa
 ```
 
 Các số standardized thực tế phụ thuộc thống kê train thật.
@@ -632,7 +622,6 @@ feature_index,feature_name,source
 58,gender_female,gender=female
 71,age_at_course_start,course start year - birth year
 77,category_computer,category=computer
-92,course_duration_days,course end - course start
 ```
 
 File này là “header bên ngoài” của `X.npy`.
@@ -645,8 +634,8 @@ File này là “header bên ngoài” của `X.npy`.
 |---|---|---:|
 | `behavior` | 0–57 | 58 |
 | `behavior_user` | 0–72 | 73 |
-| `behavior_course` | 0–57 và 73–93 | 79 |
-| `full` | 0–93 | 94 |
+| `behavior_course` | 0–57 và 73–91 | 77 |
+| `full` | 0–91 | 92 |
 
 Ví dụ:
 
@@ -654,7 +643,7 @@ Ví dụ:
 feature_set = "behavior"
 ```
 
-Model không nhìn thấy gender, education, age, category hoặc duration; nó chỉ
+Model không nhìn thấy gender, education, age hoặc category; nó chỉ
 nhận 58 behavior columns.
 
 ---
@@ -705,51 +694,47 @@ Edge ID được cấp theo ba block liên tục và cố định:
 Hai anchor có cùng member set vẫn giữ hai behavioral hyperedge riêng. Với `k=10`,
 mỗi behavioral edge gồm anchor và tối đa 10 train neighbors.
 
-### 8.3 Sparse H0
+### 8.3 H0 dưới dạng memberships
 
-`H0` là sparse CSR incidence matrix:
+`H0` là incidence matrix `(train_node_count, hyperedge_count)`, nhưng code chỉ lưu
+các ô bằng 1 dưới dạng hai mảng song song:
 
 ```text
-rows    = train node IDs
-columns = edge IDs
-value   = 1 nếu node thuộc edge, ngược lại 0
+node_ids[m] thuộc hyperedge edge_ids[m]
 ```
 
-Ví dụ một phần `H0`:
+Ví dụ:
 
 ```text
           edge 0  edge 1  edge 2
 node 0       1       1       1
 node 1       1       0       1
 node 2       1       1       0
-node 3       0       0       1
-node 5       0       0       1
+
+node_ids = [0, 1, 2,  0, 2,  0, 1]
+edge_ids = [0, 0, 0,  1, 1,  2, 2]
 ```
 
-Shape:
-
-```python
-H0.shape == (train_node_count, hyperedge_count)
-```
+Hyperedge chỉ có một thành viên bị bỏ (self-loop đã thay vai trò đó). Khi nạp
+graph, mỗi node được thêm một self-loop hyperedge (HSL, Eq. 9).
 
 Validation/test không được thêm thành row trong train `H0`. Mỗi target được dựng
 một local graph với train nodes làm reference.
 
 ### 8.4 `hypergraph.npz`
 
-Một bundle duy nhất chứa:
-
 | Array/scalar | Ý nghĩa |
 |---|---|
-| `h0_data`, `h0_indices`, `h0_indptr`, `h0_shape` | Thành phần CSR của H0 |
-| `edge_families`, `edge_sizes` | Metadata thẳng hàng với cột H0 |
+| `node_ids`, `edge_ids` | Memberships của H0, sắp theo hyperedge |
+| `edge_family` | 0 = course, 1 = object, 2 = behavioral |
+| `edge_keys` | `course_id`, `course\|type\|object_id`, hoặc ID anchor của Behavioral edge |
 | `train_neighbors` | `k_max` train-neighbor IDs cho mỗi train node |
 | `validation_neighbors`, `test_neighbors` | `k_max` train-reference neighbor IDs |
-| `k`, `k_max` | Kích thước neighbor đang dùng và kích thước đã lưu |
-| `neighbor_backend` | `torch_exact_cosine` |
+| `k` | Số neighbor đầu tiên nằm trong Behavioral hyperedge |
 
 `k_max` quyết định số neighbor được tính và lưu; `k` quyết định số neighbor đầu
-tiên thực sự tham gia Behavioral hyperedge.
+tiên thực sự tham gia Behavioral hyperedge. Neighbor `k..k_max-1` là ứng viên để
+HSL thêm vào (ΔH).
 
 ---
 
@@ -759,16 +744,16 @@ Khi train, `load_train_graph()` trả:
 
 | Biến | Shape ví dụ | Nguồn |
 |---|---|---|
-| `train_node_features` | `(N, F)` | `train/X.npy` sau chọn feature-set |
-| `initial_incidence_matrix` | `(N, E)` | CSR arrays trong `hypergraph.npz` |
+| `features` | `(N, F)` | `train/X.npy` sau chọn feature-set |
 | `labels` | `(N,)` | Một label cho mỗi node trong `train.csv` |
-| `families` | `(E,)` | `hypergraph.npz:edge_families` |
-| `sizes` | `(E,)` | `hypergraph.npz:edge_sizes` |
+| `graph["node_ids"]`, `graph["edge_ids"]` | `(M,)` | Memberships của H0 + self-loop |
+| `graph["edge_family"]` | `(E,)` | Loại hyperedge, self-loop = 3 |
+| `graph["candidate_node_ids"]` | `(B, k_max - k)` | Ứng viên ΔH của từng Behavioral hyperedge |
 
 Với `feature_set="full"`:
 
 ```text
-F = 94
+F = 92
 ```
 
 Với `feature_set="behavior"`:
@@ -808,8 +793,9 @@ Các key chính:
     "state_dict": ...,   # trọng số model
     "epoch": ...,        # epoch có validation AUC tốt nhất
     "validation": ...,   # metrics tại epoch đó
-    "input_dim": ...,    # 58, 73, 79 hoặc 94
-    "settings": ...,     # seed, feature-set, learning rate, ...
+    "input_dim": ...,    # 58, 73, 77 hoặc 92
+    "settings": ...,     # DEFAULT_SETTINGS sau khi ghi đè bằng dòng lệnh
+    "seed": ...,
 }
 ```
 
@@ -823,6 +809,11 @@ Mỗi history record có dạng:
   "loss": 0.812,
   "bce": 0.701,
   "contrastive": 1.110,
+  "train_auc": 0.80,
+  "kept_course": 0.97,
+  "kept_object": 0.91,
+  "kept_behavioral": 0.95,
+  "added": 150000,
   "validation": {
     "auc": 0.78,
     "auprc": 0.76,
@@ -834,6 +825,7 @@ Mỗi history record có dạng:
 ```
 
 Tên key trong ví dụ đúng theo code hiện tại; các giá trị chỉ minh họa luồng.
+Key `validation` chỉ có ở các epoch chạy validation (mỗi `eval_every` epoch).
 
 ### 10.3 Test report `.json`
 
@@ -841,11 +833,10 @@ Test report liên kết kết quả cuối với checkpoint đã chọn bằng v
 
 ```json
 {
-  "checkpoint": "outputs/runs/simple_hgsl_full_seed_1.pt",
-  "checkpoint_epoch": 12,
+  "checkpoint": "outputs/runs/hsl_full_seed_1.pt",
+  "checkpoint_epoch": 60,
   "checkpoint_validation": {"auc": 0.81},
-  "test_targets": 67000,
-  "test_metrics": {"auc": 0.80}
+  "test": {"auc": 0.80, "auprc": 0.90, "f1": 0.85, "precision": 0.88, "recall": 0.82}
 }
 ```
 
@@ -875,7 +866,7 @@ train.csv có 3 rows với node_id=0
 
 ```text
 3 event rows được aggregate thành X[0]
-X[0] có 94 columns
+X[0] có 92 columns
 ```
 
 ### Hypergraph
@@ -903,10 +894,11 @@ dropout probability
 
 ## 12. Những điểm cần nhớ
 
-1. Processed CSV có một dòng trên event; `X.npy` có một row trên node.
+1. Processed CSV có một dòng trên event và một placeholder cho enrollment không
+   có event hợp lệ; `X.npy` luôn có một row trên node.
 2. `node_id` chính là row index trong `X.npy` của cùng split.
 3. Label nằm trong split CSV, không nằm trong `X.npy`.
-4. `feature_names.csv` ánh xạ index sang ý nghĩa của 94 columns.
+4. `feature_names.csv` ánh xạ index sang ý nghĩa của 92 columns.
 5. Chỉ train được dùng để fit median, mean và std.
 6. Validation/test dùng train statistics nhưng giữ feature values của chính nó.
 7. Train `H0` chỉ chứa train nodes.

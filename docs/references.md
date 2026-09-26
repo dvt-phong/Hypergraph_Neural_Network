@@ -107,8 +107,10 @@ edge weight riêng được dùng trong project là:
 D_v^(-1/2) H D_e^(-1) H^T D_v^(-1/2) X Theta
 ```
 
-Code được viết lại bằng sparse PyTorch operations để membership value trong
-`H*` vẫn nhận gradient. Nó không phải bản sao file model trong iMoonLab/HGNN.
+Như `HGNN_conv` gốc, mỗi layer tính `X Θ + b` rồi mới lan truyền. Phép lan
+truyền được viết lại bằng các phép cộng theo membership (`index_add_`) để mask của
+`H*` nhận gradient mà vẫn vừa bộ nhớ trên toàn bộ XuetangX. Nó không phải bản sao
+file model trong iMoonLab/HGNN.
 
 ---
 
@@ -126,23 +128,38 @@ IJCAI, pages 1923–1929, 2022.
 
 **Liên hệ với project**
 
-Project tham khảo ba ý chính:
+`5_model.py`, `6_hsl.py` và `7_losses.py` cài lại HSL từ các phương trình trong
+bài báo (không sao chép code, vì repository chưa khai báo license):
 
-1. Encode node trên hypergraph ban đầu `H0`.
-2. Học lại cấu trúc để tạo `H*`, sau đó encode lần hai.
-3. Dùng contrastive consistency giữa representation trước và sau refinement.
+| Paper | Code |
+|---|---|
+| `Ĥ = Me ⊙ Mv ⊙ (H + ΔH) + I` (Eq. 8–9) | `StructureLearner.forward` |
+| Hyperedge sampling, Gumbel (Eq. 2–3) | `edge_scorer` + `keep_mask` |
+| Implicit connections ΔH (Eq. 4–5) | `implicit_connections` |
+| Incident node sampling `σ(MLP([x ‖ h]))` (Eq. 6–7) | `membership_logits` + `keep_mask` |
+| Intra-hyperedge contrastive (Eq. 10) | `7_losses.contrastive_loss` |
+| `L = L_T + λ L_CL` (Eq. 11) | `7_losses.total_loss` |
 
-`6_hsl.py` không tái hiện nguyên bản thuật toán trong bài báo. Các khác biệt
-chính:
+Khác biệt có chủ đích so với bài báo, cần nêu khi viết:
 
-- Chọn hyperedge theo family và size bucket, không học hyperedge sampling bằng
-  Gumbel-Softmax.
-- Lấy positive/negative candidate nodes rồi tính membership score.
-- Dùng sigmoid membership và chỉ giữ top-r candidate.
-- Giữ nguyên các hyperedge không được chọn trong epoch.
-- Khôi phục membership để tránh isolated node.
-- `7_losses.py` dùng symmetric node-level contrastive loss; đây không phải đúng
-  nguyên dạng intra-hyperedge contrastive objective của HSL.
+- Backbone là HGNN (Feng et al., 2019) hai layer thay cho AllSetTransformer; hai
+  lượt `Z0 = HGNN(X, H0)` và `Z* = HGNN(X, H*)` dùng chung trọng số.
+- `Me` là MLP của biểu diễn hyperedge thay cho một tham số tự do mỗi hyperedge,
+  để áp dụng được lên local graph của validation/test (thiết lập inductive).
+- ΔH chỉ thêm node vào Behavioral hyperedge; ứng viên là neighbor `k..k_max-1`
+  theo hành vi, và mỗi hyperedge chọn `add_per_edge` ứng viên có cosine cao nhất
+  giữa `Z0` và biểu diễn hyperedge. Bài báo chọn top `p_add` trên toàn ma trận.
+- Loss contrastive lấy mẫu `contrastive_neighbors` node trong `T_i` thay vì dùng
+  toàn bộ `T_i` (Course hyperedge có hàng nghìn thành viên), có nhiệt độ `τ`, và
+  tính hai chiều như bản SimCLR trong code HSL.
+
+Ghi chú khi đối chiếu code công bố (`pkualpha/HSL`, commit `00b181d`): cấu hình
+`config.yml` đặt `contrast: False` cho cả 7 dataset, và dòng
+`x[: edge_mask.shape[0], :] * edge_mask.unsqueeze(-1)` trong `models/models.py`
+không gán lại kết quả nên mask hyperedge không tác động lên forward. Vì vậy hiệu
+quả của từng module trên dữ liệu MOOC cần được kiểm chứng bằng ablation riêng
+(`8_train.py`: `--no-hsl`, `--no-edge-sampling`, `--no-node-sampling`,
+`--add-per-edge 0`, `--lambda-cl 0`).
 
 ---
 
@@ -151,11 +168,11 @@ chính:
 | File | Nguồn liên quan | Cách sử dụng |
 |---|---|---|
 | `2_preprocess.py` | SIG-Net, MST-GCN, CA-TFHN | Đối chiếu cách tổ chức interaction data; split và CSV là code riêng |
-| `3_features.py` | SIG-Net, MST-GCN, CA-TFHN | Tham khảo temporal/behavior representation; 94 features là thiết kế riêng |
+| `3_features.py` | SIG-Net, MST-GCN, CA-TFHN | Tham khảo temporal/behavior representation; 92 features là thiết kế riêng |
 | `4_hypergraph.py` | HGNN, SIG-Net, MST-GCN, CA-TFHN | Điều chỉnh interaction/classmates ideas thành Course, Object, Behavioral hyperedges |
 | `5_model.py` | HGNN, HSL | Chuyển thể HGNN propagation và luồng `H0 → Z0 → H* → Z*` |
-| `6_hsl.py` | HSL | Phiên bản membership refinement đơn giản hóa |
-| `7_losses.py` | HSL | Contrastive consistency được điều chỉnh thành symmetric node-level loss |
+| `6_hsl.py` | HSL | Cài lại `Me`, `Mv`, `ΔH`, self-loop theo Eq. 2–9, điều chỉnh cho inductive MOOC |
+| `7_losses.py` | HSL | Intra-hyperedge contrastive (Eq. 10) với negative được lấy mẫu |
 | `8_train.py` | SIG-Net, MST-GCN, CA-TFHN | Đối chiếu bài toán dropout; training protocol là code riêng |
 
 `0_config.py` chỉ chứa cấu hình. `1_download.py` chỉ tải dataset từ các URL đã

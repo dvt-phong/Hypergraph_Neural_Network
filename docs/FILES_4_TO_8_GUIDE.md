@@ -1,311 +1,251 @@
-# Làm chủ pipeline từ `H0` đến huấn luyện
+# Hướng dẫn đọc code file 4–8: từ `H0` đến huấn luyện HSL
 
-Tài liệu này bám theo code hiện tại trong `src/4_hypergraph.py` đến
-`src/8_train.py`. Các file 0–3 là đầu vào đã chốt.
+Tài liệu này đi cùng code trong `src/4_hypergraph.py` → `src/8_train.py`. Nên đọc
+theo thứ tự các mục; mỗi mục chỉ ra hàm nào trong code tương ứng với bước nào của
+mô hình.
 
-## 1. Bản đồ chung
+## 1. Bức tranh chung
 
 ```text
-X
-├─ Course hyperedges
-├─ Object hyperedges
-└─ Behavioral similarity hyperedges
-          ↓
-     sparse H0
-          ↓
-     HGNN(X, H0) = Z0
-          ↓
- HSL-inspired refinement(Z0, H0) = H*
-          ↓
-     HGNN(X, H*) = Z*
-          ↓
- classifier(Z*) = logits
-          ↓
- weighted BCE + lambda × contrastive(Z0, Z*)
+X (feature)  +  H0 (Course, Object, Behavioral + self-loop)
+                    │
+          Z0 = HGNN(X, H0)                         file 5
+                    │
+   H* = Me ⊙ Mv ⊙ (H0 + ΔH) + I                    file 6  (HSL)
+                    │
+          Z* = HGNN(X, H*)     ← cùng trọng số     file 5
+                    │
+          logits = Linear(Z*)
+                    │
+   L = weighted BCE + λ · L_CL(Z0, Z*)             file 7
 ```
 
-Quy ước shape:
-
-| Biến | Shape | Ý nghĩa |
+| Ký hiệu | Shape | Ý nghĩa |
 |---|---:|---|
-| `X` | `[N, F]` | feature của `N` enrollment |
-| `H0`, `H*` | `[N, E]` | incidence matrix node–hyperedge |
-| `Z0`, `Z*` | `[N, D]` | embedding trước/sau refinement |
+| `X` | `[N, F]` | feature của `N` enrollment (`F = 92` với `full`) |
+| `H0`, `H*` | `[N, E]` | incidence matrix: `H[v, e] = 1` nếu node `v` thuộc hyperedge `e` |
+| `Z0`, `Z*` | `[N, 64]` | embedding trên cấu trúc gốc / cấu trúc đã học |
 | `logits` | `[N]` | điểm dropout trước sigmoid |
 
-## 2. File 4 — tạo `H0`
+## 2. Hypergraph được lưu như thế nào
 
-### `behavioral_neighbors`
-
-Hàm chuẩn hóa các behavior feature rồi tính cosine similarity theo batch bằng
-PyTorch. Đây là exact kNN, không cần FAISS:
+Thay vì lưu cả ma trận `H` (rất thưa), code chỉ lưu **danh sách các ô bằng 1**,
+gọi là *membership*:
 
 ```text
-normalized_query @ normalized_train.T = cosine similarity
+node_ids = [0, 1, 2,   0, 2,   1, 3]
+edge_ids = [0, 0, 0,   1, 1,   2, 2]
 ```
 
-- `k_max`: số neighbor được tìm và lưu cho mỗi node.
-- `k`: số neighbor đầu tiên dùng khi dựng Behavioral hyperedge.
-- Với train, chính node đang truy vấn bị loại khỏi kết quả.
-- Với validation/test, mọi neighbor đều là train node.
+đọc là: node 0, 1, 2 thuộc hyperedge 0; node 0, 2 thuộc hyperedge 1; node 1, 3
+thuộc hyperedge 2. Thêm một mảng `edge_family[e]` cho biết hyperedge `e` thuộc
+loại nào (`0_config.EDGE_FAMILIES`):
 
-Exact search dễ kiểm chứng và không có sai số approximate. Đổi sang FAISS chỉ nên
-làm khi profiling cho thấy phép nhân cosine là nút thắt trên dữ liệu thực.
+| id | family | Ý nghĩa |
+|---:|---|---|
+| 0 | `course` | các enrollment cùng khóa học |
+| 1 | `object` | các enrollment cùng dùng một video / bài tập / forum |
+| 2 | `behavioral` | một anchor + `k` enrollment có hành vi giống nhất |
+| 3 | `self_loop` | mỗi node một hyperedge chỉ chứa chính nó (HSL Eq. 9) |
 
-### `build_course_hyperedges`
+`H*` dùng đúng dạng này, cộng thêm một mảng `weights` (một số cho mỗi
+membership): `1` với `H0`, còn với `H*` là mask 0/1 do HSL học.
 
-Nhóm các node train theo `course_id`. Mỗi course có từ hai enrollment trở lên tạo
-một Course hyperedge.
-
-### `build_object_hyperedges`
-
-Đọc event CSV và nhóm theo:
+Cả graph là một `dict`:
 
 ```python
-(course_id, object_type, object_id)
+graph = {
+    "num_nodes": N,
+    "node_ids": ..., "edge_ids": ...,        # memberships
+    "edge_family": ...,                      # [E]
+    "candidate_edge_ids": ...,               # [B]      Behavioral hyperedge
+    "candidate_node_ids": ...,               # [B, c]   ứng viên ΔH của hyperedge đó
+}
 ```
 
-Thêm `course_id` vào key để hai object trùng ID ở hai course không bị gộp nhầm.
-Chỉ action có trong `OBJECT_ACTIONS` và object hợp lệ mới tham gia.
+## 3. File 4 — `4_hypergraph.py`
 
-### `build_behavioral_hyperedges`
+### Phần A: dựng `H0` (chạy một lần)
 
-Mỗi train node là một anchor. Edge của anchor gồm:
+| Hàm | Làm gì |
+|---|---|
+| `nearest_train_neighbors` | kNN cosine chính xác trên 58 cột hành vi, chạy theo batch |
+| `read_object_events` | đọc CSV, trả `(node_id, "course\|type\|object_id")` |
+| `build_train_hyperedges` | gom train node thành Course / Object / Behavioral hyperedge, bỏ hyperedge chỉ có 1 node |
+| `build_hypergraph` | điều phối và ghi `hypergraph.npz` |
+
+`hypergraph.npz` chứa:
+
+| Key | Nội dung |
+|---|---|
+| `node_ids`, `edge_ids` | memberships của `H0` (đã sắp theo hyperedge) |
+| `edge_family` | loại của từng hyperedge |
+| `edge_keys` | `course_id`, khóa object, hoặc ID của anchor (Behavioral) |
+| `train_neighbors` | `k_max` train neighbor của mỗi train node |
+| `validation_neighbors`, `test_neighbors` | `k_max` train neighbor của mỗi target |
+| `k` | số neighbor thật sự nằm trong Behavioral hyperedge |
+
+Neighbor thứ `k .. k_max-1` **không** nằm trong `H0`; chúng là ứng viên để HSL
+thêm vào (ΔH).
+
+### Phần B: nạp graph khi train và đánh giá
+
+| Hàm | Làm gì |
+|---|---|
+| `add_self_loops` | thêm một self-loop cho mỗi node |
+| `load_train_graph` | trả `features`, `labels`, `graph` của tập train |
+| `load_evaluation_split` | nạp những gì cần để dựng local graph của validation/test |
+| `build_local_graph` | local graph của **một** target |
+| `merge_local_graphs` | ghép nhiều local graph thành một batch |
+
+**Quy tắc chống leakage.** Validation/test không bao giờ được thêm vào `H0`. Mỗi
+target có một local graph riêng: node 0 là target, các node còn lại là train
+enrollment mà target nối tới:
 
 ```text
-anchor + k neighbor gần nhất
+target ──┬── Course hyperedge  (target + train cùng course)
+         ├── Object hyperedges (target + train cùng dùng object đó)
+         └── Behavioral hyperedge (target + k train neighbor gần nhất)
 ```
 
-Vì vậy `N` train node tạo tối đa `N` Behavioral hyperedge.
+Khi ghép batch, các local graph nằm cạnh nhau và không có hyperedge nào nối hai
+graph, nên các target không nhìn thấy nhau.
 
-### `build_h0`
+## 4. File 5 — `5_model.py`
 
-Hàm ghép edge đúng thứ tự Course → Object → Behavioral. Bản chất incidence matrix
-được tạo trực tiếp bằng hai list:
+### Một lớp HGNN
+
+```text
+X' = Dv^-1/2 · H · De^-1 · Hᵀ · Dv^-1/2 · (X Θ + b)
+```
+
+Code tương ứng (`hgnn_propagate`):
+
+1. Tính bậc node `Dv` và bậc hyperedge `De` từ `weights`.
+2. Node → hyperedge: `weighted_sum(x · Dv^-1/2, ..., node_ids → edge_ids)`, rồi chia `De`.
+3. Hyperedge → node: `weighted_sum(..., edge_ids → node_ids)`, rồi nhân `Dv^-1/2`.
+
+`weighted_sum` chỉ là "cộng các message theo membership". Nó chạy theo từng chunk
+1 triệu membership và dùng `checkpoint` để backward tính lại message thay vì giữ
+tất cả trong bộ nhớ, nhờ vậy vừa GPU với toàn bộ XuetangX. Kết quả đã được kiểm
+tra khớp với công thức ma trận dày (sai số ~1e-7, cả giá trị lẫn gradient).
+
+Bậc `Dv`, `De` được tính từ `weights.detach()`: hyperedge bị HSL xóa hết thành
+viên có `De = 0`, code thay bằng 1 để không chia cho 0 (hyperedge đó chỉ gửi
+vector 0).
+
+### `HSLModel`
 
 ```python
-for edge_id, members in enumerate(hyperedges):
-    for node_id in members:
-        rows.append(node_id)
-        columns.append(edge_id)
+z0 = encode(X, H0)                       # lượt 1
+h_e = hyperedge_means(z0, H0)            # biểu diễn hyperedge = trung bình Z0 của thành viên
+H*, weights = structure_learner(z0, h_e, H0)
+z_star = encode(X, H*, weights)          # lượt 2, cùng layer1/layer2
+logits = classifier(z_star)
 ```
 
-Sau đó `H0[node_id, edge_id] = 1` được lưu dưới dạng SciPy CSR. Không có file
-membership trung gian.
+`encode` = `Linear → propagate → ReLU → Dropout → Linear → propagate → ReLU`,
+giống HGNN gốc (Feng et al., 2019). Khi chạy `--no-hsl`, model bỏ qua bước HSL và
+`Z* = Z0`, tức HGNN baseline.
 
-### `build_hypergraph`
+## 5. File 6 — `6_hsl.py`
 
-Luồng điều phối:
+Đối chiếu paper HSL (Cai et al., IJCAI 2022) với code:
 
-1. Load `train/validation/test X.npy`.
-2. Tính train neighbors với `k_max`.
-3. Tính validation/test neighbors, chỉ tìm trong train.
-4. Dựng Course, Object, Behavioral hyperedge.
-5. Dựng sparse `H0`.
-6. Ghi một `hypergraph.npz`.
+| Paper | Code | Ý nghĩa |
+|---|---|---|
+| Eq. 4–5, `ΔH` | `implicit_connections` | mỗi Behavioral hyperedge thêm `add_per_edge` ứng viên có `cos(z_v, h_e)` cao nhất |
+| Eq. 2–3, `Me` | `edge_scorer` + `keep_mask` | giữ/bỏ cả hyperedge, xác suất `σ(MLP([h_e ‖ family]))` |
+| Eq. 6–7, `Mv` | `membership_logits` + `keep_mask` | giữ/bỏ từng membership, xác suất `σ(MLP([z_v ‖ h_e]))` |
+| Eq. 9, `+ I` | `torch.where(is_self_loop, 1.0, ...)` | self-loop luôn được giữ |
+| Eq. 8 | `weights = edge_keep[edge_ids] * membership_keep` | `H* = Me ⊙ Mv ⊙ (H0 + ΔH) + I` |
 
-Bundle chứa CSR arrays của `H0`, `edge_families`, `edge_sizes`, ba ma trận
-neighbors, `k`, `k_max` và tên backend.
-
-### `load_train_graph`
-
-Khôi phục `H0` từ bundle, chọn feature-set và trả dictionary:
+### `keep_mask`: Gumbel straight-through
 
 ```text
-features, incidence_matrix, labels, families, sizes
+train:  soft = σ((logit + noise) / τ),  hard = 1[soft > 0.5]
+        giá trị dùng = hard (đúng 0/1), gradient lấy từ soft
+eval:   hard = 1[logit > 0]   (không ngẫu nhiên → kết quả lặp lại được)
 ```
 
-### `load_evaluation_data` và `build_local_graph`
+Bias cuối của hai scorer khởi tạo bằng 3 (`σ(3) ≈ 0.95`), nên lúc đầu mô hình giữ
+gần hết cấu trúc rồi mới học cách cắt, giống cách HSL khởi tạo.
 
-Evaluation luôn theo nguyên tắc:
+### Hai điều chỉnh cho bài toán MOOC (cần nêu trong luận án)
+
+1. **`Me` là MLP của biểu diễn hyperedge**, không phải một tham số riêng cho mỗi
+   hyperedge như code HSL. Validation/test dùng local graph mới, nên cần một hàm
+   áp dụng được cho hyperedge chưa thấy.
+2. **ΔH chỉ thêm vào Behavioral hyperedge**, với ứng viên là neighbor `k..k_max-1`.
+   Thêm learner khóa khác vào Course hyperedge sẽ sai ý nghĩa "cùng khóa học".
+
+`summary` in ra tỉ lệ membership được giữ theo từng family (`kept_course`,
+`kept_object`, `kept_behavioral`) và số membership ΔH còn lại (`added`). Đây là
+bản MOOC của pruning rate `r_v` trong Table 1 của paper.
+
+## 6. File 7 — `7_losses.py`
 
 ```text
-1 target validation/test + các train reference → một local graph
+L = BCE(logits, y; pos_weight = #không dropout / #dropout) + λ · L_CL
 ```
 
-Target luôn ở local row 0. Các target validation/test không bao giờ nhìn thấy
-nhau. Đây là điểm chống leakage quan trọng nhất khi thay graph builder.
+**Intra-hyperedge contrastive (HSL Eq. 10).** Với anchor `i`:
 
-## 3. File 5 — HGNN và forward pass
+| Loại | Cặp | Ý nghĩa |
+|---|---|---|
+| positive | `Z0[i] ↔ Z*[i]` | cùng một enrollment ở hai cấu trúc phải giống nhau |
+| negative | `Z0[i] ↔ Z0[j]`, `Z0[i] ↔ Z*[j]`, với `j ∈ T_i` | learner cùng hyperedge phải phân biệt được (chống over-smoothing) |
 
-### `to_torch_sparse`
+`T_i` là các node chung hyperedge với `i`. `sample_hyperedge_neighbors` lấy
+`contrastive_neighbors` node như sau: chọn ngẫu nhiên một hyperedge của `i`, rồi
+chọn ngẫu nhiên một thành viên của nó. Loss được tính hai chiều (anchor ở `Z0` và
+anchor ở `Z*`) rồi lấy trung bình.
 
-Đổi SciPy sparse matrix thành coalesced PyTorch COO tensor trên đúng device.
+## 7. File 8 — `8_train.py`
 
-### `hypergraph_propagation`
-
-Thực hiện:
+Mọi siêu tham số nằm trong `DEFAULT_SETTINGS` ở đầu file; dòng lệnh chỉ ghi đè.
 
 ```text
-Dv^(-1/2) H De^(-1) H^T Dv^(-1/2) X
+mỗi epoch:
+    forward trên toàn bộ train graph → loss → backward → clip → Adam step
+mỗi eval_every epoch:
+    validation (local graph) → lưu checkpoint nếu AUC tốt hơn
+    dừng sớm sau `patience` lần validation không cải thiện
+sau cùng (--mode test / both):
+    nạp checkpoint tốt nhất → chấm test đúng một lần
 ```
 
-Trình tự đọc code:
+### Ablation theo Fig. 3 của paper HSL
 
-1. Tính degree của node và edge.
-2. Chuẩn hóa node feature bằng `Dv^(-1/2)`.
-3. Gom node → edge bằng `H^T`.
-4. Chia cho edge degree `De`.
-5. Phát edge → node bằng `H`.
-6. Chuẩn hóa node lần nữa.
+| Biến thể | Lệnh | Tên run |
+|---|---|---|
+| Base (HGNN) | `--no-hsl` | `hgnn_...` |
+| + edge | `--no-node-sampling --add-per-edge 0` | `hsl_no-node_no-add_...` |
+| + node | `--no-edge-sampling` | `hsl_no-edge_...` |
+| − CL | `--lambda-cl 0` | `hsl_no-cl_...` |
+| HSL đầy đủ | (mặc định) | `hsl_...` |
 
-`WeightedIndexAdd` ở cuối file là chi tiết kỹ thuật cho `H*` có gradient. Nó dùng
-indexed reduction để backward không tạo ma trận gần-dense rất lớn trên CUDA. Khi
-học flow mô hình, đọc `HGSLModel` trước và xem block này sau.
+Checkpoint ở `outputs/runs/<tên run>.pt`, report ở
+`outputs/reports/<tên run>_train.json` và `_test.json`.
 
-### `HGSLModel.encode`
-
-Hai layer HGNN:
+### Đọc log
 
 ```text
-Linear → propagation → ReLU → Dropout
-Linear → propagation → ReLU
+[train] epoch 5: loss=0.85, bce=0.46, contrastive=3.94, train_auc=0.99,
+        kept_course=0.98, kept_object=0.94, kept_behavioral=0.96, added=763
+[validation] 31,588 targets in 250s: auc=..., auprc=..., f1=...
+[checkpoint] new best val_auc=... at epoch 5
 ```
 
-### `HGSLModel.forward`
+- `kept_*` giảm dần: HSL đang cắt bớt cấu trúc. Toàn bộ về `1.0`: mô hình thấy
+  không cần cắt.
+- `contrastive` giảm: `Z0` và `Z*` đang được kéo về gần nhau.
 
-Đây là flow chính cần nhớ:
+## 8. Checklist khi thay đổi mô hình
 
-```python
-z0 = self.encode(node_features, h0)
-h_star = refine_hypergraph(z0, h0, ...) if hsl else h0
-z_star = self.encode(node_features, h_star) if hsl else z0
-logits = self.classifier(z_star).squeeze(-1)
-```
-
-Output là dictionary gồm `logits`, `z0`, `z_star`, `h_star`. Khi `hsl=False`,
-`H*=H0` và `Z*=Z0`, tạo HGNN baseline cùng encoder.
-
-## 4. File 6 — HSL-inspired structure refinement
-
-Đây là refinement lấy cảm hứng từ HSL, không phải bản tái hiện nguyên gốc thuật
-toán IJCAI 2022.
-
-### `select_hyperedges`
-
-Chia edge theo family và bucket kích thước, shuffle có seed, rồi lấy round-robin.
-Cách này giúp sample không bị một family lớn chiếm hết budget.
-
-### `sample_candidate_nodes`
-
-Với một edge:
-
-- positive candidate được sample từ member hiện tại;
-- negative candidate được sample từ non-member;
-- local evaluation có thể giới hạn candidate theo node/edge group để không trộn
-  các local graph trong cùng batch.
-
-### `membership_scores`
-
-Edge embedding là trung bình positive embedding:
-
-```text
-z_e = mean(z_v), v thuộc positive candidates
-```
-
-Điểm membership:
-
-```text
-s(v,e) = (Wn z_v)^T (We z_e) / sqrt(D) + b
-p(v,e) = sigmoid(s(v,e))
-```
-
-### `build_refined_incidence`
-
-Hàm thay membership của các edge được chọn, giữ nguyên edge không được chọn và
-khôi phục một membership cũ nếu refinement làm node bị cô lập. Kết quả là sparse
-`H*` có gradient ở learned membership values.
-
-### `refine_hypergraph`
-
-Flow đọc từ trên xuống:
-
-```text
-select edge
-→ sample positive/negative candidates
-→ membership score
-→ sigmoid
-→ giữ top_r
-→ build H*
-```
-
-Chỉ có cơ chế `top_r`; không còn nhánh threshold.
-
-## 5. File 7 — loss
-
-File chỉ có ba hàm:
-
-- `train_pos_weight`: `N_negative / N_positive`.
-- `contrastive_loss`: đối chiếu hai view `z0` và `z_star`.
-- `total_loss`: weighted BCE + `lambda_cl × contrastive`.
-
-Positive pair của contrastive loss là:
-
-```text
-z0[i] ↔ z_star[i]
-```
-
-Đó là cùng một enrollment trước và sau refinement, không phải hai learner cùng
-nhãn dropout.
-
-## 6. File 8 — train, validation và test
-
-### `classification_metrics`
-
-Tính ROC-AUC, AUPRC và precision/recall/F1 tại probability 0.5. Metric được gom
-trong một function để không che luồng train.
-
-### `batch_local_graphs`
-
-Ghép nhiều local graph thành block-diagonal sparse graph. Hàm đồng thời lưu vị
-trí row 0 của từng graph, vì chỉ target row mới được đưa vào metric.
-
-### `evaluate`
-
-Với từng target:
-
-1. Gọi `build_local_graph`.
-2. Batch các local graph độc lập.
-3. Chạy model deterministic.
-4. Lấy logit ở target positions.
-5. Tính metric sau khi xử lý toàn bộ target.
-
-### `train_one_epoch`
-
-Một epoch gồm đúng các bước: forward → total loss → backward → kiểm gradient HSL
-→ gradient clipping → optimizer step.
-
-### `train`
-
-Hàm này cố ý giữ flow thí nghiệm ở cùng một nơi:
-
-```text
-load train graph và validation data
-→ tạo model + Adam
-→ train từng epoch
-→ validation
-→ lưu checkpoint khi validation AUC tốt hơn
-→ early stopping
-→ ghi train report
-```
-
-### `test`
-
-`test` chỉ nhận checkpoint đã được validation chọn, nạp lại settings/state rồi
-đánh giá official test. Test không tham gia chọn checkpoint.
-
-## 7. Checklist khi thay mô hình
-
-Khi nâng cấp sang Temporal Hypergraph hoặc encoder khác, kiểm tra lần lượt:
-
-1. Node vẫn là enrollment hay đã đổi định nghĩa?
-2. `H0` có còn `[N, E]` và sparse không?
-3. Edge metadata có còn thẳng hàng với cột của `H0` không?
-4. Validation/test target có chỉ nối tới train reference không?
-5. `encode` có trả `[N, D]` không?
-6. Positive pair của contrastive loss có còn cùng enrollment không?
-7. Checkpoint có chỉ được chọn bằng validation không?
-8. Test có được chạy đúng một lần sau model selection không?
-
-Nếu tám contract này còn đúng, ta có thể thay từng module mà không vô tình đổi
-protocol thí nghiệm.
+1. Node vẫn là enrollment?
+2. Graph vẫn có `node_ids`, `edge_ids`, `edge_family` thẳng hàng?
+3. Validation/test chỉ nối tới train node?
+4. `encode` vẫn trả `[N, D]`?
+5. Positive của contrastive vẫn là cùng một enrollment ở `Z0` và `Z*`?
+6. Checkpoint chỉ được chọn bằng validation, test chỉ chạy một lần?
