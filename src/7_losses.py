@@ -1,18 +1,26 @@
-# 7. Define weighted BCE, symmetric contrastive loss, and their sum.
-# Tham khảo từ project/bài báo:
-# - HSL, Cai et al., IJCAI 2022:
-#   https://doi.org/10.24963/ijcai.2022/267
-#   Code: https://github.com/pkualpha/HSL
-# Contrastive consistency compares the same enrollment before and after
-# structure refinement. It does not group nodes by class label.
-# Weighted BCE dùng hàm chuẩn của PyTorch cho dữ liệu lệch lớp.
+# 7. Losses: weighted BCE + intra-hyperedge contrastive loss.
+#
+#     L = BCE(logits, y; pos_weight = #negative / #positive) + λ · L_CL(Z0, Z*)
+#
+# Intra-hyperedge contrastive loss (HSL, Cai et al., IJCAI 2022, Eq. 10):
+#   positive pair   the same enrollment in both views: Z0[i] <-> Z*[i]
+#   negatives       enrollments that share a hyperedge with i (T_i),
+#                   taken from both views: Z0[j] and Z*[j]
+# The loss keeps H* consistent with H0 while keeping learners of the same
+# course/object distinguishable (against over-smoothing). It is computed with
+# each view as anchor and averaged, like the SimCLR-style loss in HSL's code.
 
+from importlib import import_module
+
+import numpy as np
 import torch
 from torch.nn import functional as F
 
+config = import_module("0_config")
+SELF_LOOP = config.EDGE_FAMILIES.index("self_loop")
 
-# Compute the positive-class weight from binary train labels.
-def train_pos_weight(labels):
+
+def positive_class_weight(labels):
     positives = labels.sum()
     negatives = labels.numel() - positives
     if positives <= 0 or negatives <= 0:
@@ -20,67 +28,67 @@ def train_pos_weight(labels):
     return negatives / positives
 
 
-# Positive pair i is z0[i] <-> z_star[i] for the same enrollment.
-def contrastive_loss(
-    initial_node_embeddings,
-    refined_node_embeddings,
-    sampled_node_indices,
-    temperature=0.2,
-):
-    if temperature <= 0 or len(sampled_node_indices) < 2:
-        raise ValueError("Invalid contrastive temperature or node sample")
-    initial_embeddings = F.normalize(
-        initial_node_embeddings[sampled_node_indices],
-        dim=1,
-    )
-    refined_embeddings = F.normalize(
-        refined_node_embeddings[sampled_node_indices],
-        dim=1,
-    )
-    similarity_matrix = initial_embeddings @ refined_embeddings.T / temperature
-    same_node_positions = torch.arange(
-        len(sampled_node_indices),
-        device=initial_node_embeddings.device,
-    )
-    initial_to_refined_loss = F.cross_entropy(
-        similarity_matrix,
-        same_node_positions,
-    )
-    refined_to_initial_loss = F.cross_entropy(
-        similarity_matrix.T,
-        same_node_positions,
-    )
-    return (initial_to_refined_loss + refined_to_initial_loss) / 2
-
-
-# Combine weighted classification loss with the optional contrastive component.
-def total_loss(
-    model_output,
-    labels,
-    positive_weight,
-    sampled_node_indices,
-    *,
-    lambda_cl=0.1,
-    temperature=0.2,
-):
-    classification_loss = F.binary_cross_entropy_with_logits(
-        model_output["logits"],
-        labels,
-        pos_weight=positive_weight,
-    )
-    if lambda_cl > 0:
-        contrastive_loss_value = contrastive_loss(
-            model_output["z0"],
-            model_output["z_star"],
-            sampled_node_indices,
-            temperature,
-        )
-    else:
-        contrastive_loss_value = classification_loss.new_zeros(())
-
-    combined_loss = classification_loss + lambda_cl * contrastive_loss_value
-    loss_components = {
-        "bce": float(classification_loss.detach()),
-        "contrastive": float(contrastive_loss_value.detach()),
+# Index of H0 memberships (without self-loops) for fast neighbor sampling.
+# Arrays follow graph["edge_ids"], which is sorted by hyperedge.
+def build_neighbor_sampler(graph):
+    keep = graph["edge_family"][graph["edge_ids"]] != SELF_LOOP
+    node_ids = graph["node_ids"][keep]
+    edge_ids = graph["edge_ids"][keep]
+    by_node = np.argsort(node_ids, kind="stable")
+    node_start = np.searchsorted(node_ids[by_node], np.arange(graph["num_nodes"] + 1))
+    return {
+        "node_start": node_start,
+        "node_edges": edge_ids[by_node],
+        "edge_start": np.searchsorted(edge_ids, np.arange(len(graph["edge_family"]) + 1)),
+        "edge_nodes": node_ids,
+        "anchor_pool": np.flatnonzero(np.diff(node_start) > 0),
     }
-    return combined_loss, loss_components
+
+
+# For each anchor, `count` random members of T_i: pick one of the anchor's
+# hyperedges at random, then one member of that hyperedge at random.
+def sample_hyperedge_neighbors(sampler, anchors, count, rng):
+    start = sampler["node_start"][anchors][:, None]
+    degree = sampler["node_start"][anchors + 1][:, None] - start
+    random_edge = start + (rng.random((len(anchors), count)) * degree).astype(np.int64)
+    edges = sampler["node_edges"][random_edge]
+
+    edge_start = sampler["edge_start"][edges]
+    edge_size = sampler["edge_start"][edges + 1] - edge_start
+    random_member = edge_start + (rng.random(edges.shape) * edge_size).astype(np.int64)
+    return sampler["edge_nodes"][random_member]
+
+
+# One direction of Eq. 10 with `view` as anchor and `other` as the second view.
+def _contrastive_one_direction(view, other, anchors, neighbors, temperature):
+    anchor = view[anchors]  # [B, D]
+    positive = (anchor * other[anchors]).sum(dim=1, keepdim=True)  # [B, 1]
+    same_view = torch.einsum("bd,bkd->bk", anchor, view[neighbors])  # [B, K]
+    other_view = torch.einsum("bd,bkd->bk", anchor, other[neighbors])  # [B, K]
+    logits = torch.cat([positive, same_view, other_view], dim=1) / temperature
+
+    # A sampled neighbor that is the anchor itself is not a negative.
+    is_anchor = neighbors == anchors[:, None]
+    never = torch.zeros_like(is_anchor[:, :1])
+    logits = logits.masked_fill(torch.cat([never, is_anchor, is_anchor], dim=1), -torch.inf)
+
+    positive_position = torch.zeros(len(anchors), dtype=torch.int64, device=logits.device)
+    return F.cross_entropy(logits, positive_position)
+
+
+def contrastive_loss(z0, z_star, anchors, neighbors, temperature):
+    z0 = F.normalize(z0, dim=1)
+    z_star = F.normalize(z_star, dim=1)
+    return (
+        _contrastive_one_direction(z0, z_star, anchors, neighbors, temperature)
+        + _contrastive_one_direction(z_star, z0, anchors, neighbors, temperature)
+    ) / 2
+
+
+def total_loss(output, labels, positive_weight, anchors, neighbors, *, lambda_cl, temperature):
+    bce = F.binary_cross_entropy_with_logits(output["logits"], labels, pos_weight=positive_weight)
+    if lambda_cl > 0:
+        cl = contrastive_loss(output["z0"], output["z_star"], anchors, neighbors, temperature)
+    else:
+        cl = bce.new_zeros(())
+    return bce + lambda_cl * cl, {"bce": bce.item(), "contrastive": cl.item()}

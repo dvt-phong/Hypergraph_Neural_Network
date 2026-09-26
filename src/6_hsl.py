@@ -1,373 +1,161 @@
-# 6. HSL-inspired structure refinement for the MOOC hypergraph.
+# 6. Hypergraph Structure Learning (HSL), following Cai et al., IJCAI 2022:
 #
-# This is not the original two-stage Gumbel/Hard-Concrete HSL implementation.
-# The adapted flow is intentionally direct:
-#   select edges -> sample positive/negative nodes -> score memberships
-#   -> keep top-r -> build sparse H*.
+#     H* = Me ⊙ Mv ⊙ (H0 + ΔH) + I
+#
+#   ΔH  implicit connections (Eq. 4-5): each Behavioral hyperedge recruits the
+#       `add_per_edge` candidates whose Z0 is most cosine-similar to the
+#       hyperedge. Candidates are the anchor's neighbors k..k_max-1.
+#   Me  hyperedge sampling (Eq. 2-3): keep hyperedge e with probability
+#       σ(MLP([h_e ‖ family_e])).
+#   Mv  incident node sampling (Eq. 6-7): keep membership (v, e) with
+#       probability σ(MLP([z_v ‖ h_e])). This also decides whether a ΔH
+#       addition stays.
+#   I   self-loops are never removed, so no node becomes isolated (Eq. 9).
+#
+# Training draws 0/1 masks with the straight-through Gumbel trick (hard 0/1
+# forward, smooth gradient backward). Validation/test keep a membership when
+# its probability is above 0.5, so the result is deterministic.
+#
+# Adaptation to MOOC data (the paper used transductive node classification):
+#   * Me is an MLP of the hyperedge representation instead of one free
+#     parameter per hyperedge, so it also works on unseen validation/test graphs.
+#   * ΔH only adds nodes to Behavioral hyperedges. Adding a learner of another
+#     course to a Course hyperedge would contradict its meaning.
 
-import time
-from collections import defaultdict
-from math import sqrt
+from importlib import import_module
 
-import numpy as np
 import torch
+from torch import nn
+from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
+
+config = import_module("0_config")
+SELF_LOOP = config.EDGE_FAMILIES.index("self_loop")
+
+# σ(3) ≈ 0.95: start by keeping almost every hyperedge and membership.
+INITIAL_KEEP_LOGIT = 3.0
 
 
-def log_event(message):
-    print(f"[{time.strftime('%H:%M:%S')}][hsl] {message}", flush=True)
+# Bernoulli(σ(logits)) sample as 0/1 values that still pass a gradient.
+def keep_mask(logits, temperature, training):
+    if not training:
+        return (logits > 0).float()
+    uniform = torch.rand_like(logits).clamp(1e-6, 1 - 1e-6)
+    logistic_noise = torch.log(uniform) - torch.log1p(-uniform)  # = Gumbel - Gumbel
+    soft = torch.sigmoid((logits + logistic_noise) / temperature)
+    hard = (soft > 0.5).float()
+    return hard + soft - soft.detach()  # value = hard, gradient = d soft
 
 
-# Balance the refinement budget across relation families and edge sizes.
-def select_hyperedges(families, sizes, budget, random_generator):
-    if budget <= 0:
-        raise ValueError("sampled_hyperedges must be positive")
+class StructureLearner(nn.Module):
+    def __init__(
+        self,
+        hidden_dim,
+        *,
+        scorer_dim=32,
+        temperature=0.4,
+        add_per_edge=2,
+        edge_sampling=True,
+        node_sampling=True,
+    ):
+        super().__init__()
+        self.temperature = temperature
+        self.add_per_edge = add_per_edge
+        self.edge_sampling = edge_sampling
+        self.node_sampling = node_sampling
+        family_count = len(config.EDGE_FAMILIES)
 
-    edge_groups = defaultdict(list)
-    for edge_id, family in enumerate(families):
-        edge_size = sizes[edge_id]
-        if edge_size <= 10:
-            size_group = "small"
-        elif edge_size <= 100:
-            size_group = "medium"
-        else:
-            size_group = "large"
-        edge_groups[(family, size_group)].append(edge_id)
-
-    shuffled_groups = []
-    for group_name in sorted(edge_groups):
-        shuffled_edge_ids = list(
-            random_generator.permutation(edge_groups[group_name])
+        # Me scorer: MLP([h_e ‖ one-hot family]) -> logit.
+        self.edge_scorer = nn.Sequential(
+            nn.Linear(hidden_dim + family_count, scorer_dim),
+            nn.ReLU(),
+            nn.Linear(scorer_dim, 1),
         )
-        shuffled_groups.append(shuffled_edge_ids)
+        # Mv scorer: MLP([z_v ‖ h_e]). Its first layer W [z_v ‖ h_e] is split
+        # into W_v z_v + W_e h_e so each part is computed once per node/edge.
+        self.membership_node = nn.Linear(hidden_dim, scorer_dim)
+        self.membership_edge = nn.Linear(hidden_dim, scorer_dim, bias=False)
+        self.membership_output = nn.Linear(scorer_dim, 1)
 
-    selected_edge_ids = []
-    target_count = min(budget, len(families))
-    while len(selected_edge_ids) < target_count:
-        for edge_ids in shuffled_groups:
-            if not edge_ids:
-                continue
-            selected_edge_ids.append(int(edge_ids.pop()))
-            if len(selected_edge_ids) == target_count:
-                break
+        nn.init.constant_(self.edge_scorer[-1].bias, INITIAL_KEEP_LOGIT)
+        nn.init.constant_(self.membership_output.bias, INITIAL_KEEP_LOGIT)
 
-    return np.asarray(selected_edge_ids, dtype=np.int64)
+    def forward(self, z0, edge_representations, graph):
+        h0_count = len(graph["node_ids"])
+        is_self_loop = graph["edge_family"] == SELF_LOOP
 
+        # H0 + ΔH
+        added_nodes, added_edges = self.implicit_connections(z0, edge_representations, graph)
+        node_ids = torch.cat([graph["node_ids"], added_nodes])
+        edge_ids = torch.cat([graph["edge_ids"], added_edges])
 
-# Positive candidates are current members; negatives are sampled non-members.
-def sample_candidate_nodes(
-    incident_node_ids,
-    node_count,
-    positive_limit,
-    negative_limit,
-    random_generator,
-    *,
-    allowed_node_ids=None,
-    deterministic=False,
-):
-    positive_count = min(positive_limit, len(incident_node_ids))
-    if deterministic:
-        positive_node_ids = np.sort(incident_node_ids[:positive_count])
-    else:
-        positive_node_ids = random_generator.choice(
-            incident_node_ids,
-            positive_count,
-            replace=False,
+        # Me: one keep/drop decision per hyperedge.
+        edge_keep = z0.new_ones(graph["num_edges"])
+        if self.edge_sampling:
+            family = F.one_hot(graph["edge_family"], len(config.EDGE_FAMILIES)).to(z0.dtype)
+            edge_logits = self.edge_scorer(torch.cat([edge_representations, family], dim=1))
+            edge_keep = keep_mask(edge_logits.squeeze(-1), self.temperature, self.training)
+            edge_keep = torch.where(is_self_loop, 1.0, edge_keep)
+
+        # Mv: one keep/drop decision per membership (v, e).
+        membership_keep = z0.new_ones(len(node_ids))
+        if self.node_sampling:
+            membership_logits = self.membership_logits(z0, edge_representations, node_ids, edge_ids)
+            membership_keep = keep_mask(membership_logits, self.temperature, self.training)
+            membership_keep = torch.where(is_self_loop[edge_ids], 1.0, membership_keep)
+
+        weights = edge_keep[edge_ids] * membership_keep
+        refined_graph = {**graph, "node_ids": node_ids, "edge_ids": edge_ids}
+        return refined_graph, weights, self.summary(graph, weights, h0_count)
+
+    # ΔH: for each Behavioral hyperedge, pick the `add_per_edge` candidates with
+    # the highest cosine similarity cos(z_v, h_e). No gradient, as in HSL.
+    @torch.no_grad()
+    def implicit_connections(self, z0, edge_representations, graph):
+        candidate_nodes = graph["candidate_node_ids"]  # [behavioral edges, candidates]
+        candidate_edges = graph["candidate_edge_ids"]  # [behavioral edges]
+        count = min(self.add_per_edge, candidate_nodes.shape[1])
+        if count == 0 or len(candidate_edges) == 0:
+            empty = candidate_edges.new_empty(0)
+            return empty, empty
+
+        similarity = F.cosine_similarity(
+            z0[candidate_nodes],
+            edge_representations[candidate_edges][:, None, :],
+            dim=-1,
         )
-        positive_node_ids = np.sort(positive_node_ids)
+        best = similarity.topk(count, dim=1).indices
+        added_nodes = candidate_nodes.gather(1, best).flatten()
+        added_edges = candidate_edges[:, None].expand(-1, count).flatten()
+        return added_nodes, added_edges
 
-    if negative_limit == 0:
-        negative_node_ids = np.empty(0, dtype=np.int64)
-    elif allowed_node_ids is not None or deterministic:
-        if allowed_node_ids is None:
-            negative_pool = np.arange(node_count)
-        else:
-            negative_pool = allowed_node_ids
-        negative_pool = np.setdiff1d(
-            negative_pool,
-            incident_node_ids,
-            assume_unique=False,
-        )
-        negative_count = min(negative_limit, len(negative_pool))
-        if deterministic:
-            negative_node_ids = negative_pool[:negative_count]
-        else:
-            negative_node_ids = random_generator.choice(
-                negative_pool,
-                negative_count,
-                replace=False,
-            )
-            negative_node_ids = np.sort(negative_node_ids)
-    else:
-        # Rejection sampling avoids allocating an array for every graph node.
-        incident_set = set(int(node_id) for node_id in incident_node_ids)
-        negative_count = min(negative_limit, node_count - len(incident_set))
-        selected_negative_ids = set()
-        while len(selected_negative_ids) < negative_count:
-            remaining = negative_count - len(selected_negative_ids)
-            proposals = random_generator.integers(
-                0,
-                node_count,
-                size=max(8, 2 * remaining),
-            )
-            for node_id in proposals:
-                node_id = int(node_id)
-                if node_id not in incident_set:
-                    selected_negative_ids.add(node_id)
-                if len(selected_negative_ids) == negative_count:
-                    break
-        negative_node_ids = np.asarray(
-            sorted(selected_negative_ids),
-            dtype=np.int64,
-        )
+    # Mv logits for every membership, computed in chunks to bound memory.
+    def membership_logits(self, z0, edge_representations, node_ids, edge_ids):
+        node_part = self.membership_node(z0)
+        edge_part = self.membership_edge(edge_representations)
+        logits = []
+        for start in range(0, len(node_ids), config.MEMBERSHIP_CHUNK_SIZE):
+            part = slice(start, start + config.MEMBERSHIP_CHUNK_SIZE)
+            logits.append(checkpoint(
+                self._membership_chunk,
+                node_part, edge_part, node_ids[part], edge_ids[part],
+                use_reentrant=False,
+            ))
+        return torch.cat(logits)
 
-    # Positives stay first so positions < positive_count identify known members.
-    candidate_node_ids = np.concatenate(
-        (positive_node_ids, negative_node_ids)
-    )
-    return positive_node_ids, candidate_node_ids
+    def _membership_chunk(self, node_part, edge_part, node_ids, edge_ids):
+        hidden = F.relu(node_part[node_ids] + edge_part[edge_ids])
+        return self.membership_output(hidden).squeeze(-1)
 
-
-def membership_scores(
-    initial_embeddings,
-    positive_node_ids,
-    candidate_node_ids,
-    node_projection,
-    edge_projection,
-    membership_bias,
-):
-    positive_node_ids = torch.as_tensor(
-        positive_node_ids,
-        device=initial_embeddings.device,
-    )
-    candidate_node_ids = torch.as_tensor(
-        candidate_node_ids,
-        device=initial_embeddings.device,
-    )
-
-    # z_e is the mean embedding of sampled nodes already in the edge.
-    edge_embedding = initial_embeddings[positive_node_ids].mean(
-        dim=0,
-        keepdim=True,
-    )
-    projected_nodes = node_projection(initial_embeddings[candidate_node_ids])
-    projected_edge = edge_projection(edge_embedding)
-
-    # s(v,e) = (Wn z_v)^T (We z_e) / sqrt(d) + b
-    scores = (projected_nodes * projected_edge).sum(dim=1)
-    scores = scores / sqrt(initial_embeddings.shape[1])
-    return scores + membership_bias
-
-
-# Merge learned memberships with untouched H0 edges and prevent isolated nodes.
-def build_refined_incidence(
-    initial_incidence_matrix,
-    selected_edge_ids,
-    learned_node_ids,
-    learned_edge_ids,
-    learned_values,
-    initial_embeddings,
-):
-    original_memberships = initial_incidence_matrix.tocoo(copy=False)
-    untouched_memberships = ~np.isin(
-        original_memberships.col,
-        selected_edge_ids,
-    )
-
-    final_node_ids = np.concatenate((
-        original_memberships.row[untouched_memberships],
-        np.asarray(learned_node_ids, dtype=np.int64),
-    ))
-    final_edge_ids = np.concatenate((
-        original_memberships.col[untouched_memberships],
-        np.asarray(learned_edge_ids, dtype=np.int64),
-    ))
-
-    membership_count_by_node = np.bincount(
-        final_node_ids,
-        minlength=initial_incidence_matrix.shape[0],
-    )
-    isolated_node_ids = np.flatnonzero(membership_count_by_node == 0)
-
-    restored_edge_ids = []
-    for node_id in isolated_node_ids:
-        first_membership = initial_incidence_matrix.indptr[node_id]
-        restored_edge_ids.append(
-            initial_incidence_matrix.indices[first_membership]
-        )
-
-    final_node_ids = np.concatenate((final_node_ids, isolated_node_ids))
-    final_edge_ids = np.concatenate((
-        final_edge_ids,
-        np.asarray(restored_edge_ids, dtype=np.int64),
-    ))
-
-    fixed_value_count = int(untouched_memberships.sum())
-    fixed_values = torch.ones(
-        fixed_value_count,
-        device=initial_embeddings.device,
-        dtype=initial_embeddings.dtype,
-    )
-    restored_values = torch.ones(
-        len(isolated_node_ids),
-        device=initial_embeddings.device,
-        dtype=initial_embeddings.dtype,
-    )
-    final_values = torch.cat((
-        fixed_values,
-        torch.stack(learned_values),
-        restored_values,
-    ))
-    final_indices = torch.as_tensor(
-        np.stack((final_node_ids, final_edge_ids)),
-        dtype=torch.int64,
-        device=initial_embeddings.device,
-    )
-    return torch.sparse_coo_tensor(
-        final_indices,
-        final_values,
-        initial_incidence_matrix.shape,
-        check_invariants=False,
-    ).coalesce()
-
-
-def refine_hypergraph(
-    initial_embeddings,
-    initial_incidence_matrix,
-    families,
-    sizes,
-    node_projection,
-    edge_projection,
-    membership_bias,
-    random_generator,
-    *,
-    sampled_hyperedges=96,
-    positive_nodes=16,
-    negative_nodes=16,
-    top_r=8,
-    deterministic=False,
-    node_groups=None,
-    edge_groups=None,
-):
-    started_at = time.perf_counter()
-    initial_incidence_matrix = initial_incidence_matrix.tocsr()
-
-    if initial_incidence_matrix.shape[0] != len(initial_embeddings):
-        raise ValueError("H0 and node embeddings do not align")
-    if initial_incidence_matrix.shape[1] != len(families):
-        raise ValueError("H0 and edge families do not align")
-    if len(sizes) != len(families):
-        raise ValueError("Edge sizes and edge families do not align")
-    if positive_nodes <= 0 or negative_nodes < 0 or top_r <= 0:
-        raise ValueError("Invalid candidate sampling settings")
-    if (node_groups is None) != (edge_groups is None):
-        raise ValueError("node_groups and edge_groups must be provided together")
-
-    if deterministic:
-        selected_edge_ids = np.arange(
-            initial_incidence_matrix.shape[1],
-            dtype=np.int64,
-        )
-    else:
-        selected_edge_ids = select_hyperedges(
-            families,
-            sizes,
-            sampled_hyperedges,
-            random_generator,
-        )
-        log_event(
-            f"refinement started: selected={len(selected_edge_ids):,}/"
-            f"{initial_incidence_matrix.shape[1]:,} edges, "
-            f"positive={positive_nodes}, negative={negative_nodes}, top_r={top_r}"
-        )
-
-    incidence_by_edge = initial_incidence_matrix.tocsc()
-    learned_node_ids = []
-    learned_edge_ids = []
-    learned_values = []
-    progress_step = max(1, len(selected_edge_ids) // 4)
-
-    for edge_position, edge_id in enumerate(selected_edge_ids, start=1):
-        membership_start = incidence_by_edge.indptr[edge_id]
-        membership_stop = incidence_by_edge.indptr[edge_id + 1]
-        incident_node_ids = incidence_by_edge.indices[
-            membership_start:membership_stop
-        ]
-        if len(incident_node_ids) == 0:
-            raise ValueError("H0 contains an empty hyperedge")
-
-        allowed_node_ids = None
-        if node_groups is not None:
-            local_graph_id = edge_groups[edge_id]
-            allowed_node_ids = np.flatnonzero(
-                node_groups == local_graph_id
-            )
-
-        positive_node_ids, candidate_node_ids = sample_candidate_nodes(
-            incident_node_ids,
-            initial_embeddings.shape[0],
-            positive_nodes,
-            negative_nodes,
-            random_generator,
-            allowed_node_ids=allowed_node_ids,
-            deterministic=deterministic,
-        )
-        candidate_scores = membership_scores(
-            initial_embeddings,
-            positive_node_ids,
-            candidate_node_ids,
-            node_projection,
-            edge_projection,
-            membership_bias,
-        )
-
-        selected_positions = torch.topk(
-            candidate_scores,
-            min(top_r, len(candidate_scores)),
-        ).indices
-
-        # Every refined edge keeps at least one node from the original edge.
-        positive_count = len(positive_node_ids)
-        if not torch.any(selected_positions < positive_count):
-            best_positive = torch.argmax(candidate_scores[:positive_count])
-            lowest_selected = torch.argmin(candidate_scores[selected_positions])
-            selected_positions = selected_positions.clone()
-            selected_positions[lowest_selected] = best_positive
-        selected_positions = torch.unique(selected_positions)
-
-        selected_numpy_positions = selected_positions.detach().cpu().numpy()
-        selected_node_ids = candidate_node_ids[selected_numpy_positions]
-        learned_node_ids.extend(selected_node_ids)
-        learned_edge_ids.extend([int(edge_id)] * len(selected_node_ids))
-
-        membership_probabilities = torch.sigmoid(
-            candidate_scores[selected_positions]
-        )
-        learned_values.extend(membership_probabilities.unbind())
-
-        if (
-            not deterministic
-            and (
-                edge_position % progress_step == 0
-                or edge_position == len(selected_edge_ids)
-            )
-        ):
-            log_event(
-                f"refined {edge_position:,}/{len(selected_edge_ids):,} edges "
-                f"in {time.perf_counter() - started_at:.1f}s"
-            )
-
-    refined_incidence_matrix = build_refined_incidence(
-        initial_incidence_matrix,
-        selected_edge_ids,
-        learned_node_ids,
-        learned_edge_ids,
-        learned_values,
-        initial_embeddings,
-    )
-    if not deterministic:
-        log_event(
-            f"refinement completed: H* nnz="
-            f"{refined_incidence_matrix._nnz():,}, "
-            f"elapsed={time.perf_counter() - started_at:.1f}s"
-        )
-    return refined_incidence_matrix
+    # Share of H0 memberships kept per family, and ΔH additions kept.
+    @torch.no_grad()
+    def summary(self, graph, weights, h0_count):
+        membership_family = graph["edge_family"][graph["edge_ids"]]
+        h0_weights = weights[:h0_count]
+        result = {}
+        for family, name in enumerate(config.EDGE_FAMILIES):
+            in_family = membership_family == family
+            if family != SELF_LOOP and bool(in_family.any()):
+                result[f"kept_{name}"] = float(h0_weights[in_family].mean())
+        result["added"] = round(float(weights[h0_count:].sum()))
+        return result
