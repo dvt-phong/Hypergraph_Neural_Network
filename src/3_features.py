@@ -77,15 +77,13 @@ def feature_metadata():
         ("age_missing", "birth is missing or invalid"),
     ))
 
-    # Course-context columns: one-hot category, then duration-related columns.
+    # Course-context columns: one-hot category, followed by missing and other.
     for category in config.CATEGORIES:
         clean_category = category.replace(" ", "_")
         metadata.append((f"category_{clean_category}", f"category={category}"))
     metadata.extend((
         ("category_missing", "category is missing"),
         ("category_other", "category outside vocabulary"),
-        ("course_duration_days", "course end - course start"),
-        ("course_duration_missing", "course end is missing or invalid"),
     ))
     return metadata
 
@@ -164,7 +162,6 @@ def build_split_features(data_path):
         dtype=np.float32,
     )
     ages = np.full(node_count, np.nan, dtype=np.float64)
-    durations = np.full(node_count, np.nan, dtype=np.float64)
 
     # Copy behavior counts and encode user/course context for every node.
     for node_id in sorted(nodes):
@@ -175,7 +172,6 @@ def build_split_features(data_path):
         education = node["education"].strip()
         category = node["category"].strip()
         birth = node["birth"].strip()
-        course_end = node["course_end"].strip()
         if gender.lower() in config.MISSING_VALUES:
             gender = ""
         if education.lower() in config.MISSING_VALUES:
@@ -184,8 +180,6 @@ def build_split_features(data_path):
             category = ""
         if birth.lower() in config.MISSING_VALUES:
             birth = ""
-        if course_end.lower() in config.MISSING_VALUES:
-            course_end = ""
 
         set_one_hot(
             user_context,
@@ -210,18 +204,12 @@ def build_split_features(data_path):
         )
 
         course_start = date.fromisoformat(node["course_start"][:10])
-        if course_end:
-            course_end_date = date.fromisoformat(course_end[:10])
-            duration = (course_end_date - course_start).days
-            if duration >= 0:
-                durations[node_id] = duration
-
         if birth:
             age = course_start.year - int(float(birth))
             if 10 <= age <= 100:
                 ages[node_id] = age
 
-    return behavior_features, user_context, course_context, ages, durations
+    return behavior_features, user_context, course_context, ages
 
 
 # Build all three feature matrices with transforms fitted on train only.
@@ -233,7 +221,7 @@ def build_features(output_dir=config.PROCESSED):
     for split_name in config.SPLITS:
         split_dir = output_dir / split_name
         split_dir.mkdir(parents=True, exist_ok=True)
-        behavior, user, course, ages, durations = build_split_features(
+        behavior, user, course, ages = build_split_features(
             output_dir / f"{split_name}.csv"
         )
         feature_data[split_name] = {
@@ -241,7 +229,6 @@ def build_features(output_dir=config.PROCESSED):
             "user": user,
             "course": course,
             "ages": ages,
-            "durations": durations,
         }
 
     train_behavior = np.log1p(
@@ -251,9 +238,6 @@ def build_features(output_dir=config.PROCESSED):
     behavior_std = np.std(train_behavior, axis=0, dtype=np.float64)
     behavior_std[behavior_std == 0] = 1.0
     age_statistics = numeric_statistics(feature_data["train"]["ages"])
-    duration_statistics = numeric_statistics(
-        feature_data["train"]["durations"]
-    )
 
     feature_paths = {}
     # Apply train-fitted transforms and save one final matrix per split.
@@ -272,16 +256,8 @@ def build_features(output_dir=config.PROCESSED):
             split_data["ages"],
             age_statistics,
         )
-        scaled_durations, missing_durations = scale_numeric(
-            split_data["durations"],
-            duration_statistics,
-        )
         user_context[:, config.AGE_FEATURE_INDEX] = scaled_ages
         user_context[:, config.AGE_MISSING_FEATURE_INDEX] = missing_ages
-        course_context[:, config.DURATION_FEATURE_INDEX] = scaled_durations
-        course_context[:, config.DURATION_MISSING_FEATURE_INDEX] = (
-            missing_durations
-        )
 
         node_features = np.concatenate(
             (normalized_behavior, user_context, course_context),

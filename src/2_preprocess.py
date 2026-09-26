@@ -85,6 +85,9 @@ def stream_events(
     split_by_enrollment,
 ):
     node_ids = {split_name: {} for split_name in config_constant.SPLITS}
+    # Keep one raw-log identity row for every labeled enrollment. An enrollment
+    # may have events, but none inside the observation window.
+    enrollment_metadata = {}
     columns = (
         "node_id", "enroll_id", "user_id", "course_id", "label",
         "gender", "education", "birth", "course_start", "course_end",
@@ -111,6 +114,10 @@ def stream_events(
             enrollment_id = int(row["enroll_id"])
             user_id = int(row["username"])
             course_id = row["course_id"]
+            if enrollment_id not in split_by_enrollment:
+                continue
+            if enrollment_id not in enrollment_metadata:
+                enrollment_metadata[enrollment_id] = (user_id, course_id)
 
             action = row["action"]
             if action not in config_constant.ACTIONS:
@@ -143,6 +150,51 @@ def stream_events(
                     row["object"].strip(),
                     course_day,
                 ))
+
+        # Preserve labeled enrollments with no recognized event in days 0–34.
+        # Empty action/course_day makes file 3 create zero behavior counts while
+        # still retaining label, user context, course context, and graph nodes.
+        empty_behavior_count = 0
+        for enrollment_id in sorted(split_by_enrollment):
+            split_name = split_by_enrollment[enrollment_id]
+            split_node_ids = node_ids[split_name]
+            if enrollment_id in split_node_ids:
+                continue
+            if enrollment_id not in enrollment_metadata:
+                raise ValueError(
+                    f"Enrollment {enrollment_id} has a label but no raw log row"
+                )
+
+            user_id, course_id = enrollment_metadata[enrollment_id]
+            split_node_ids[enrollment_id] = len(split_node_ids)
+            user = users[user_id]
+            course = courses[course_id]
+            writers[split_name].writerow((
+                split_node_ids[enrollment_id],
+                enrollment_id,
+                user_id,
+                course_id,
+                labels[enrollment_id],
+                user["gender"],
+                user["education"],
+                user["birth"],
+                course["start"],
+                course["end"],
+                course["category"],
+                "",
+                "",
+                "",
+            ))
+            empty_behavior_count += 1
+
+    written_node_count = sum(len(nodes) for nodes in node_ids.values())
+    if written_node_count != len(split_by_enrollment):
+        raise RuntimeError("Not every labeled enrollment was written")
+    print(
+        f"Wrote {written_node_count} enrollments; preserved "
+        f"{empty_behavior_count} with zero observed events",
+        flush=True,
+    )
 
 
 # Run preprocessing and write explicit train, validation, and test datasets.

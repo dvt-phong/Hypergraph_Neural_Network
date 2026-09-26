@@ -83,9 +83,7 @@ USER_FEATURE_COUNT = AGE_MISSING_FEATURE_INDEX + 1
 
 CATEGORY_FEATURE_START = 0
 CATEGORY_FEATURE_COUNT = len(CATEGORIES) + 2
-DURATION_FEATURE_INDEX = CATEGORY_FEATURE_START + CATEGORY_FEATURE_COUNT
-DURATION_MISSING_FEATURE_INDEX = DURATION_FEATURE_INDEX + 1
-COURSE_FEATURE_COUNT = DURATION_MISSING_FEATURE_INDEX + 1
+COURSE_FEATURE_COUNT = CATEGORY_FEATURE_COUNT
 
 USER_FEATURE_START = BEHAVIOR_FEATURE_COUNT
 COURSE_FEATURE_START = USER_FEATURE_START + USER_FEATURE_COUNT
@@ -100,8 +98,16 @@ for object_family, object_actions in ACTION_GROUPS.items():
 FEATURE_CLI_DESCRIPTION = "Build train, validation, and test node features."
 
 
-# Used by 4_hypergraph.py.
+# Used by 4_hypergraph.py and 6_hsl.py. 
+# Every node also gets one self-loop
+# hyperedge that HSL never removes (Cai et al., 2022, Eq. 9).
+EDGE_FAMILIES = ("course", "object", "behavioral", "self_loop")
 HYPERGRAPH_CLI_DESCRIPTION = "Build Course, Object, and Behavioral hypergraphs."
+
+
+# Used by 5_model.py and 6_hsl.py. Memberships are processed in chunks of this
+# size so that the full XuetangX graph fits in GPU memory.
+MEMBERSHIP_CHUNK_SIZE = 1_000_000
 
 
 # Used by 8_train.py.
