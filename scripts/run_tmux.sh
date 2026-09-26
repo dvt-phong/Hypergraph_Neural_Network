@@ -2,7 +2,7 @@
 # Start scripts/run_all.sh inside a detached tmux session, so the run keeps
 # going after the SSH/remote connection is closed.
 #
-# Usage (same options as run_all.sh):
+# Usage (same options as run_all.sh; python comes from <project>/.venv):
 #   bash scripts/run_tmux.sh
 #   bash scripts/run_tmux.sh --skip-prep
 #   SEEDS="1 11" bash scripts/run_tmux.sh --no-hsl
@@ -17,7 +17,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if ! command -v tmux > /dev/null 2>&1; then
-    echo "tmux is not installed (Ubuntu: sudo apt install tmux; conda: conda install -c conda-forge tmux)" >&2
+    echo "tmux is not installed (Ubuntu: sudo apt install tmux)" >&2
     exit 1
 fi
 
@@ -30,8 +30,9 @@ fi
 
 # Quote every argument so it reaches run_all.sh unchanged.
 printf -v ARGUMENTS " %q" "$@"
-printf -v ENVIRONMENT "SEEDS=%q CONDA_ENV=%q PYTHON=%q" \
-    "${SEEDS:-1 11 111 1111 11111}" "${CONDA_ENV-hypergraph_nn}" "${PYTHON:-python}"
+# Pass the settings explicitly: the tmux shell does not inherit this shell's variables.
+printf -v ENVIRONMENT "SEEDS=%q VENV_DIR=%q PYTHON=%q" \
+    "${SEEDS:-1 11 111 1111 11111}" "${VENV_DIR:-$ROOT/.venv}" "${PYTHON:-}"
 
 # The pane stays open after the run so the final message can still be read.
 tmux new-session -d -s "$SESSION" -c "$ROOT" \

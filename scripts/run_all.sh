@@ -11,8 +11,8 @@
 #
 # Environment variables:
 #   SEEDS="1 11"          seeds to run          (default: 1 11 111 1111 11111)
-#   CONDA_ENV=name        conda env to activate (default: hypergraph_nn; "" = none)
-#   PYTHON=python3        python executable     (default: python)
+#   VENV_DIR=path         virtual environment   (default: <project>/.venv)
+#   PYTHON=path           python executable     (default: $VENV_DIR/bin/python)
 #
 # Output: result/<dd-mm-yyyy_HH-MM>/
 #   pipeline.log          everything, in order
@@ -27,8 +27,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 SEEDS="${SEEDS:-1 11 111 1111 11111}"
-CONDA_ENV="${CONDA_ENV-hypergraph_nn}"
-PYTHON="${PYTHON:-python}"
+VENV_DIR="${VENV_DIR:-$ROOT/.venv}"
+PYTHON="${PYTHON:-}"
 
 SKIP_PREP=0
 TRAIN_ARGS=()
@@ -76,16 +76,18 @@ run_step() {
 # ---------------------------------------------------------------------------
 # Python environment
 # ---------------------------------------------------------------------------
-if [[ -n "$CONDA_ENV" ]] && command -v conda > /dev/null 2>&1; then
-    # `conda activate` needs the shell hook in a non-interactive script.
-    source "$(conda info --base)/etc/profile.d/conda.sh"
-    if ! conda activate "$CONDA_ENV"; then
-        say "Cannot activate conda env '$CONDA_ENV' (set CONDA_ENV=\"\" to skip)"
+# The project's virtual environment (.venv) is used unless PYTHON is given.
+if [[ -z "$PYTHON" ]]; then
+    if [[ -x "$VENV_DIR/bin/python" ]]; then
+        PYTHON="$VENV_DIR/bin/python"
+    else
+        say "No $VENV_DIR/bin/python. Create it with:"
+        say "  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
         exit 1
     fi
 fi
 if ! "$PYTHON" -c "import numpy, torch, sklearn" > /dev/null 2>&1; then
-    say "'$PYTHON' cannot import numpy/torch/sklearn; activate the right environment first"
+    say "'$PYTHON' cannot import numpy/torch/sklearn; run: $PYTHON -m pip install -r requirements.txt"
     exit 1
 fi
 
@@ -94,8 +96,8 @@ fi
     echo "command:   bash scripts/run_all.sh $*"
     echo "seeds:     $SEEDS"
     echo "skip_prep: $SKIP_PREP"
-    echo "python:    $(command -v "$PYTHON") ($("$PYTHON" --version 2>&1))"
-    echo "conda env: ${CONDA_DEFAULT_ENV:-none}"
+    echo "python:    $PYTHON ($("$PYTHON" --version 2>&1))"
+    echo "torch:     $("$PYTHON" -c 'import torch; print(torch.__version__, "cuda" if torch.cuda.is_available() else "cpu")' 2>&1)"
     echo "git:       $(git rev-parse --short HEAD 2>/dev/null || echo unknown)$(git diff --quiet 2>/dev/null || echo ' (uncommitted changes)')"
     if command -v nvidia-smi > /dev/null 2>&1; then
         echo "gpu:       $(nvidia-smi --query-gpu=name,memory.total --format=csv,noheader | head -n 1)"
