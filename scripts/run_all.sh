@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Run the whole pipeline (without downloading) and every seed, then collect results.
+# Run the whole pipeline (without downloading) and every seed, then collect
+# results, draw plots, and add the run to docs/ket_qua_thi_nghiem.xlsx.
 #
 #   2_preprocess -> 3_features -> 4_hypergraph      once (the split is fixed)
 #   8_train --mode both --seeds <seed>              once per seed
+#   collect_results -> plot_results -> export_excel
 #
 # Usage (from anywhere):
 #   bash scripts/run_all.sh                       full pipeline, all seeds
@@ -13,13 +15,17 @@
 # Environment variables:
 #   SEEDS="1 11"          seeds to run          (default: 1 11 111 1111 11111)
 #   TRAIN_SCRIPT=path     training script       (default: src/8_train.py)
+#   NOTE="..."            "Ghi chú" of this run in the workbook (default: the command)
+#   EXPORT_EXCEL=0        do not write the workbook
 #   VENV_DIR=path         virtual environment   (default: <project>/.venv)
 #   PYTHON=path           python executable     (default: $VENV_DIR/bin/python, else the activated venv/conda env, else python3)
 #
 # Output: result/<dd-mm-yyyy_HH-MM>/
 #   pipeline.log          everything, in order
 #   logs/<step>.log       one log per step / seed
-#   reports/*.json        copies of the train/test reports of this run
+#   reports/*             copies of the train/test reports and probabilities of this run
+#   checkpoints/*         copies of the selected checkpoints (outputs/runs is overwritten
+#                         by the next run with the same name)
 #   results.csv           one row per seed + mean + std
 #   history.png, probabilities.png   plots (when matplotlib is installed)
 #   run_info.txt          command, git commit, GPU
@@ -31,6 +37,8 @@ cd "$ROOT"
 
 SEEDS="${SEEDS:-1 11 111 1111 11111}"
 TRAIN_SCRIPT="${TRAIN_SCRIPT:-src/8_train.py}"
+NOTE="${NOTE:-}"
+EXPORT_EXCEL="${EXPORT_EXCEL:-1}"
 VENV_DIR="${VENV_DIR:-$ROOT/.venv}"
 PYTHON="${PYTHON:-}"
 
@@ -109,6 +117,7 @@ fi
     echo "command:   bash scripts/run_all.sh $*"
     echo "seeds:     $SEEDS"
     echo "script:    $TRAIN_SCRIPT"
+    echo "note:      $NOTE"
     echo "skip_prep: $SKIP_PREP"
     echo "python:    $PYTHON ($("$PYTHON" --version 2>&1))"
     echo "torch:     $("$PYTHON" -c 'import torch; print(torch.__version__, "cuda" if torch.cuda.is_available() else "cpu")' 2>&1)"
@@ -166,6 +175,13 @@ if "$PYTHON" -c "import matplotlib" > /dev/null 2>&1; then
     run_step plot_results "$PYTHON" scripts/plot_results.py "$RUN_DIR"
 else
     say "matplotlib not installed; skipped plots ($PYTHON -m pip install matplotlib)"
+fi
+if [[ "$EXPORT_EXCEL" == "1" ]]; then
+    EXPORT_ARGS=()
+    if [[ -n "$NOTE" ]]; then
+        EXPORT_ARGS=(--note "$NOTE")
+    fi
+    run_step export_excel "$PYTHON" scripts/export_excel.py "$RUN_DIR" ${EXPORT_ARGS[@]+"${EXPORT_ARGS[@]}"}
 fi
 
 elapsed=$((SECONDS - PIPELINE_STARTED))
