@@ -49,6 +49,9 @@ def load_reports(reports_dir):
 
 
 def plot_history(reports, output_path):
+    if not any(report["history"] for report in reports):
+        print("No training history (baseline run); skipped history.png")
+        return
     figure, axes = plt.subplots(2, 2, figsize=(12, 8), constrained_layout=True)
     loss_axis, auc_axis, kept_axis, threshold_axis = axes.flat
     for report in reports:

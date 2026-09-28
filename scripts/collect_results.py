@@ -5,7 +5,8 @@
 # Reads <run>/manifest.tsv (one row per seed), finds the report paths that
 # 8_train.py printed in each seed's log ("report=..._train.json" and
 # "report=..._test.json"), copies those reports and the matching
-# *_probs.npz files into <run>/reports/, and writes <run>/results.csv: one row
+# *_probs.npz files into <run>/reports/ and the selected checkpoint into
+# <run>/checkpoints/, and writes <run>/results.csv: one row
 # per seed, then mean and std (sample std, n - 1) over the seeds that finished.
 # Reports written before a metric existed leave its cell empty.
 
@@ -48,6 +49,10 @@ def seed_row(entry, run_dir):
     train_path = paths.get("train")
     if train_path is not None and train_path.exists():
         train = json.loads(train_path.read_text(encoding="utf-8"))
+        checkpoint = Path(train["checkpoint"])
+        if checkpoint.exists():
+            (run_dir / "checkpoints").mkdir(exist_ok=True)
+            shutil.copy2(checkpoint, run_dir / "checkpoints" / checkpoint.name)
         row["run_name"] = train_path.name.removesuffix("_train.json")
         row["best_epoch"] = train["best_epoch"]
         row["epochs_run"] = len(train["history"])

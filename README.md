@@ -77,12 +77,15 @@ Baseline và ablation:
 .\.venv\Scripts\python.exe src/8_train.py --families course,object                # bỏ Behavioral
 ```
 
-Trên server, chạy 5 seed trong tmux rồi vẽ hình:
+Trên server, `scripts/run_all.sh` chạy trọn một cấu hình: bước 2–4, đủ 5 seed,
+gom `results.csv`, vẽ hình, chép checkpoint, và ghi thêm một dòng vào
+`docs/ket_qua_thi_nghiem.xlsx`. `scripts/run_p0.sh` gọi `run_all.sh` lần lượt
+cho cả bảng P0 (LR, GBDT, MLP, HGNN, HSL). Chạy trong tmux để tắt SSH vẫn chạy:
 
 ```bash
-bash scripts/run_tmux.sh --skip-prep                                   # HSL, cấu hình mặc định
-TRAIN_SCRIPT=src/9_baselines.py bash scripts/run_tmux.sh --skip-prep --model gbdt
-python scripts/plot_results.py result/<dd-mm-yyyy_HH-MM>               # run_all.sh tự gọi nếu có matplotlib
+RUN_SCRIPT=scripts/run_p0.sh bash scripts/run_tmux.sh                          # cả bảng P0
+NOTE="HSL, cấu hình P0" bash scripts/run_tmux.sh --skip-prep --tag p0          # một cấu hình
+ONLY="gbdt hsl" SKIP_PREP=1 RUN_SCRIPT=scripts/run_p0.sh bash scripts/run_tmux.sh   # một phần bảng
 ```
 
 Các bước chạy lâu đều in log có timestamp và `flush=True`. Bước 4 báo tiến độ
