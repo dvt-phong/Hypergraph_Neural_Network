@@ -102,6 +102,8 @@ FEATURE_CLI_DESCRIPTION = "Build train, validation, and test node features."
 # Every node also gets one self-loop
 # hyperedge that HSL never removes (Cai et al., 2022, Eq. 9).
 EDGE_FAMILIES = ("course", "object", "behavioral", "self_loop")
+# Families a run may keep or drop (8_train.py --families); self-loops always stay.
+GRAPH_FAMILIES = EDGE_FAMILIES[:-1]
 HYPERGRAPH_CLI_DESCRIPTION = "Build Course, Object, and Behavioral hypergraphs."
 
 

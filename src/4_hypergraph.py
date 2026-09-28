@@ -195,11 +195,35 @@ def add_self_loops(graph):
     }
 
 
+def family_ids(families):
+    return [config.EDGE_FAMILIES.index(name) for name in families if name != "self_loop"]
+
+
+# Keep only the hyperedges of the given families and renumber them, so no
+# hyperedge is left empty. With no family left, only self-loops remain and the
+# HGNN encoder reduces to an MLP.
+def select_families(graph, families):
+    keep_edge = np.isin(graph["edge_family"], family_ids(families))
+    new_edge_id = np.cumsum(keep_edge) - 1
+    keep_membership = keep_edge[graph["edge_ids"]]
+    keep_candidate = keep_edge[graph["candidate_edge_ids"]]
+    return {
+        **graph,
+        "node_ids": graph["node_ids"][keep_membership],
+        "edge_ids": new_edge_id[graph["edge_ids"][keep_membership]],
+        "edge_family": graph["edge_family"][keep_edge],
+        "candidate_edge_ids": new_edge_id[graph["candidate_edge_ids"][keep_candidate]],
+        "candidate_node_ids": graph["candidate_node_ids"][keep_candidate],
+    }
+
+
 # X, labels, and H0 of the train split.
 #
 # HSL candidates (ΔH): the Behavioral hyperedge of anchor a may recruit the
 # anchor's next neighbors a[k], ..., a[k_max-1] that are not yet members.
-def load_train_graph(output_dir=config.PROCESSED, *, feature_set="full"):
+def load_train_graph(
+    output_dir=config.PROCESSED, *, feature_set="full", families=config.GRAPH_FAMILIES
+):
     output_dir = Path(output_dir)
     with np.load(output_dir / HYPERGRAPH_FILE_NAME) as bundle:
         k = int(bundle["k"])
@@ -214,6 +238,7 @@ def load_train_graph(output_dir=config.PROCESSED, *, feature_set="full"):
             "candidate_node_ids": bundle["train_neighbors"][anchors, k:],
         }
 
+    graph = select_families(graph, families)
     nodes = load_nodes(output_dir / "train.csv")
     features = np.load(output_dir / "train" / "X.npy")[:, feature_columns(feature_set)]
     graph["num_nodes"] = len(nodes)
@@ -225,7 +250,9 @@ def load_train_graph(output_dir=config.PROCESSED, *, feature_set="full"):
 
 
 # Everything needed to build the local graph of any validation/test target.
-def load_evaluation_split(output_dir=config.PROCESSED, *, split_name, feature_set="full"):
+def load_evaluation_split(
+    output_dir=config.PROCESSED, *, split_name, feature_set="full", families=config.GRAPH_FAMILIES
+):
     output_dir = Path(output_dir)
     columns = feature_columns(feature_set)
     with np.load(output_dir / HYPERGRAPH_FILE_NAME) as bundle:
@@ -257,6 +284,7 @@ def load_evaluation_split(output_dir=config.PROCESSED, *, split_name, feature_se
         "object_keys": object_keys,
         "neighbors": neighbors,
         "k": k,
+        "families": set(family_ids(families)),
     }
 
 
@@ -267,36 +295,48 @@ def build_local_graph(split_data, target_id):
     target = split_data["nodes"][target_id]
     neighbors = split_data["neighbors"][target_id]
     k = split_data["k"]
+    families = split_data["families"]
 
     hyperedges = []  # (family, train members)
     course_members = split_data["members_by_key"].get(target["course_id"])
-    if course_members is not None:
+    if COURSE in families and course_members is not None:
         hyperedges.append((COURSE, course_members))
-    for object_key in sorted(split_data["object_keys"].get(target_id, ())):
-        object_members = split_data["members_by_key"].get(object_key)
-        if object_members is not None:
-            hyperedges.append((OBJECT, object_members))
-    hyperedges.append((BEHAVIORAL, neighbors[:k]))
-    candidates = neighbors[k:]
+    if OBJECT in families:
+        for object_key in sorted(split_data["object_keys"].get(target_id, ())):
+            object_members = split_data["members_by_key"].get(object_key)
+            if object_members is not None:
+                hyperedges.append((OBJECT, object_members))
+    if BEHAVIORAL in families:
+        hyperedges.append((BEHAVIORAL, neighbors[:k]))
+        candidates = neighbors[k:]
+    else:
+        candidates = neighbors[:0]
 
     train_ids = np.unique(np.concatenate([members for _, members in hyperedges] + [candidates]))
 
     def local_ids(ids):
         return np.searchsorted(train_ids, ids) + 1
 
-    node_ids = []
-    edge_ids = []
+    node_ids = [np.zeros(0, dtype=np.int64)]
+    edge_ids = [np.zeros(0, dtype=np.int64)]
     for edge_id, (_, members) in enumerate(hyperedges):
         node_ids.append(np.concatenate([[0], local_ids(members)]))
         edge_ids.append(np.full(len(members) + 1, edge_id, dtype=np.int64))
 
+    # ΔH candidates belong to the Behavioral hyperedge, which is added last.
+    if BEHAVIORAL in families:
+        candidate_edge_ids = np.asarray([len(hyperedges) - 1])
+        candidate_node_ids = local_ids(candidates)[None, :]
+    else:
+        candidate_edge_ids = np.zeros(0, dtype=np.int64)
+        candidate_node_ids = np.zeros((0, len(neighbors) - k), dtype=np.int64)
     graph = add_self_loops({
         "num_nodes": len(train_ids) + 1,
         "node_ids": np.concatenate(node_ids).astype(np.int64),
         "edge_ids": np.concatenate(edge_ids),
         "edge_family": np.asarray([family for family, _ in hyperedges], dtype=np.int64),
-        "candidate_edge_ids": np.asarray([len(hyperedges) - 1]),  # the Behavioral edge
-        "candidate_node_ids": local_ids(candidates)[None, :],
+        "candidate_edge_ids": candidate_edge_ids,
+        "candidate_node_ids": candidate_node_ids,
     })
     features = np.concatenate([
         split_data["features"][target_id:target_id + 1],

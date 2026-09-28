@@ -8,9 +8,11 @@
 #   bash scripts/run_all.sh                       full pipeline, all seeds
 #   bash scripts/run_all.sh --skip-prep           reuse data/processed, train only
 #   bash scripts/run_all.sh --no-hsl              extra options go to 8_train.py
+#   TRAIN_SCRIPT=src/9_baselines.py bash scripts/run_all.sh --skip-prep --model gbdt
 #
 # Environment variables:
 #   SEEDS="1 11"          seeds to run          (default: 1 11 111 1111 11111)
+#   TRAIN_SCRIPT=path     training script       (default: src/8_train.py)
 #   VENV_DIR=path         virtual environment   (default: <project>/.venv)
 #   PYTHON=path           python executable     (default: $VENV_DIR/bin/python, else the activated venv/conda env, else python3)
 #
@@ -19,6 +21,7 @@
 #   logs/<step>.log       one log per step / seed
 #   reports/*.json        copies of the train/test reports of this run
 #   results.csv           one row per seed + mean + std
+#   history.png, probabilities.png   plots (when matplotlib is installed)
 #   run_info.txt          command, git commit, GPU
 
 set -uo pipefail
@@ -27,6 +30,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 SEEDS="${SEEDS:-1 11 111 1111 11111}"
+TRAIN_SCRIPT="${TRAIN_SCRIPT:-src/8_train.py}"
 VENV_DIR="${VENV_DIR:-$ROOT/.venv}"
 PYTHON="${PYTHON:-}"
 
@@ -104,6 +108,7 @@ fi
     echo "started:   $(date '+%d/%m/%Y %H:%M:%S')"
     echo "command:   bash scripts/run_all.sh $*"
     echo "seeds:     $SEEDS"
+    echo "script:    $TRAIN_SCRIPT"
     echo "skip_prep: $SKIP_PREP"
     echo "python:    $PYTHON ($("$PYTHON" --version 2>&1))"
     echo "torch:     $("$PYTHON" -c 'import torch; print(torch.__version__, "cuda" if torch.cuda.is_available() else "cpu")' 2>&1)"
@@ -143,7 +148,7 @@ fi
 FAILED_SEEDS=()
 for seed in $SEEDS; do
     seed_started=$SECONDS
-    if run_step "train_seed_$seed" "$PYTHON" -u src/8_train.py --mode both --seeds "$seed" ${TRAIN_ARGS[@]+"${TRAIN_ARGS[@]}"}; then
+    if run_step "train_seed_$seed" "$PYTHON" -u "$TRAIN_SCRIPT" --mode both --seeds "$seed" ${TRAIN_ARGS[@]+"${TRAIN_ARGS[@]}"}; then
         status=ok
     else
         status=failed
@@ -157,6 +162,11 @@ done
 # Results
 # ---------------------------------------------------------------------------
 run_step collect_results "$PYTHON" scripts/collect_results.py "$RUN_DIR"
+if "$PYTHON" -c "import matplotlib" > /dev/null 2>&1; then
+    run_step plot_results "$PYTHON" scripts/plot_results.py "$RUN_DIR"
+else
+    say "matplotlib not installed; skipped plots ($PYTHON -m pip install matplotlib)"
+fi
 
 elapsed=$((SECONDS - PIPELINE_STARTED))
 printf -v elapsed_text "%02d:%02d:%02d" $((elapsed / 3600)) $((elapsed % 3600 / 60)) $((elapsed % 60))

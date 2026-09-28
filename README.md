@@ -3,11 +3,11 @@
 Project nghiên cứu dự đoán dropout trên XuetangX. Mỗi enrollment là một node;
 Course, Object và Behavioral hyperedge tạo `H0`; HGNN tạo `Z0`; Hypergraph
 Structure Learning (HSL, IJCAI 2022) học `H* = Me ⊙ Mv ⊙ (H0 + ΔH) + I`; cùng
-HGNN tạo `Z*`; classifier sinh dropout logit. Loss là weighted BCE cộng
+HGNN tạo `Z*`; classifier sinh dropout logit. Loss là BCE cộng
 intra-hyperedge contrastive giữa `Z0` và `Z*`. Các điều chỉnh so với bài báo cho
 bài toán MOOC được liệt kê trong [references](docs/references.md#5-hsl).
 
-Code chính gồm một file cấu hình và tám bước pipeline:
+Code chính gồm một file cấu hình, tám bước pipeline và một file baseline:
 
 | Bước | File | Trách nhiệm |
 |---|---|---|
@@ -18,8 +18,9 @@ Code chính gồm một file cấu hình và tám bước pipeline:
 | 4 | `4_hypergraph.py` | Tạo ba loại hyperedge (`H0`) và local graph cho validation/test |
 | 5 | `5_model.py` | HGNN propagation và `HSLModel` |
 | 6 | `6_hsl.py` | HSL: hyperedge sampling, incident node sampling, ΔH → `H*` |
-| 7 | `7_losses.py` | Weighted BCE và intra-hyperedge contrastive loss |
-| 8 | `8_train.py` | Train, validation, early stopping và test |
+| 7 | `7_losses.py` | BCE (có tuỳ chọn `pos_weight`) và intra-hyperedge contrastive loss |
+| 8 | `8_train.py` | Train, validation, early stopping, chọn ngưỡng t\* và test |
+| 9 | `9_baselines.py` | Baseline không graph: Logistic Regression, GBDT |
 
 Xem [dòng chảy dữ liệu và các cột](docs/data-flow-columns.md),
 [nguồn tham khảo của code](docs/references.md), và
@@ -44,13 +45,44 @@ Siêu tham số mặc định nằm trong `DEFAULT_SETTINGS` ở đầu `src/8_t
 nhanh để kiểm tra: `--epochs 10 --validation-limit 2000`. Chạy đủ 5 seed:
 `--seeds 1 11 111 1111 11111 --mode both`.
 
-Ablation theo Fig. 3 của bài báo HSL:
+Ngưỡng phân loại: sau khi train, best checkpoint được chạy trên **toàn bộ**
+validation để chọn ngưỡng t\* làm F1 (lớp dropout) cao nhất; t\* được lưu vào
+checkpoint và dùng cho test. Report có thêm `macro_f1`, `f1_negative`,
+`auprc_negative` (lớp không dropout) và `f1_at_0.5` để so với các lần chạy cũ.
+Chạy `--mode test` trên checkpoint cũ (chưa có t\*) sẽ tự chọn t\* trên validation
+trước khi đánh giá test.
+
+Các tuỳ chọn thường dùng:
+
+| Cờ | Mặc định | Ý nghĩa |
+|---|---|---|
+| `--pos-weight` | `1` | Trọng số BCE của lớp dropout; `balanced` = #âm / #dương (0,319, như bản cũ) |
+| `--select-metric` | `auprc` | Chỉ số validation để chọn checkpoint (`auprc` hoặc `auc`) |
+| `--patience` | `20` | Số lần validate liên tiếp không cải thiện thì dừng |
+| `--validation-limit` | `5000` | Tập con validation cố định dùng trong lúc train (0 = toàn bộ) |
+| `--lr-schedule` | `none` | `multistep`: lr × 0,9 ở epoch 100, như HGNN |
+| `--families` | tất cả | Loại hyperedge được giữ, ví dụ `course,object`; `self_loop` = không graph |
+| `--tag` | rỗng | Hậu tố tên run, tránh ghi đè khi quét tham số, ví dụ `lr3e-3` |
+
+Baseline và ablation:
 
 ```powershell
+.\.venv\Scripts\python.exe src/9_baselines.py --model gbdt --seeds 1              # GBDT, không graph
+.\.venv\Scripts\python.exe src/9_baselines.py --model logreg                      # Logistic Regression
+.\.venv\Scripts\python.exe src/8_train.py --no-hsl --families self_loop           # MLP (cùng encoder)
 .\.venv\Scripts\python.exe src/8_train.py --no-hsl                                # HGNN baseline
 .\.venv\Scripts\python.exe src/8_train.py --no-node-sampling --add-per-edge 0     # chỉ hyperedge sampling
 .\.venv\Scripts\python.exe src/8_train.py --no-edge-sampling                      # chỉ incident node sampling
 .\.venv\Scripts\python.exe src/8_train.py --lambda-cl 0                           # bỏ contrastive
+.\.venv\Scripts\python.exe src/8_train.py --families course,object                # bỏ Behavioral
+```
+
+Trên server, chạy 5 seed trong tmux rồi vẽ hình:
+
+```bash
+bash scripts/run_tmux.sh --skip-prep                                   # HSL, cấu hình mặc định
+TRAIN_SCRIPT=src/9_baselines.py bash scripts/run_tmux.sh --skip-prep --model gbdt
+python scripts/plot_results.py result/<dd-mm-yyyy_HH-MM>               # run_all.sh tự gọi nếu có matplotlib
 ```
 
 Các bước chạy lâu đều in log có timestamp và `flush=True`. Bước 4 báo tiến độ
@@ -100,8 +132,10 @@ Nếu đổi `k`, `k_max` hoặc feature, hãy chạy lại `4_hypergraph.py` đ
   khi train, ngưỡng 0.5 khi validation/test; ΔH chỉ thêm node vào Behavioral
   hyperedge từ neighbor `k..k_max-1`.
 - Validation/test target chỉ nối tới train reference node.
-- Validation AUC chọn checkpoint; test chỉ chạy sau khi checkpoint đã được chọn.
-- `--no-hsl` chạy HGNN baseline với cùng encoder.
+- Validation AUPRC chọn checkpoint; ngưỡng t\* chọn trên toàn bộ validation;
+  test chỉ chạy sau khi checkpoint và t\* đã được chọn.
+- `--no-hsl` chạy HGNN baseline với cùng encoder; thêm `--families self_loop`
+  thành MLP.
 
 ## Kiểm tra cú pháp
 

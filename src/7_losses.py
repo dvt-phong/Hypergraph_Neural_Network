@@ -1,6 +1,11 @@
-# 7. Losses: weighted BCE + intra-hyperedge contrastive loss.
+# 7. Losses: BCE + intra-hyperedge contrastive loss.
 #
-#     L = BCE(logits, y; pos_weight = #negative / #positive) + λ · L_CL(Z0, Z*)
+#     L = BCE(logits, y; pos_weight) + λ · L_CL(Z0, Z*)
+#
+# pos_weight scales the loss of the positive (dropout) class. "balanced" means
+# #negative / #positive, which is 0.319 here because dropout is the majority
+# class: the model then outputs 0.5 where the true dropout probability is the
+# base rate 0.758, so a 0.5 threshold misses many dropouts. 1.0 is plain BCE.
 #
 # Intra-hyperedge contrastive loss (HSL, Cai et al., IJCAI 2022, Eq. 10):
 #   positive pair   the same enrollment in both views: Z0[i] <-> Z*[i]
@@ -20,12 +25,14 @@ config = import_module("0_config")
 SELF_LOOP = config.EDGE_FAMILIES.index("self_loop")
 
 
-def positive_class_weight(labels):
+def positive_class_weight(labels, setting="balanced"):
     positives = labels.sum()
     negatives = labels.numel() - positives
     if positives <= 0 or negatives <= 0:
         raise ValueError("Both classes are required in the train split")
-    return negatives / positives
+    if setting == "balanced":
+        return negatives / positives
+    return labels.new_tensor(float(setting))
 
 
 # Index of H0 memberships (without self-loops) for fast neighbor sampling.
@@ -87,8 +94,9 @@ def contrastive_loss(z0, z_star, anchors, neighbors, temperature):
 
 def total_loss(output, labels, positive_weight, anchors, neighbors, *, lambda_cl, temperature):
     bce = F.binary_cross_entropy_with_logits(output["logits"], labels, pos_weight=positive_weight)
-    if lambda_cl > 0:
-        cl = contrastive_loss(output["z0"], output["z_star"], anchors, neighbors, temperature)
+    # No anchors when the graph has only self-loops (--families self_loop).
+    if lambda_cl > 0 and len(anchors) > 0:
+        cl =contrastive_loss(output["z0"], output["z_star"], anchors, neighbors, temperature)
     else:
         cl = bce.new_zeros(())
     return bce + lambda_cl * cl, {"bce": bce.item(), "contrastive": cl.item()}
