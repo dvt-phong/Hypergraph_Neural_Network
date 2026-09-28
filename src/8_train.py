@@ -58,6 +58,9 @@ DEFAULT_SETTINGS = {
     "pos_weight": 1.0,          # BCE weight of the dropout class; "balanced" = #neg / #pos
     "eval_batch_size": 8,       # local graphs per forward pass
     "tag": "",                  # appended to the run name to keep sweep runs apart
+    # Encoder (5_model.py)
+    "skip_connection": False,   # classifier also sees MLP(X), the node's own features
+    "family_weights": False,    # one learned weight per hyperedge family (HGNN's W)
     # HSL
     "hsl": True,                # False = plain HGNN baseline
     "edge_sampling": True,      # Me
@@ -133,6 +136,10 @@ def make_run_name(settings, seed):
         name = "mlp" if not settings["hsl"] else name + "_no-graph"
     elif families != list(config.GRAPH_FAMILIES):
         name += "_" + "-".join(families)
+    if settings["skip_connection"]:
+        name += "_skip"
+    if settings["family_weights"]:
+        name += "_fw"
     name += f"_{settings['feature_set']}"
     if settings["tag"]:
         name += f"_{settings['tag']}"
@@ -147,7 +154,9 @@ def make_model(input_dim, settings):
             "edge_sampling": settings["edge_sampling"],
             "node_sampling": settings["node_sampling"],
         }
-    return HSLModel(input_dim, settings["hidden_dim"], settings["dropout"], hsl_options)
+    return HSLModel(input_dim, settings["hidden_dim"], settings["dropout"], hsl_options,
+                    skip_connection=settings["skip_connection"],
+                    family_weights=settings["family_weights"])
 
 
 def load_split(output_dir, split_name, settings):
@@ -264,8 +273,10 @@ def train(settings, *, seed, output_dir=config.PROCESSED, device_name="auto"):
 
         if epoch % settings["eval_every"] == 0 or epoch == settings["epochs"]:
             validation_started = time.perf_counter()
+            # The same validation subset for every seed and run, so curves compare.
             validation_labels, validation_probabilities = predict(
-                model, validation_data, settings, device, limit=settings["validation_limit"], seed=seed
+                model, validation_data, settings, device,
+                limit=settings["validation_limit"], seed=config.SPLIT_SEED,
             )
             # Metrics at the best threshold of this validation subset: shows
             # where the threshold drifts while training.
@@ -392,6 +403,10 @@ if __name__ == "__main__":
     parser.add_argument("--pos-weight", type=pos_weight_argument, help='a number, or "balanced"')
     parser.add_argument("--eval-batch-size", type=int)
     parser.add_argument("--tag", help="suffix for the run name, e.g. lr3e-3")
+    parser.add_argument("--skip-connection", action="store_true", default=None,
+                        help="classifier also sees MLP(X), the node's own features")
+    parser.add_argument("--family-weights", action="store_true", default=None,
+                        help="learn one weight per hyperedge family")
     parser.add_argument("--lambda-cl", type=float)
     parser.add_argument("--add-per-edge", type=int)
     # Ablations (HSL paper, Fig. 3)

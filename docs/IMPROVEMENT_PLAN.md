@@ -10,6 +10,104 @@ Mỗi hạng mục có: **vấn đề**, **việc cần làm** (file, hàm), **t
 
 ---
 
+## Cập nhật sau lần chạy 3: bước tiếp theo
+
+### Kết quả lần 3 (HSL, cấu hình P0, `--tag p0`, 5 seed, test)
+
+| Lần | AUC | AUPRC | F1 | Precision | Recall |
+|---|---|---|---|---|---|
+| 2 (cấu hình cũ) | 0,8092 ± 0,0029 | 0,9096 ± 0,0017 | 0,4507 ± 0,3128 | 0,9226 ± 0,0127 | 0,3519 ± 0,2937 |
+| **3 (P0)** | **0,8324 ± 0,0009** | **0,9236 ± 0,0003** | **0,8969 ± 0,0005** | 0,8490 ± 0,0009 | 0,9506 ± 0,0019 |
+| LR, 1 seed (chạy thử local) | 0,845 | 0,925 | 0,905 | 0,862 | 0,954 |
+| GBDT, 1 seed (chạy thử local) | 0,868 | 0,941 | 0,908 | 0,867 | 0,952 |
+
+### Đọc từ `history.png` của lần 3
+
+| Quan sát | Kết luận |
+|---|---|
+| BCE đi ngang ở khoảng 0,39 từ epoch 70–100; best epoch 65–115; dừng ở 165–215 | Đã train đủ. H3 đạt |
+| Train AUC chỉ khoảng 0,85, chỉ hơn val 0,01–0,02 | **Underfit**, không phải overfit. Model chưa khớp nổi cả train, trong khi LR/GBDT không dùng graph đã hơn. Lan truyền trên graph đang làm mất tín hiệu của chính node |
+| `kept_*` tăng từ 0,90 lên 0,98–0,99 | HSL học cách **giữ lại**, không cắt. Không có gì phạt việc giữ, nên cắt chỉ là nhiễu có hại. H\* ≈ H0 + ΔH |
+| Ngưỡng tối ưu trên tập con val dao động 0,33–0,50 rồi ổn định quanh 0,45–0,50 | Giải thích vì sao ngưỡng cố định 0,5 không ổn; t\* hiện đã ổn |
+| Đường val AUC lệch nhau giữa các seed nhiều hơn std test (0,0009) | Tập con 5.000 target được chọn **theo seed**, nên mỗi seed validate trên một tập khác nhau |
+
+**Hệ quả cho cách làm thí nghiệm:** std test chỉ khoảng 0,001, nên có thể **sàng
+lọc bằng 1 seed** (seed 1): chênh lệch < 0,003 AUC coi là nhiễu. Chỉ cấu hình được
+chọn mới chạy lại 5 seed. Cách này tiết kiệm khoảng 5 lần thời gian GPU.
+
+### Kế hoạch bước tiếp theo
+
+```text
+Bước A  chẩn đoán: LR, GBDT, MLP, HGNN × 5 seed        chỉ chạy, không sửa code
+Bước B  encoder hết underfit: skip, trọng số family,    code ~1 ngày, sàng lọc 1 seed
+        giảm regularization
+        ── Cổng A/B ──
+Bước C  HSL thực sự cắt: phạt độ thưa, giảm dần τ,      chỉ làm nếu HSL ≈ HGNN ở bước A
+        khởi tạo giữ thấp hơn
+Bước D  H7 (train trên local graph), H4 (feature),      theo Cổng A/B
+        H5 (hyperedge User)
+```
+
+#### Bước A. Chẩn đoán: graph đang giúp hay đang hại? (chạy ngay)
+
+```bash
+ONLY="logreg gbdt mlp hgnn" SKIP_PREP=1 RUN_SCRIPT=scripts/run_p0.sh bash scripts/run_tmux.sh
+```
+
+| So sánh | Nếu thấy | Kết luận |
+|---|---|---|
+| MLP với HSL (0,8324) | MLP ≥ HSL | Lan truyền đang hại: làm B1 trước tiên |
+| HGNN với HSL | \|Δ AUC\| < 0,003 | Module HSL chưa đóng góp gì (khớp với `kept` ≈ 0,99): làm bước C |
+| GBDT với mọi mô hình nơ-ron | GBDT hơn rõ | Dữ liệu dạng bảng; cần B và H4 để thu hẹp khoảng cách |
+
+#### Bước B. Sửa encoder cho khỏi underfit
+
+| Mã | Việc | File | Chi tiết |
+|---|---|---|---|
+| B0 | Tập con validation giống nhau cho mọi seed | [8_train.py](../src/8_train.py) `predict` | Chọn tập con bằng `config.SPLIT_SEED` thay vì seed train, để các đường val so sánh được với nhau |
+| B1 | **Skip connection** (H8, bước 2) | [5_model.py](../src/5_model.py) `HSLModel`; cờ `--skip-connection` | Thêm nhánh `h_self = MLP(X)` hai lớp, không lan truyền. `logits = Linear([Z* ‖ h_self])`. Loss contrastive vẫn dùng Z0, Z\*. Model sẽ không thể kém MLP |
+| B2 | **Trọng số theo family** (H8, bước 1) | [5_model.py](../src/5_model.py) `hgnn_propagate`; cờ `--family-weights` | Mỗi family course/object/behavioral/self-loop có một trọng số học được `softplus(w_f)`, nhân vào trọng số membership. Model tự giảm ảnh hưởng của hyperedge course lớn |
+| B3 | Giảm regularization | chỉ dùng cờ | Quét `--weight-decay` {5e-4, 5e-5, 0}, `--dropout` {0,5; 0,2}, `--hidden-dim` {128, 256} |
+
+Sàng lọc với seed 1, mỗi cấu hình một `--tag`:
+
+```bash
+SEEDS="1" NOTE="B1 skip" bash scripts/run_tmux.sh --skip-prep --skip-connection --tag b1
+SEEDS="1" NOTE="B1+B2" bash scripts/run_tmux.sh --skip-prep --skip-connection --family-weights --tag b12
+SEEDS="1" NOTE="B1+B2, wd 5e-5" bash scripts/run_tmux.sh --skip-prep --skip-connection --family-weights --weight-decay 5e-5 --tag b12-wd5e-5
+# ... các ô còn lại của B3; mỗi lần chạy một cấu hình, không chạy song song
+```
+
+**Đạt khi:** train AUC > 0,87 và test AUC ≥ max(MLP, LR) + 0,005. Cấu hình tốt
+nhất được chạy lại 5 seed.
+
+#### Cổng A/B
+
+- HSL + B ≥ GBDT: câu chuyện "graph giúp dự đoán" đã có. Làm C để HSL có đóng
+  góp riêng, rồi làm D.
+- HSL + B hơn MLP nhưng vẫn thua GBDT: graph có giúp, nhưng tín hiệu đầu vào còn
+  yếu. Ưu tiên H4 (feature) và H5 (User).
+- HSL + B vẫn ≤ MLP: vấn đề nằm ở cách dựng và dùng graph. Ưu tiên H7 (train trên
+  local graph).
+
+#### Bước C. Làm cho HSL thật sự cắt (H9, chỉ khi HSL ≈ HGNN ở bước A)
+
+| Mã | Việc | File | Chi tiết |
+|---|---|---|---|
+| C1 | Phạt độ thưa | [6_hsl.py](../src/6_hsl.py), [7_losses.py](../src/7_losses.py); cờ `--beta` | Loss thêm `β · mean(p_keep)` trên membership của H0 (không tính self-loop). Quét β ∈ {0,01; 0,1} |
+| C2 | Giảm dần Gumbel τ | [6_hsl.py](../src/6_hsl.py) | τ từ 1 xuống 0,1 theo epoch, thay vì cố định 0,4 |
+| C3 | Khởi tạo xác suất giữ thấp hơn | [6_hsl.py](../src/6_hsl.py) `INITIAL_KEEP_LOGIT` | 3 (giữ 95%) xuống 1 (giữ 73%), để HSL thử cắt ngay từ đầu |
+
+**Đạt khi:** `kept_*` ổn định ≤ 0,9, và HSL > HGNN (cùng bước B) ít nhất 0,003 AUC
+trên 5 seed. Nếu không đạt, trình bày HSL như một ablation có kết quả âm, kèm
+hình `kept_*`.
+
+#### Bước D. Các hạng mục lớn
+
+Làm theo Cổng A/B, chi tiết ở các mục H7, H4, H5 bên dưới.
+
+---
+
 ## 0. Hiện trạng
 
 Lần chạy 5 seed với cấu hình mặc định (`hidden 128`, `lr 1e-3`, `dropout 0.3`,
@@ -424,7 +522,11 @@ nghiệm cần chạy trên server.
 | H3 | Code: `patience` 20, `dropout` 0,5, `--lr-schedule`, thời gian mỗi epoch | xong | |
 | H2 | Code: `--families`, `9_baselines.py` | xong | |
 | E1.1 | Đánh giá lại với `t*` | chưa chạy | `8_train.py --mode test --checkpoint <cũ>.pt` |
-| E1.2 | `pos_weight` 1 | chưa chạy | |
+| E1.2 + H3 | HSL, cấu hình P0 (lần 3) | xong, 5 seed | AUC 0,8324 ± 0,0009; F1 0,8969 ± 0,0005. Train AUC ≈ 0,85 (underfit); `kept_*` ≈ 0,99 |
+| A | LR, GBDT, MLP, HGNN × 5 seed | đang chạy trên server | |
+| B0–B2 | Code: tập con val cố định, `--skip-connection`, `--family-weights` | xong | |
+| B1–B3 | Sàng lọc 1 seed | chưa chạy | |
+| C1–C3 | HSL cắt thật | chờ bước A | |
 | E3.1–E3.3 | lr, dropout, schedule | chưa chạy | |
 | E2.1 | LR, GBDT (chạy thử 1 seed trên máy local, 28/09) | xong 1 seed | Test: LR AUC 0,845, F1 0,905; GBDT AUC 0,868, AUPRC 0,941, F1 0,908. **Cả hai đều cao hơn HSL hiện tại (AUC 0,809).** Cần chạy đủ 5 seed |
 | E2.2–E2.9 | MLP, HGNN, ablation | chưa chạy | |

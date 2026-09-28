@@ -63,6 +63,8 @@ Các tuỳ chọn thường dùng:
 | `--lr-schedule` | `none` | `multistep`: lr × 0,9 ở epoch 100, như HGNN |
 | `--families` | tất cả | Loại hyperedge được giữ, ví dụ `course,object`; `self_loop` = không graph |
 | `--tag` | rỗng | Hậu tố tên run, tránh ghi đè khi quét tham số, ví dụ `lr3e-3` |
+| `--skip-connection` | tắt | Lớp phân loại nhận thêm `MLP(X)` (đặc trưng riêng của node, không lan truyền) |
+| `--family-weights` | tắt | Học một trọng số cho mỗi loại hyperedge (ma trận `W` của HGNN), log ở `w_course`, `w_object`, … |
 
 Baseline và ablation:
 
