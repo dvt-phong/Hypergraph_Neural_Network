@@ -7,6 +7,7 @@
 #   bash scripts/run_tmux.sh
 #   bash scripts/run_tmux.sh --skip-prep
 #   SEEDS="1 11" bash scripts/run_tmux.sh --no-hsl
+#   TRAIN_SCRIPT=src/9_baselines.py bash scripts/run_tmux.sh --skip-prep --model gbdt
 #
 # Then:
 #   tmux attach -t <session>     watch the run      (detach again: Ctrl-b then d)
@@ -43,8 +44,8 @@ if [[ -z "$PYTHON" && ! -x "$VENV_DIR/bin/python" ]]; then
     fi
 fi
 # Pass the settings explicitly: the tmux shell does not inherit this shell's variables.
-printf -v ENVIRONMENT "SEEDS=%q VENV_DIR=%q PYTHON=%q" \
-    "${SEEDS:-1 11 111 1111 11111}" "$VENV_DIR" "$PYTHON"
+printf -v ENVIRONMENT "SEEDS=%q VENV_DIR=%q PYTHON=%q TRAIN_SCRIPT=%q" \
+    "${SEEDS:-1 11 111 1111 11111}" "$VENV_DIR" "$PYTHON" "${TRAIN_SCRIPT:-src/8_train.py}"
 
 # The pane stays open after the run so the final message can still be read.
 tmux new-session -d -s "$SESSION" -c "$ROOT" \

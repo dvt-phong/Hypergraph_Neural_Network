@@ -4,9 +4,10 @@
 #
 # Reads <run>/manifest.tsv (one row per seed), finds the report paths that
 # 8_train.py printed in each seed's log ("report=..._train.json" and
-# "report=..._test.json"), copies those reports into <run>/reports/, and writes
-# <run>/results.csv: one row per seed, then mean and std (sample std, n - 1)
-# over the seeds that finished.
+# "report=..._test.json"), copies those reports and the matching
+# *_probs.npz files into <run>/reports/, and writes <run>/results.csv: one row
+# per seed, then mean and std (sample std, n - 1) over the seeds that finished.
+# Reports written before a metric existed leave its cell empty.
 
 import csv
 import json
@@ -16,7 +17,8 @@ import statistics
 import sys
 from pathlib import Path
 
-METRICS = ("auc", "auprc", "f1", "precision", "recall")
+METRICS = ("auc", "auprc", "f1", "precision", "recall",
+           "macro_f1", "f1_negative", "auprc_negative", "f1_at_0.5")
 REPORT_PATTERN = re.compile(r"report=(.+_(train|test)\.json)\s*$")
 
 
@@ -39,6 +41,9 @@ def seed_row(entry, run_dir):
     for kind, path in paths.items():
         if path.exists():
             shutil.copy2(path, run_dir / "reports" / path.name)
+            run_name = path.name.removesuffix(f"_{kind}.json")
+            for probabilities in path.parent.glob(f"{run_name}_*_probs.npz"):
+                shutil.copy2(probabilities, run_dir / "reports" / probabilities.name)
 
     train_path = paths.get("train")
     if train_path is not None and train_path.exists():
@@ -46,6 +51,7 @@ def seed_row(entry, run_dir):
         row["run_name"] = train_path.name.removesuffix("_train.json")
         row["best_epoch"] = train["best_epoch"]
         row["epochs_run"] = len(train["history"])
+        row["threshold"] = train.get("threshold", "")
         for name in METRICS:
             row[f"val_{name}"] = (train["best_validation"] or {}).get(name, "")
 
@@ -53,7 +59,7 @@ def seed_row(entry, run_dir):
     if test_path is not None and test_path.exists():
         test = json.loads(test_path.read_text(encoding="utf-8"))
         for name in METRICS:
-            row[f"test_{name}"] = test["test"][name]
+            row[f"test_{name}"] = test["test"].get(name, "")
     elif row["status"] == "ok":
         row["status"] = "no test report"
     return row
@@ -64,7 +70,7 @@ def summary_rows(rows, columns):
     mean_row = {"seed": "mean", "status": f"n={len(finished)}"}
     std_row = {"seed": "std", "status": f"n={len(finished)}"}
     for column in columns:
-        if column.startswith(("val_", "test_")) or column == "duration_sec":
+        if column.startswith(("val_", "test_")) or column in ("threshold", "duration_sec"):
             values = [float(row[column]) for row in finished if row.get(column, "") != ""]
             if values:
                 mean_row[column] = statistics.mean(values)
@@ -80,7 +86,7 @@ def main(run_dir):
 
     rows = [seed_row(entry, run_dir) for entry in entries]
     columns = (
-        ["seed", "run_name", "status", "best_epoch", "epochs_run"]
+        ["seed", "run_name", "status", "best_epoch", "epochs_run", "threshold"]
         + [f"val_{name}" for name in METRICS]
         + [f"test_{name}" for name in METRICS]
         + ["duration_sec"]

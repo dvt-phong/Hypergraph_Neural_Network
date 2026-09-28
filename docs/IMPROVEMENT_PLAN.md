@@ -210,7 +210,7 @@ liệu bảng, mô hình cây thường mạnh (Grinsztajn et al., NeurIPS 2022)
 |---|---|
 | [4_hypergraph.py](../src/4_hypergraph.py) `load_train_graph`, `load_evaluation_split` | Tham số `families` (mặc định tất cả): chỉ giữ membership của các family được chọn, self-loop luôn giữ. CLI `--families course,object,behavioral`. |
 | MLP | Chạy `--no-hsl --families self_loop`. Khi chỉ còn self-loop, bậc node và bậc hyperedge đều bằng 1, nên HGNN hai lớp trở thành đúng MLP hai lớp, cùng code và cùng giao thức. |
-| File mới `src/9_baselines.py` | Logistic Regression và LightGBM trên `X.npy`, chọn `t*` trên validation, báo cùng bộ chỉ số như H1. Thêm `lightgbm` vào `requirements.txt`. |
+| File mới `src/9_baselines.py` | Logistic Regression và GBDT (`HistGradientBoostingClassifier` của scikit-learn, cùng họ histogram GBDT với LightGBM, không cần cài thêm) trên `X.npy`, chọn `t*` trên validation, báo cùng bộ chỉ số như H1. |
 
 **Thí nghiệm** (5 seed, cấu hình P0):
 
@@ -414,13 +414,20 @@ phân tích `r^v` và `kept_*`.
 
 ## 4. Bảng theo dõi
 
+Code cho H1, H3 và H2 (trừ ablation feature mới) đã có từ 28/09/2026; các thí
+nghiệm cần chạy trên server.
+
 | Mã | Hạng mục | Trạng thái | Kết quả chính |
 |---|---|---|---|
 | B0 | Đọc lại kết quả cũ | chưa làm | |
-| E1.1 | Đánh giá lại với `t*` | chưa làm | |
-| E1.2 | `pos_weight` 1 | chưa làm | |
-| E3.1–E3.3 | lr, dropout, schedule | chưa làm | |
-| E2.1–E2.9 | Baseline + ablation | chưa làm | |
+| H1 | Code: t\*, `--pos-weight`, `--select-metric`, chỉ số mới, `plot_results.py` | xong | |
+| H3 | Code: `patience` 20, `dropout` 0,5, `--lr-schedule`, thời gian mỗi epoch | xong | |
+| H2 | Code: `--families`, `9_baselines.py` | xong | |
+| E1.1 | Đánh giá lại với `t*` | chưa chạy | `8_train.py --mode test --checkpoint <cũ>.pt` |
+| E1.2 | `pos_weight` 1 | chưa chạy | |
+| E3.1–E3.3 | lr, dropout, schedule | chưa chạy | |
+| E2.1 | LR, GBDT (chạy thử 1 seed trên máy local, 28/09) | xong 1 seed | Test: LR AUC 0,845, F1 0,905; GBDT AUC 0,868, AUPRC 0,941, F1 0,908. **Cả hai đều cao hơn HSL hiện tại (AUC 0,809).** Cần chạy đủ 5 seed |
+| E2.2–E2.9 | MLP, HGNN, ablation | chưa chạy | |
 | E4.1 | Feature `full_v2` | chưa làm | |
 | E5.1–E5.2 | Hyperedge User | chưa làm | |
 | E7.1 | Train trên local graph | chưa làm | |

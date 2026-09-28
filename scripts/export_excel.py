@@ -10,10 +10,15 @@
 #   Sieu_tham_so   one row per run, same STT: every setting of the run
 #   Du_lieu_seed   one row per seed: the numbers the formulas above read
 # Running it again on the same run folder replaces that run's rows.
+#
+# Columns added later (macro-F1, threshold, ...) are placed after the older
+# ones, so a workbook written by an earlier version keeps its layout; the
+# header rows are rewritten on every export.
 
 import argparse
 import json
 import sys
+from importlib import import_module
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -23,7 +28,9 @@ from openpyxl.utils import get_column_letter
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 DEFAULT_XLSX = ROOT / "docs" / "ket_qua_thi_nghiem.xlsx"
+GRAPH_FAMILIES = import_module("0_config").GRAPH_FAMILIES
 METRICS = ("auc", "auprc", "f1", "precision", "recall")
+EXTRA_METRICS = ("macro_f1", "f1_negative", "auprc_negative", "f1_at_0.5")
 LAST_ROW = 5000  # formulas in Ket_qua read Du_lieu_seed rows 2..LAST_ROW
 
 FONT = "Arial"
@@ -34,10 +41,13 @@ BLUE = "0000FF"
 GREY = "808080"
 
 RESULT_HEADERS = ("STT", "Ngày chạy", "Cấu hình", "AUC", "AUPRC", "F1", "Precision", "Recall",
-                  "Ghi chú", "Mã lần chạy")
-RESULT_WIDTHS = {1: 6, 2: 14, 3: 34, 4: 17, 5: 17, 6: 17, 7: 17, 8: 17, 9: 60, 10: 18}
+                  "Ghi chú", "Mã lần chạy",
+                  "Macro-F1", "F1 lớp không bỏ", "AUPRC lớp không bỏ", "F1 tại 0,5", "Ngưỡng t*")
+RESULT_WIDTHS = {1: 6, 2: 14, 3: 34, 4: 17, 5: 17, 6: 17, 7: 17, 8: 17, 9: 60, 10: 18,
+                 11: 17, 12: 17, 13: 17, 14: 17, 15: 17}
 FIRST_METRIC_COLUMN = 4
-RESULT_ID_COLUMN = len(RESULT_HEADERS)
+RESULT_ID_COLUMN = 10
+FIRST_EXTRA_COLUMN = RESULT_ID_COLUMN + 1  # EXTRA_METRICS, then the threshold
 
 # (header, key in the train settings or in extra_settings)
 PARAMETERS = (
@@ -68,8 +78,18 @@ PARAMETERS = (
     ("Giới hạn target val", "validation_limit"),
     ("Batch đánh giá", "eval_batch_size"),
 )
-PARAMETER_HEADERS = ("STT", "Ngày chạy", "Cấu hình") + tuple(h for h, _ in PARAMETERS) + ("Mã lần chạy",)
-PARAMETER_ID_COLUMN = len(PARAMETER_HEADERS)
+# Added later; written after the "Mã lần chạy" column.
+EXTRA_PARAMETERS = (
+    ("Mô hình", "model"),
+    ("Family siêu cạnh", "families"),
+    ("pos_weight", "pos_weight"),
+    ("Chọn checkpoint theo", "select_metric"),
+    ("LR schedule", "lr_schedule"),
+    ("Tag", "tag"),
+)
+PARAMETER_HEADERS = (("STT", "Ngày chạy", "Cấu hình") + tuple(h for h, _ in PARAMETERS) + ("Mã lần chạy",)
+                     + tuple(h for h, _ in EXTRA_PARAMETERS))
+PARAMETER_ID_COLUMN = 3 + len(PARAMETERS) + 1
 
 # (header, key in the seed row, number format)
 SEED_COLUMNS = (
@@ -85,6 +105,11 @@ SEED_COLUMNS = (
     ("Giữ behavioral", "kept_behavioral", "0.000"),
     ("ΔH được giữ", "added", "#,##0"),
     ("Thời gian (giây)", "duration_sec", "#,##0"),
+    ("Ngưỡng t*", "threshold", "0.0000"),
+    *[(f"{RESULT_HEADERS[FIRST_EXTRA_COLUMN - 1 + index]} val", f"val_{name}", "0.0000")
+      for index, name in enumerate(EXTRA_METRICS)],
+    *[(f"{RESULT_HEADERS[FIRST_EXTRA_COLUMN - 1 + index]} test", f"test_{name}", "0.0000")
+      for index, name in enumerate(EXTRA_METRICS)],
 )
 SEED_LETTER = {key: get_column_letter(index) for index, (_, key, _) in enumerate(SEED_COLUMNS, 1)}
 
@@ -135,6 +160,8 @@ def add_guide_sheet(sheet):
         ("Sieu_tham_so", "Cùng STT với Ket_qua. Toàn bộ settings của 8_train.py, cộng τ Gumbel, chiều MLP "
                          "chấm điểm (6_hsl.py), k, k_max (hypergraph.npz), cấu hình chia dữ liệu (0_config.py)."),
         ("Du_lieu_seed", "Số liệu từng seed. 'Giữ ...' và 'ΔH được giữ' lấy ở best epoch."),
+        ("Ngưỡng t*", "F1, Precision, Recall tính tại ngưỡng t* làm F1 cao nhất trên toàn bộ validation. "
+                      "'F1 tại 0,5' giữ để so với các lần chạy cũ (ô trống nếu report cũ không có)."),
         ("Chữ xanh dương", "Số nhập tay, chép từ tài liệu, không phải công thức."),
         ("Cột Ghi chú", "Em tự sửa được; script chỉ ghi đè khi truyền --note."),
     )
@@ -188,10 +215,14 @@ def read_seed_rows(run_dir, run_id):
             "best_epoch": train["best_epoch"],
             "epochs_run": len(train["history"]),
             "duration_sec": durations.get(train["seed"]),
+            "threshold": train.get("threshold"),
         }
         for name in METRICS:
             row[f"val_{name}"] = train["best_validation"][name]
             row[f"test_{name}"] = test[name]
+        for name in EXTRA_METRICS:
+            row[f"val_{name}"] = train["best_validation"].get(name)
+            row[f"test_{name}"] = test.get(name)
         for key in ("kept_course", "kept_object", "kept_behavioral", "added"):
             row[key] = best.get(key)
         rows.append(row)
@@ -223,8 +254,16 @@ def extra_settings(processed_dir):
     return extra
 
 
-# Readable name of a configuration, e.g. "HSL, bỏ ΔH (feature: full)".
+# Readable name of a configuration, e.g. "HSL, bỏ ΔH (feature: full)" or
+# "HGNN (không HSL), chỉ course + object (feature: full)".
 def describe(settings):
+    baselines = {"gbdt": "GBDT (không graph)", "logreg": "Logistic Regression (không graph)"}
+    if settings.get("model") in baselines:
+        return f"{baselines[settings['model']]} (feature: {settings['feature_set']})"
+    families = [family for family in settings.get("families", GRAPH_FAMILIES) if family != "self_loop"]
+    if not families and not settings["hsl"]:
+        return f"MLP (không graph) (feature: {settings['feature_set']})"
+
     if not settings["hsl"]:
         name = "HGNN (không HSL)"
     else:
@@ -238,6 +277,10 @@ def describe(settings):
         if settings["lambda_cl"] == 0:
             removed.append("tương phản")
         name = "HSL đầy đủ" if not removed else "HSL, bỏ " + ", ".join(removed)
+    if families != list(GRAPH_FAMILIES):
+        name += ", chỉ " + " + ".join(families) if families else ", không graph"
+    if settings.get("tag"):
+        name += f" [{settings['tag']}]"
     return f"{name} (feature: {settings['feature_set']})"
 
 
@@ -278,17 +321,23 @@ def write_result_row(sheet, row, number, date, config_name, run_id, note):
         put(sheet, row, FIRST_METRIC_COLUMN + offset, metric_formula(row, f"test_{name}"), align="center")
     put(sheet, row, RESULT_ID_COLUMN - 1, note)
     put(sheet, row, RESULT_ID_COLUMN, run_id, color=GREY)
+    for offset, key in enumerate([f"test_{name}" for name in EXTRA_METRICS] + ["threshold"]):
+        put(sheet, row, FIRST_EXTRA_COLUMN + offset, metric_formula(row, key), align="center")
 
 
 def write_parameter_row(sheet, row, number, date, config_name, run_id, values):
     put(sheet, row, 1, number, "0", align="center")
     put(sheet, row, 2, date, align="center")
     put(sheet, row, 3, config_name)
-    for offset, (_, key) in enumerate(PARAMETERS):
+    columns = [(4 + offset, key) for offset, (_, key) in enumerate(PARAMETERS)]
+    columns += [(PARAMETER_ID_COLUMN + 1 + offset, key) for offset, (_, key) in enumerate(EXTRA_PARAMETERS)]
+    for column, key in columns:
         value = values.get(key)
         if isinstance(value, bool):
             value = "Có" if value else "Không"
-        put(sheet, row, 4 + offset, value, align="center")
+        elif isinstance(value, (list, tuple)):
+            value = ", ".join(str(item) for item in value)
+        put(sheet, row, column, value, align="center")
     put(sheet, row, PARAMETER_ID_COLUMN, run_id, color=GREY)
 
 
@@ -304,6 +353,10 @@ def export(run_dir, xlsx_path, *, run_id=None, note=None, processed_dir=None):
     results = workbook["Ket_qua"]
     parameters = workbook["Sieu_tham_so"]
     seeds = workbook["Du_lieu_seed"]
+    # Older workbooks lack the newer columns at the end; rewriting headers adds them.
+    style_header(results, RESULT_HEADERS, RESULT_WIDTHS)
+    style_header(parameters, PARAMETER_HEADERS, {1: 6, 2: 14, 3: 34, 4: 20})
+    style_header(seeds, [h for h, _, _ in SEED_COLUMNS], {1: 18, 3: 22})
 
     for row in range(seeds.max_row, 1, -1):
         if seeds.cell(row=row, column=1).value == run_id:
