@@ -9,6 +9,7 @@
 #   SEEDS="1 11" bash scripts/run_tmux.sh --no-hsl
 #   TRAIN_SCRIPT=src/9_baselines.py bash scripts/run_tmux.sh --skip-prep --model gbdt
 #   RUN_SCRIPT=scripts/run_p0.sh bash scripts/run_tmux.sh       whole P0 table
+#   RUN_SCRIPT=scripts/run_b.sh bash scripts/run_tmux.sh        step B screening
 # Environment passed on: SEEDS, VENV_DIR, PYTHON, TRAIN_SCRIPT, NOTE,
 # EXPORT_EXCEL, ONLY, SKIP_PREP (see run_all.sh and run_p0.sh).
 #
@@ -47,9 +48,11 @@ if [[ -z "$PYTHON" && ! -x "$VENV_DIR/bin/python" ]]; then
     fi
 fi
 # Pass the settings explicitly: the tmux shell does not inherit this shell's variables.
+# Unset variables are passed empty; each script applies its own default
+# (e.g. run_all.sh: all seeds, run_b.sh: seed 1).
 printf -v ENVIRONMENT "SEEDS=%q VENV_DIR=%q PYTHON=%q TRAIN_SCRIPT=%q NOTE=%q EXPORT_EXCEL=%q ONLY=%q SKIP_PREP=%q" \
-    "${SEEDS:-1 11 111 1111 11111}" "$VENV_DIR" "$PYTHON" "${TRAIN_SCRIPT:-src/8_train.py}" \
-    "${NOTE:-}" "${EXPORT_EXCEL:-1}" "${ONLY:-logreg gbdt mlp hgnn hsl}" "${SKIP_PREP:-0}"
+    "${SEEDS:-}" "$VENV_DIR" "$PYTHON" "${TRAIN_SCRIPT:-}" \
+    "${NOTE:-}" "${EXPORT_EXCEL:-}" "${ONLY:-}" "${SKIP_PREP:-}"
 RUN_SCRIPT="${RUN_SCRIPT:-scripts/run_all.sh}"
 
 # The pane stays open after the run so the final message can still be read.

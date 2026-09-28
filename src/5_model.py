@@ -11,7 +11,16 @@
 #
 # H* is described by memberships (node_ids, edge_ids) plus one weight per
 # membership: 1 for H0, and a 0/1 learned mask for H*.
+#
+# Options (off by default, then the model is exactly the one above):
+#   skip_connection  logits = Linear([Z* ‖ MLP(X)]): the node's own features reach
+#                    the classifier without being averaged with its hyperedges
+#                    (initial-residual idea of UniGCNII, Huang & Yang, IJCAI 2021)
+#   family_weights   one learned weight w_f = softplus(θ_f) per hyperedge family,
+#                    the diagonal W of HGNN (Eq. 10):
+#                    Dv^-1/2 H W De^-1 H^T Dv^-1/2, with Dv = Σ_e w_e H(v, e)
 
+import math
 from importlib import import_module
 
 import torch
@@ -55,18 +64,26 @@ def weighted_sum(source, weights, source_ids, target_ids, target_count):
     return output
 
 
-# One HGNN propagation Dv^-1/2 H De^-1 H^T Dv^-1/2 x with membership weights.
+# One HGNN propagation Dv^-1/2 H W De^-1 H^T Dv^-1/2 x with membership weights.
 # Degrees are read from the (0/1) weights without gradient, so an emptied
-# hyperedge simply sends zero instead of dividing by zero.
-def hgnn_propagate(x, graph, weights):
+# hyperedge simply sends zero instead of dividing by zero. edge_weight is the
+# diagonal of W (None = identity); it enters Dv but not De, as in HGNN.
+def hgnn_propagate(x, graph, weights, edge_weight=None):
     node_ids, edge_ids = graph["node_ids"], graph["edge_ids"]
     constant_weights = weights.detach()
-    node_degree = x.new_zeros(graph["num_nodes"]).index_add_(0, node_ids, constant_weights)
+    node_weights = constant_weights
+    if edge_weight is not None:
+        node_weights = constant_weights * edge_weight[edge_ids]
+    node_degree = x.new_zeros(graph["num_nodes"]).index_add_(0, node_ids, node_weights)
     edge_degree = x.new_zeros(graph["num_edges"]).index_add_(0, edge_ids, constant_weights)
-    node_scale = node_degree.clamp_min(1.0).rsqrt()[:, None]
+    # Every node keeps its self-loop, so its degree is > 0; unweighted degrees are
+    # whole numbers, weighted ones may be below 1.
+    node_scale = node_degree.clamp_min(1.0 if edge_weight is None else 1e-6).rsqrt()[:, None]
     edge_scale = edge_degree.clamp_min(1.0).reciprocal()[:, None]
 
     edge_x = weighted_sum(x * node_scale, weights, node_ids, edge_ids, graph["num_edges"])
+    if edge_weight is not None:
+        edge_x = edge_x * edge_weight[:, None]
     node_x = weighted_sum(edge_x * edge_scale, weights, edge_ids, node_ids, graph["num_nodes"])
     return node_x * node_scale
 
@@ -79,23 +96,58 @@ def hyperedge_means(z, graph):
     return total / edge_size[:, None]
 
 
+# softplus(INITIAL_FAMILY_LOGIT) = 1: family weights start at W = I.
+INITIAL_FAMILY_LOGIT = math.log(math.e - 1)
+
+
 class HSLModel(nn.Module):
     # hsl_options=None gives the plain HGNN baseline (H* = H0, Z* = Z0).
-    def __init__(self, input_dim, hidden_dim=64, dropout=0.5, hsl_options=None):
+    def __init__(self, input_dim, hidden_dim=64, dropout=0.5, hsl_options=None, *,
+                 skip_connection=False, family_weights=False):
         super().__init__()
         self.layer1 = nn.Linear(input_dim, hidden_dim)
         self.layer2 = nn.Linear(hidden_dim, hidden_dim)
-        self.classifier = nn.Linear(hidden_dim, 1)
         self.dropout = dropout
         self.structure_learner = None
         if hsl_options is not None:
             self.structure_learner = StructureLearner(hidden_dim, **hsl_options)
 
+        self.self_encoder = None
+        if skip_connection:
+            # Same shape as the HGNN encoder, without propagation.
+            self.self_encoder = nn.Sequential(
+                nn.Linear(input_dim, hidden_dim), nn.ReLU(), nn.Dropout(dropout),
+                nn.Linear(hidden_dim, hidden_dim), nn.ReLU(),
+            )
+        self.classifier = nn.Linear(hidden_dim * (2 if skip_connection else 1), 1)
+
+        self.family_logits = None
+        if family_weights:
+            self.family_logits = nn.Parameter(
+                torch.full((len(config.EDGE_FAMILIES),), INITIAL_FAMILY_LOGIT)
+            )
+
     # Two HGNN layers: Linear -> propagate -> ReLU -> Dropout -> Linear -> propagate -> ReLU.
     def encode(self, x, graph, weights):
-        hidden = F.relu(hgnn_propagate(self.layer1(x), graph, weights))
+        edge_weight = None
+        if self.family_logits is not None:
+            edge_weight = F.softplus(self.family_logits)[graph["edge_family"]]
+        hidden = F.relu(hgnn_propagate(self.layer1(x), graph, weights, edge_weight))
         hidden = F.dropout(hidden, self.dropout, self.training)
-        return F.relu(hgnn_propagate(self.layer2(hidden), graph, weights))
+        return F.relu(hgnn_propagate(self.layer2(hidden), graph, weights, edge_weight))
+
+    def classify(self, x, z):
+        if self.self_encoder is not None:
+            z = torch.cat([z, self.self_encoder(x)], dim=1)
+        return self.classifier(z).squeeze(-1)  # [num_nodes]
+
+    # Learned family weights w_f, logged next to the HSL statistics.
+    @torch.no_grad()
+    def family_weight_summary(self):
+        if self.family_logits is None:
+            return {}
+        weights = F.softplus(self.family_logits).tolist()
+        return {f"w_{name}": weight for name, weight in zip(config.EDGE_FAMILIES, weights)}
 
     def forward(self, x, graph):
         # x: [num_nodes, input_dim]; graph: output of graph_to_device.
@@ -103,7 +155,8 @@ class HSLModel(nn.Module):
         z0 = self.encode(x, graph, h0_weights)  # [num_nodes, hidden_dim]
 
         if self.structure_learner is None:
-            return {"logits": self.classifier(z0).squeeze(-1), "z0": z0, "z_star": z0, "structure": {}}
+            return {"logits": self.classify(x, z0), "z0": z0, "z_star": z0,
+                    "structure": self.family_weight_summary()}
 
         edge_representations = hyperedge_means(z0, graph)
         refined_graph, refined_weights, structure = self.structure_learner(
@@ -111,8 +164,8 @@ class HSLModel(nn.Module):
         )
         z_star = self.encode(x, refined_graph, refined_weights)  # [num_nodes, hidden_dim]
         return {
-            "logits": self.classifier(z_star).squeeze(-1),  # [num_nodes]
+            "logits": self.classify(x, z_star),
             "z0": z0,
             "z_star": z_star,
-            "structure": structure,
+            "structure": {**structure, **self.family_weight_summary()},
         }

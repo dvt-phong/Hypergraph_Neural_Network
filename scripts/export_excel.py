@@ -86,6 +86,8 @@ EXTRA_PARAMETERS = (
     ("Chọn checkpoint theo", "select_metric"),
     ("LR schedule", "lr_schedule"),
     ("Tag", "tag"),
+    ("Skip connection", "skip_connection"),
+    ("Trọng số family", "family_weights"),
 )
 PARAMETER_HEADERS = (("STT", "Ngày chạy", "Cấu hình") + tuple(h for h, _ in PARAMETERS) + ("Mã lần chạy",)
                      + tuple(h for h, _ in EXTRA_PARAMETERS))
@@ -279,6 +281,10 @@ def describe(settings):
         name = "HSL đầy đủ" if not removed else "HSL, bỏ " + ", ".join(removed)
     if families != list(GRAPH_FAMILIES):
         name += ", chỉ " + " + ".join(families) if families else ", không graph"
+    if settings.get("skip_connection"):
+        name += " + skip"
+    if settings.get("family_weights"):
+        name += " + trọng số family"
     if settings.get("tag"):
         name += f" [{settings['tag']}]"
     return f"{name} (feature: {settings['feature_set']})"
