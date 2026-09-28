@@ -1,0 +1,483 @@
+# Kế hoạch nâng cấp HGNN + HSL (bản 2)
+
+Ngày lập: 28/09/2026. Bản 2 thay cho bản 1 cùng ngày, bổ sung ba phần:
+(1) chẩn đoán vì sao F1 và recall thấp, dao động mạnh; (2) đối chiếu siêu tham
+số với code HGNN và HSL gốc; (3) việc cần sửa theo từng file và bảng thí nghiệm
+cụ thể. Các mã H1–H11 giữ như bản 1.
+
+Mỗi hạng mục có: **vấn đề**, **việc cần làm** (file, hàm), **thí nghiệm**, và
+**tiêu chí đạt**.
+
+---
+
+## 0. Hiện trạng
+
+Lần chạy 5 seed với cấu hình mặc định (`hidden 128`, `lr 1e-3`, `dropout 0.3`,
+`pos_weight 0.319`, `λ 0.1`, `τ 0.07`, `patience 5`):
+
+| | AUC | AUPRC | F1 | Recall |
+|---|---|---|---|---|
+| HSL hiện tại (test, 5 seed) | 0,809 ± 0,003 | 0,910 ± 0,002 | 0,451 ± 0,313 | 0,352 ± 0,294 |
+| Đoán "ai cũng dropout" | 0,500 | 0,758 | **0,862** | 1,000 |
+
+Mốc trong tài liệu: CFIN (Feng, Tang & Liu, AAAI 2019, Bảng 4) trên XuetangX,
+cửa sổ 35 ngày. Tập dữ liệu lớn hơn của mình (467 113 so với 225 642
+enrollment), nên chỉ để tham khảo.
+
+| Mô hình | AUC (%) | F1 (%) |
+|---|---|---|
+| Logistic Regression | 82,23 | 89,35 |
+| GBDT | 85,18 | 90,48 |
+| CFIN | 86,40 | 90,92 |
+
+---
+
+## 1. Chẩn đoán
+
+AUC gần như không đổi giữa các seed (± 0,003), nhưng recall dao động từ 0,03 đến
+0,68. Như vậy thứ tự xếp hạng ổn định, còn **vị trí của ngưỡng 0,5** thay đổi
+theo seed. Có bốn nguyên nhân, tìm được trong code.
+
+**N1. `pos_weight = 0,319` dời ngưỡng thật lên 0,758.**
+[7_losses.py:23-28](../src/7_losses.py#L23-L28) đặt `pos_weight = #âm / #dương`.
+Dropout là lớp **đa số** (75,8%) nên trọng số của nó bị giảm. Với BCE có trọng
+số `w`, xác suất tối ưu model học được là `p = wπ / (wπ + 1 − π)`, trong đó `π`
+là xác suất thật. Thay `π = 0,758`, `w = 0,319` thì `p = 0,5`. Nghĩa là ngưỡng
+0,5 trên đầu ra tương đương ngưỡng 0,758 trên xác suất thật, nên recall thấp kể
+cả khi model đã hội tụ.
+
+**N2. Model chỉ được cập nhật 10–20 lần.** Train full-batch, 1 epoch = 1 bước.
+`eval_every = 5`, `patience = 5` ([8_train.py:45-46](../src/8_train.py#L45-L46))
+nên dừng sau 25 bước không cải thiện; best epoch rơi vào 10–20. Model chưa train
+cho xác suất khoảng 0,47 ([DATA_IO_BY_FILE.md:731](DATA_IO_BY_FILE.md)), sau
+10–20 bước vẫn dồn quanh 0,5. Seed nào lệch lên một chút thì recall cao, lệch
+xuống thì recall gần 0. **Đây là nguồn chính của độ lệch chuẩn 0,3.**
+
+**N3. Chọn checkpoint theo AUC, nhưng F1 tính ở ngưỡng cố định.**
+[8_train.py:210](../src/8_train.py#L210). AUC không phụ thuộc ngưỡng, nên
+checkpoint được chọn có ngưỡng nằm ở đâu cũng được.
+
+**N4. Graph lúc train khác graph lúc đánh giá.** Trong graph train, một node
+nằm trong khoảng 53 hyperedge; trong local graph, target chỉ nằm trong course,
+vài object, behavioral và self-loop
+([TRAINING_FLOW.md mục 8](TRAINING_FLOW.md)). Chuẩn hoá `Dv^-1/2` khác nhau nên
+phân phối logit trên val/test bị dịch so với train. Đây cũng là giải thích hợp
+lý nhất cho việc val AUC đạt đỉnh rất sớm.
+
+**Hệ quả phụ.** Sau khoảng 20 bước, bias của `edge_scorer` và
+`membership_output` gần như vẫn là 3,0 (giữ 95%,
+[6_hsl.py:36](../src/6_hsl.py#L36)). Lúc đánh giá mọi logit > 0 đều được giữ,
+nên `H* ≈ H0 + ΔH`: Me và Mv hầu như chưa cắt gì. Cần kiểm tra lại bằng
+`kept_*` trong `history` (Bước 0).
+
+### Đối chiếu siêu tham số với code gốc
+
+Ký hiệu ⚠: nhớ từ code gốc, **chưa mở lại được trong phiên này**. Em mở
+`iMoonLab/HGNN/config/config.yaml` và `pkualpha/HSL` để kiểm tra trước khi đưa
+vào bài.
+
+| Tham số | Code mình | HGNN gốc ⚠ | HSL gốc (dựa trên code AllSet) | Đánh giá |
+|---|---|---|---|---|
+| Learning rate | 1e-3 | 1e-3 | 1e-3 ⚠ | khớp |
+| Weight decay | 5e-4 | 5e-4 | 0 ⚠ | khớp HGNN |
+| Hidden | 128 | 128 | tuỳ dataset | khớp |
+| Dropout | 0,3 | 0,5 | 0,5 ⚠ | lệch nhẹ |
+| Số epoch | ≤ 200, dừng sau 25 bước | 600, không early stop | 500, không early stop ⚠ | **lệch lớn** (N2) |
+| LR schedule | không | MultiStepLR, milestone 100, γ = 0,9 | không ⚠ | lệch nhẹ |
+| Loss | BCE, `pos_weight` 0,319 | CE không trọng số | CE không trọng số | **lệch lớn** (N1) |
+| Quyết định lớp | ngưỡng 0,5 | argmax | argmax | **lệch lớn** (N3) |
+| Chọn checkpoint | val AUC | "val" acc; trong `train.py`, phase `val` chạy trên tập test ⚠, không nên bắt chước | val acc | cần chỉ số có ngưỡng |
+| Contrastive | λ 0,1, τ 0,07 | – | `contrast: False` cho cả 7 dataset (đã kiểm tra, commit `00b181d`) | cần ablation λ = 0 |
+| Mask Me | có tác dụng | – | dòng `x[:…] * edge_mask` không gán lại nên Me không tác động (đã kiểm tra) | code mình đúng hơn |
+
+**Kết luận:** các siêu tham số của mạng (lr, wd, hidden) đã khớp HGNN. Cần sửa
+**giao thức train và đánh giá** (N1–N3) trước, sau đó mới tới N4 và kiến trúc.
+
+---
+
+## 2. Nguyên tắc làm thí nghiệm
+
+1. **Không nhìn test khi tinh chỉnh.** Mọi lựa chọn (lr, ngưỡng, λ, …) dựa trên
+   validation. Test chỉ chạy một lần cho mỗi cấu hình đã chốt.
+2. **Mỗi lần chỉ đổi một thứ** so với cấu hình gốc của giai đoạn đó.
+3. **Quét tham số với seed 1**, chốt cấu hình, rồi mới chạy 5 seed.
+4. Mỗi cấu hình 5 seed chạy bằng `scripts/run_all.sh`, kết quả nằm ở
+   `result/<ngày>/`, và được ghi vào `docs/ket_qua_thi_nghiem.xlsx` bằng
+   `scripts/export_excel.py` kèm `--note` là mã thí nghiệm (E1.1, E1.2, …).
+5. Mọi bảng đều báo mean ± std trên 5 seed.
+
+---
+
+## 3. Lộ trình
+
+```text
+Ngày 1        Bước 0   đọc lại kết quả cũ, xác nhận N1–N3
+Tuần 1        P0       H1 đánh giá + ngưỡng   H3 giao thức train   H2 baseline + ablation
+              ── Cổng 1 ──
+Tuần 2–3      P1       H4 feature   H5 hyperedge User
+              ── Cổng 2 ──
+Tuần 4–5      P2       H7 train trên local graph   H6 encoder thời gian   H8 backbone   H9 HSL cắt thật
+Tuần 6        P3       H10 contrastive   H11 thống kê + viết
+              ── Cổng 3 ──
+```
+
+---
+
+## Bước 0. Đọc lại kết quả cũ (không cần sửa code)
+
+Chép thư mục `result/<ngày>/` của lần chạy 5 seed từ server về, rồi xem trong
+từng `reports/*_train.json`:
+
+| Cần xem | Nếu thấy | Kết luận |
+|---|---|---|
+| `best_epoch`, `len(history)` | best 10–20, dừng 35–45 | xác nhận N2 |
+| `history[*].validation.recall` qua các lần validate | nhảy mạnh giữa các lần validate, dù AUC ít đổi | xác nhận N2, N3 |
+| `history[*].train_auc` so với `validation.auc` | train AUC tăng tiếp, val AUC đi ngang hoặc giảm sớm | dấu hiệu N4 |
+| `kept_course`, `kept_object`, `kept_behavioral` | đều khoảng 0,95 | HSL chưa cắt gì |
+| `added` | khoảng `2 × số Behavioral hyperedge` | ΔH được giữ gần hết |
+
+**Đạt khi:** có một bảng tóm tắt theo seed cho các cột trên.
+
+---
+
+## P0. Làm đúng trước khi làm tốt hơn (tuần 1)
+
+### H1. Chọn ngưỡng trên validation, sửa trọng số lớp, báo đủ chỉ số
+
+**Vấn đề:** N1, N3.
+
+**Việc cần làm.**
+
+| File | Thay đổi |
+|---|---|
+| [8_train.py](../src/8_train.py) `classification_metrics` | Nhận thêm `threshold`. Trả về: `auc`, `auprc`, `f1`, `precision`, `recall` (lớp dropout, tại ngưỡng), `f1_at_0.5`, `macro_f1`, `f1_negative`, `auprc_negative` (lớp không dropout, dùng `1 − p`). |
+| [8_train.py](../src/8_train.py) hàm mới `best_threshold(labels, probabilities)` | Dùng `precision_recall_curve`, tính `F1 = 2PR / (P + R)`, trả về ngưỡng cho F1 cao nhất. |
+| [8_train.py](../src/8_train.py) `evaluate` | Trả thêm mảng xác suất; lưu ra `outputs/reports/<run>_<split>_probs.npz` (nhãn + xác suất) để vẽ histogram. |
+| [8_train.py](../src/8_train.py) `train` | Sau khi train xong, nạp lại best checkpoint, đánh giá trên **toàn bộ** validation, tính `t*`, ghi `t*` vào checkpoint và `_train.json`. |
+| [8_train.py](../src/8_train.py) `test` | Dùng `t*` đọc từ checkpoint; vẫn báo thêm `f1_at_0.5` để so với bản cũ. |
+| [7_losses.py](../src/7_losses.py) `positive_class_weight` | Thêm setting `pos_weight`: `"balanced"` (như cũ) hoặc một số (mặc định **1.0**). CLI `--pos-weight`. |
+| [8_train.py](../src/8_train.py) | Setting `select_metric` ∈ {`auc`, `auprc`}, mặc định `auprc`. CLI `--select-metric`. |
+| `scripts/collect_results.py`, `scripts/export_excel.py` | Thêm cột `threshold`, `macro_f1`, `f1_negative`, `auprc_negative`, `f1_at_0.5`. |
+| Script mới `scripts/plot_probs.py` | Histogram xác suất val theo nhãn, 5 seed trên cùng một hình. |
+
+**Thí nghiệm.**
+
+| Mã | Cấu hình | Mục đích |
+|---|---|---|
+| E1.1 | 5 checkpoint cũ, chỉ chạy lại đánh giá với `t*` | Tách riêng ảnh hưởng của ngưỡng, không train lại |
+| E1.2 | cấu hình cũ + `--pos-weight 1`, 5 seed | Ảnh hưởng của trọng số lớp |
+
+**Đạt khi:** std của F1 test giữa các seed < 0,01, và F1 test > 0,862. Histogram
+của E1.1 cho thấy 5 phân phối dồn quanh 0,5 ở các vị trí lệch nhau (hình này dùng
+được trong báo cáo để giải thích kết quả bản 1).
+
+### H3. Train đủ số bước
+
+**Vấn đề:** N2.
+
+**Việc cần làm.**
+
+| File | Thay đổi |
+|---|---|
+| [8_train.py](../src/8_train.py) `DEFAULT_SETTINGS` | `epochs` 600, `patience` 20, `dropout` 0,5, `validation_limit` 5 000 (tập con cố định theo seed, đã có sẵn trong `evaluate`). |
+| [8_train.py](../src/8_train.py) | Tuỳ chọn `--lr-schedule` ∈ {`none`, `multistep`} (milestone 100, γ 0,9, giống HGNN). |
+| [8_train.py](../src/8_train.py) | Ghi thời gian mỗi epoch và mỗi lần validate vào `history` để ước lượng ngân sách chạy. |
+| Script mới `scripts/plot_history.py` | Vẽ `loss`, `bce`, `contrastive`, `train_auc`, `validation.auc`, `kept_*` theo epoch. |
+
+**Thí nghiệm** (seed 1, sau đó chạy 5 seed với cấu hình tốt nhất):
+
+| Mã | Quét |
+|---|---|
+| E3.1 | lr ∈ {1e-3, 3e-3, 1e-2} |
+| E3.2 | dropout ∈ {0,3; 0,5} với lr tốt nhất |
+| E3.3 | `--lr-schedule multistep` với lr tốt nhất |
+
+**Đạt khi:** đường val AUC tăng rồi đi ngang rõ ràng trước khi dừng; best epoch
+> 50; std của AUC vẫn ≤ 0,005.
+
+Từ đây gọi cấu hình tốt nhất của H1 + H3 là **cấu hình P0**. Mọi thí nghiệm sau
+đều so với nó.
+
+### H2. Baseline và ablation
+
+**Vấn đề:** chưa biết phần cải thiện đến từ feature, từ graph hay từ HSL. Bài HSL
+(Bảng 1) cho thấy MLP chỉ kém hypergraph dưới 1% trên một số dataset; trên dữ
+liệu bảng, mô hình cây thường mạnh (Grinsztajn et al., NeurIPS 2022).
+
+**Việc cần làm.**
+
+| File | Thay đổi |
+|---|---|
+| [4_hypergraph.py](../src/4_hypergraph.py) `load_train_graph`, `load_evaluation_split` | Tham số `families` (mặc định tất cả): chỉ giữ membership của các family được chọn, self-loop luôn giữ. CLI `--families course,object,behavioral`. |
+| MLP | Chạy `--no-hsl --families self_loop`. Khi chỉ còn self-loop, bậc node và bậc hyperedge đều bằng 1, nên HGNN hai lớp trở thành đúng MLP hai lớp, cùng code và cùng giao thức. |
+| File mới `src/9_baselines.py` | Logistic Regression và LightGBM trên `X.npy`, chọn `t*` trên validation, báo cùng bộ chỉ số như H1. Thêm `lightgbm` vào `requirements.txt`. |
+
+**Thí nghiệm** (5 seed, cấu hình P0):
+
+| Mã | Nhóm | Cấu hình |
+|---|---|---|
+| E2.1 | Không graph | LR, LightGBM |
+| E2.2 | Không graph | MLP (`--no-hsl --families self_loop`) |
+| E2.3 | Graph, không học cấu trúc | HGNN (`--no-hsl`) |
+| E2.4 | Ablation HSL | `--no-edge-sampling` |
+| E2.5 | Ablation HSL | `--no-node-sampling` |
+| E2.6 | Ablation HSL | `--add-per-edge 0` |
+| E2.7 | Ablation HSL | `--lambda-cl 0` |
+| E2.8 | Ablation family | bỏ lần lượt Course / Object / Behavioral |
+| E2.9 | Ablation feature | `--feature-set behavior / behavior_user / behavior_course` |
+
+**Đạt khi:** có bảng trả lời được ba câu hỏi: graph có hơn LightGBM không, HSL có
+hơn HGNN không, và thành phần nào đóng góp nhiều nhất.
+
+### Cổng 1 (cuối tuần 1)
+
+- LightGBM ≥ HGNN/HSL: làm P1 (feature, User hyperedge) trước, chưa đụng kiến
+  trúc.
+- HGNN > LightGBM nhưng HSL ≈ HGNN: vẫn làm P1, và đưa H9 lên sớm.
+- HSL > HGNN > LightGBM: làm P1 rồi P2 theo thứ tự.
+
+---
+
+## P1. Tăng tín hiệu đầu vào (tuần 2–3)
+
+### H4. Bổ sung feature theo CFIN
+
+**Vấn đề.** `X` hiện chỉ có số event theo ngày, số lần theo action, và
+user/course dạng one-hot. `session_id` có trong log nhưng bị bỏ ở bước 2; chưa có
+tỉ lệ làm bài đúng, độ gần đây, số ngày hoạt động. CFIN (Bảng 3, 5) cho thấy thời
+lượng và số session, tỉ lệ trả lời đúng, và cách tổng hợp video ảnh hưởng rõ tới
+dropout.
+
+**Việc cần làm.**
+
+| File | Thay đổi |
+|---|---|
+| [2_preprocess.py](../src/2_preprocess.py) `stream_events` | Giữ `session_id` trong CSV của từng split. |
+| [3_features.py](../src/3_features.py) `build_split_features` | Thêm các khối feature ở bảng dưới, đặt sau khối behavior. |
+| [0_config.py](../src/0_config.py) | Cập nhật số cột và vị trí các khối; `feature_columns` thêm tập `full_v2`. |
+| [4_hypergraph.py](../src/4_hypergraph.py) | kNN của Behavioral vẫn chỉ dùng khối behavior cũ, để H0 không đổi khi so sánh. |
+
+| Feature | Cách tính |
+|---|---|
+| Session | số session, tổng và trung bình thời lượng session |
+| Hoạt động | số ngày có hoạt động, ngày hoạt động cuối (recency), chuỗi ngày liên tiếp dài nhất, số event theo tuần |
+| Assignment | `problem_check_correct / problem_check`, số lần reset trên mỗi bài |
+| Video | số video khác nhau đã xem / tổng số video của khoá |
+| Context theo khoá | (feature − trung bình của khoá) / std của khoá, **thống kê chỉ tính trên train** |
+| Context theo user | trung bình / max của cùng user trên các enrollment khác (chỉ feature, không nhãn) |
+
+**Thí nghiệm.** E4.1: LightGBM, MLP, HGNN, HSL trên `full_v2`, 5 seed.
+
+**Đạt khi:** LightGBM trên `full_v2` đạt AUC ≥ 0,83; HGNN và HSL tăng tương ứng.
+
+### H5. Hyperedge User (cùng một người, khác khoá)
+
+**Vấn đề.** Đo trên dữ liệu của mình: khoảng 52% user trong train có ≥ 2
+enrollment; 75,6% enrollment validation và 76,1% enrollment test có cùng user
+trong train. CFIN (trang 519–520) báo xác suất dropout của một user giữa các khoá
+tương quan dương rõ rệt. Graph hiện tại chưa nối các enrollment này.
+
+**Việc cần làm.**
+
+| File | Thay đổi |
+|---|---|
+| [0_config.py](../src/0_config.py) | `EDGE_FAMILIES = ("course", "object", "behavioral", "user", "self_loop")`. |
+| [4_hypergraph.py](../src/4_hypergraph.py) `build_train_hyperedges` | Mỗi user có ≥ 2 enrollment train tạo một hyperedge User. |
+| [4_hypergraph.py](../src/4_hypergraph.py) `load_evaluation_split`, `build_local_graph` | `members_by_key` thêm khoá user; target tham gia hyperedge User gồm các enrollment train của cùng user. |
+| [6_hsl.py](../src/6_hsl.py) | Không cần sửa: `edge_scorer` đã nhận one-hot family nên tự thêm được family mới. ΔH vẫn chỉ áp cho Behavioral. |
+
+**Rủi ro.** Chỉ lan truyền feature, **không** dùng nhãn của enrollment khác làm
+feature, vì trong thực tế các khoá có thể diễn ra cùng lúc. Nếu cần chặt chẽ về
+thời gian, chỉ nối với các khoá bắt đầu trước hoặc cùng lúc với khoá của target.
+
+**Thí nghiệm.** E5.1: HGNN và HSL, có và không có User, 5 seed. E5.2: User giới
+hạn trong cùng category.
+
+**Đạt khi:** AUC tăng nhiều hơn std giữa các seed. Nếu đạt, đây là đóng góp riêng
+về cấu trúc có thể viết thành bài.
+
+### Cổng 2 (cuối tuần 3)
+
+- Hypergraph (nhất là có User) hơn LightGBM trên cùng bộ feature: câu chuyện của
+  luận án là *quan hệ bậc cao giữa các enrollment giúp dự đoán dropout*. Làm P2.
+- Hypergraph không hơn LightGBM: ưu tiên H7 (sửa N4) trước khi kết luận, vì graph
+  đang bị đánh giá trên phân phối khác lúc train.
+
+---
+
+## P2. Mô hình và cách train (tuần 4–5)
+
+### H7. Train trên local graph, giống lúc đánh giá (ưu tiên cao nhất của P2)
+
+**Vấn đề:** N4, và đồng thời N2 (quá ít bước cập nhật).
+
+**Việc cần làm.** Hai phương án:
+
+- **(A) Inductive, giữ thiết lập hiện tại.** Mỗi bước lấy mẫu 256 node train làm
+  target. Dựng local graph cho từng target bằng đúng `build_local_graph`, nhưng
+  **loại chính target khỏi các hyperedge của nó** (target đóng vai "học viên
+  mới", giống val/test). Mỗi epoch có khoảng 490 bước.
+  - [4_hypergraph.py](../src/4_hypergraph.py): hàm `load_train_split_as_targets`
+    trả về cùng cấu trúc như `load_evaluation_split` cho split train, kèm danh
+    sách láng giềng đã loại chính node.
+  - [8_train.py](../src/8_train.py): vòng lặp mini-batch dùng
+    `merge_local_graphs`; contrastive loss lấy anchor trong batch.
+- **(B) Transductive.** Đưa node val/test vào graph như node **không có nhãn**.
+  Không lộ nhãn, và đúng với thực tế là khi dự đoán thì log 35 ngày của cả khoá
+  đã có. Bài HSL dùng cách này. Đây là thay đổi về thiết lập thí nghiệm nên cần
+  thống nhất với thầy hướng dẫn và ghi rõ khi viết.
+
+Làm (A) trước vì giữ được thiết lập hiện tại.
+
+**Bằng chứng.** GraphSAGE (NeurIPS 2017) và ShaDow-GNN (NeurIPS 2021) dùng cùng
+một bộ trích subgraph cục bộ cho cả train và suy luận; GraphSAINT (ICLR 2020) và
+Cluster-GCN (KDD 2019) train mini-batch trên subgraph; SIG-Net cũng dựng subgraph
+cho từng cặp learner–course.
+
+**Thí nghiệm.** E7.1: HGNN và HSL theo (A), 5 seed, so với cấu hình P0.
+
+**Đạt khi:** khoảng cách AUC train/val hẹp lại; AUC val tăng; `t*` gần 0,5 hơn
+(logit không còn bị dịch).
+
+### H6. Encoder theo thời gian cho 35 ngày
+
+**Vấn đề.** 35 cột theo ngày đi qua một `Linear` như các cột độc lập, nên model
+không biết ngày 5 đứng sau ngày 4. Các bài dropout đều có module thời gian (Fei &
+Yeung 2015; CFIN; MST-GCN; CA-TFHN).
+
+**Việc cần làm.** Bước 3 lưu thêm tensor `(N, 35, số action)`. Trong
+[5_model.py](../src/5_model.py), thay `layer1` bằng: 1D-CNN hoặc GRU trên chuỗi
+ngày ‖ MLP cho phần tĩnh, ghép lại rồi mới vào HGNN.
+
+**Đạt khi:** AUC tăng ở cả MLP và HGNN so với H4.
+
+### H8. Backbone: trọng số theo family và chống over-smoothing
+
+**Vấn đề.** Course hyperedge có 151–2 361 thành viên, lấy trung bình đều; ba
+family đang có trọng số như nhau (`W = I`, trong khi HGNN có ma trận `W`).
+
+**Việc cần làm** (theo thứ tự tăng độ phức tạp, dừng khi hết cải thiện):
+1. Học trọng số `w_f` cho từng family trong `hgnn_propagate`
+   ([5_model.py:61](../src/5_model.py#L61)).
+2. Thêm residual `Z = HGNN(X) + XΘ` (kiểu UniGCNII).
+3. Thay backbone bằng AllSetTransformer (backbone gốc của HSL).
+
+**Đạt khi:** AUC tăng; độ over-smoothing giảm (cosine trung bình giữa các thành
+viên cùng khoá thấp hơn).
+
+### H9. Làm cho HSL thật sự học cấu trúc
+
+**Vấn đề.** Bias khởi tạo cho xác suất giữ khoảng 0,95 và không có gì thúc HSL cắt
+bớt. Bài HSL báo tỉ lệ pruning `r^v` từ 11% đến 88%; PTDNet (WSDM 2021) cần phạt
+độ thưa thì mới loại được cạnh nhiễu.
+
+**Việc cần làm** trong [6_hsl.py](../src/6_hsl.py) và
+[7_losses.py](../src/7_losses.py):
+1. Log `r^v` (tỉ lệ membership bị cắt) theo family.
+2. Thêm phạt `β · mean(p_keep)` hoặc ngân sách giữ lại theo family; CLI `--beta`.
+3. Giảm dần Gumbel τ từ 1 xuống 0,1 (Jang et al., ICLR 2017), thay vì cố định 0,4.
+4. Phân tích định tính: family nào hay bị cắt (object hiếm? course lớn?).
+
+**Đạt khi:** `r^v` rõ ràng lớn hơn 0 và AUC không giảm. Có một hình phân tích
+cấu trúc bị cắt để đưa vào bài.
+
+---
+
+## P3. Hoàn thiện (tuần 6)
+
+### H10. Contrastive: augmentation và nhiệt độ
+
+**Vấn đề.** Hai view Z0 và Z\* gần như trùng nhau khi `H* ≈ H0`; τ = 0,07 rất
+thấp so với chỉ 64 cặp âm. Bản HSL công bố tắt contrastive.
+
+**Việc cần làm.** Thêm mask feature và mask theo ngày cho một view; quét
+τ ∈ {0,07; 0,2; 0,5} và λ ∈ {0; 0,05; 0,1; 0,5}.
+
+**Đạt khi:** có ít nhất một cấu hình hơn λ = 0 có ý nghĩa thống kê. Nếu không có,
+bỏ contrastive và ghi rõ trong bài.
+
+### H11. Thống kê và cách báo cáo
+
+- Kiểm định DeLong cho AUC giữa mô hình chính và baseline tốt nhất; Wilcoxon theo
+  seed cho F1 và AUPRC.
+- Báo thời gian train, bộ nhớ GPU; ECE nếu có hiệu chỉnh xác suất.
+- Bảng chính: LR, LightGBM, MLP, HGNN, HSL, HSL + User; các cột AUC, AUPRC,
+  F1 (tại `t*`), macro-F1, F1 lớp không dropout.
+
+### Cổng 3 (cuối tuần 6)
+
+Chốt cấu hình, chạy lại toàn bộ bảng thí nghiệm bằng `scripts/run_tmux.sh`, rồi
+viết. Nếu HSL không hơn HGNN, trình bày HSL như một ablation có kết quả âm, kèm
+phân tích `r^v` và `kept_*`.
+
+---
+
+## 4. Bảng theo dõi
+
+| Mã | Hạng mục | Trạng thái | Kết quả chính |
+|---|---|---|---|
+| B0 | Đọc lại kết quả cũ | chưa làm | |
+| E1.1 | Đánh giá lại với `t*` | chưa làm | |
+| E1.2 | `pos_weight` 1 | chưa làm | |
+| E3.1–E3.3 | lr, dropout, schedule | chưa làm | |
+| E2.1–E2.9 | Baseline + ablation | chưa làm | |
+| E4.1 | Feature `full_v2` | chưa làm | |
+| E5.1–E5.2 | Hyperedge User | chưa làm | |
+| E7.1 | Train trên local graph | chưa làm | |
+| H6, H8, H9, H10 | Mô hình | chưa làm | |
+
+---
+
+## 5. Rủi ro
+
+| Rủi ro | Cách xử lý |
+|---|---|
+| Validate trên 31 589 local graph tốn thời gian | `validation_limit 5000` trong lúc train; chỉ đánh giá toàn bộ val một lần cho best checkpoint |
+| Lộ nhãn qua feature context hoặc User hyperedge | Thống kê chỉ tính trên train, không bao giờ dùng nhãn làm feature |
+| Tinh chỉnh quá khớp validation | Quét với 1 seed, báo 5 seed; test chỉ chạy một lần cho cấu hình đã chốt |
+| Số ⚠ trong bảng đối chiếu sai | Mở lại `config.yaml` của HGNN và code HSL trước khi đưa vào bài |
+
+---
+
+## Tài liệu dẫn
+
+Đã đối chiếu trực tiếp nội dung:
+
+- Feng, W., Tang, J., Liu, T. X. *Understanding Dropouts in MOOCs.* AAAI 2019,
+  517–524. https://ojs.aaai.org/index.php/AAAI/article/view/3825 (Bảng 3, 4, 5).
+- Cai, D. et al. *Hypergraph Structure Learning for Hypergraph Neural Networks.*
+  IJCAI 2022, 1923–1929. https://doi.org/10.24963/ijcai.2022/267 (Bảng 1).
+  Code: https://github.com/pkualpha/HSL (commit `00b181d`).
+- Feng, Y. et al. *Hypergraph Neural Networks.* AAAI 2019, 3558–3565.
+  https://doi.org/10.1609/aaai.v33i01.33013558. Code:
+  https://github.com/iMoonLab/HGNN.
+
+Dẫn theo hiểu biết chung, cần mở bản gốc để kiểm tra trước khi đưa vào bài:
+
+- Lipton, Elkan, Naryanaswamy. *Optimal Thresholding of Classifiers to Maximize
+  F1 Measure.* ECML-PKDD 2014.
+- Saito, Rehmsmeier. *The Precision-Recall Plot Is More Informative than the ROC
+  Plot When Evaluating Binary Classifiers on Imbalanced Datasets.* PLOS ONE 2015.
+- Guo et al. *On Calibration of Modern Neural Networks.* ICML 2017.
+- Grinsztajn, Oyallon, Varoquaux. *Why do tree-based models still outperform deep
+  learning on typical tabular data?* NeurIPS 2022 (Datasets & Benchmarks).
+- Shchur et al. *Pitfalls of Graph Neural Network Evaluation.* NeurIPS 2018 R2L
+  Workshop.
+- Fei, Yeung. *Temporal Models for Predicting Student Dropout in MOOCs.* ICDMW
+  2015.
+- Hamilton, Ying, Leskovec. *Inductive Representation Learning on Large Graphs.*
+  NeurIPS 2017.
+- Zeng et al. *Decoupling the Depth and Scope of Graph Neural Networks.* NeurIPS
+  2021.
+- Zeng et al. *GraphSAINT.* ICLR 2020.
+- Chiang et al. *Cluster-GCN.* KDD 2019.
+- Gao et al. *HGNN+: General Hypergraph Neural Networks.* IEEE TPAMI 2023.
+- Huang, Yang. *UniGNN.* IJCAI 2021.
+- Chien et al. *You are AllSet.* ICLR 2022.
+- Luo et al. *Learning to Drop: Robust Graph Neural Network via Topological
+  Denoising.* WSDM 2021.
+- Jang, Gu, Poole. *Categorical Reparameterization with Gumbel-Softmax.* ICLR 2017.
+- You et al. *Graph Contrastive Learning with Augmentations.* NeurIPS 2020.
+- Wang, Liu. *Understanding the Behaviour of Contrastive Loss.* CVPR 2021.
+- DeLong, DeLong, Clarke-Pearson. *Comparing the Areas under Two or More
+  Correlated ROC Curves.* Biometrics 1988.
