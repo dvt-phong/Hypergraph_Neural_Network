@@ -12,7 +12,7 @@
 # Environment variables:
 #   SEEDS="1 11"          seeds to run          (default: 1 11 111 1111 11111)
 #   VENV_DIR=path         virtual environment   (default: <project>/.venv)
-#   PYTHON=path           python executable     (default: $VENV_DIR/bin/python)
+#   PYTHON=path           python executable     (default: $VENV_DIR/bin/python, else the activated venv/conda env, else python3)
 #
 # Output: result/<dd-mm-yyyy_HH-MM>/
 #   pipeline.log          everything, in order
@@ -76,16 +76,25 @@ run_step() {
 # ---------------------------------------------------------------------------
 # Python environment
 # ---------------------------------------------------------------------------
-# The project's virtual environment (.venv) is used unless PYTHON is given.
+# Python is taken from, in order: PYTHON, the project's .venv, the activated
+# virtualenv (source .../bin/activate), the active conda environment, then
+# python3 on PATH.
 if [[ -z "$PYTHON" ]]; then
     if [[ -x "$VENV_DIR/bin/python" ]]; then
         PYTHON="$VENV_DIR/bin/python"
+    elif [[ -n "${VIRTUAL_ENV:-}" && -x "$VIRTUAL_ENV/bin/python" ]]; then
+        PYTHON="$VIRTUAL_ENV/bin/python"
+    elif [[ -n "${CONDA_PREFIX:-}" && -x "$CONDA_PREFIX/bin/python" ]]; then
+        PYTHON="$CONDA_PREFIX/bin/python"
+    elif command -v python3 > /dev/null 2>&1; then
+        PYTHON="$(command -v python3)"
     else
-        say "No $VENV_DIR/bin/python. Create it with:"
-        say "  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
+        say "No Python found. Activate the environment first (source .venv/bin/activate),"
+        say "or create one: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
         exit 1
     fi
 fi
+say "Python: $PYTHON"
 if ! "$PYTHON" -c "import numpy, torch, sklearn" > /dev/null 2>&1; then
     say "'$PYTHON' cannot import numpy/torch/sklearn; run: $PYTHON -m pip install -r requirements.txt"
     exit 1
