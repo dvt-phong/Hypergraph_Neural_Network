@@ -23,6 +23,8 @@
 #   -- not run by default --
 #   b1-nob        HSL    --skip-connection --families course,object   without Behavioral
 #   b1-nob-hgnn   HGNN   --no-hsl --skip-connection --families course,object
+#   b1-hgnn       HGNN   --no-hsl --skip-connection                   all families, no W
+#   b12-nob-hgnn  HGNN   --no-hsl --skip-connection --family-weights --families course,object
 #   b2            HSL    --family-weights
 #   b12-wd5e-5    HSL    b12 + --weight-decay 5e-5
 #   b12-wd0       HSL    b12 + --weight-decay 0
@@ -60,6 +62,8 @@ run_config b12        --skip-connection --family-weights
 run_config b12-hgnn   --no-hsl --skip-connection --family-weights
 run_config b1-nob      --skip-connection --families course,object
 run_config b1-nob-hgnn --no-hsl --skip-connection --families course,object
+run_config b1-hgnn     --no-hsl --skip-connection
+run_config b12-nob-hgnn --no-hsl --skip-connection --family-weights --families course,object
 run_config b2         --family-weights
 run_config b12-wd5e-5 --skip-connection --family-weights --weight-decay 5e-5
 run_config b12-wd0    --skip-connection --family-weights --weight-decay 0

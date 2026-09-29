@@ -263,6 +263,24 @@ khoảng 0,5 điểm.
 - Khi có skip, HSL hơn HGNN 0,003. Có thể do lấy mẫu Gumbel đóng vai trò chống
   overfit cho nhánh graph (giống DropEdge), nhưng mới có 1 seed nên chưa kết luận.
 
+**Bỏ Behavioral (seed 1):**
+
+| Cấu hình | Val AUC | Test AUC | Test AUPRC | Best / đã chạy |
+|---|---|---|---|---|
+| b1-nob: HSL + skip, Course + Object | 0,8673 | 0,8692 | 0,9405 | 310 / 610 |
+| **b1-nob-hgnn: HGNN + skip, Course + Object** | **0,8710** | **0,8730** | **0,9450** | 745 / 1000 |
+
+- **Lần đầu graph vượt MLP:** +0,0039 test AUC, +0,0038 val AUC, +0,004 AUPRC;
+  vượt cả GBDT (+0,0031). Val và test tăng cùng mức, và mức tăng khớp với trần dự
+  đoán ở mục 1. Xác nhận nguyên nhân 2 và 3: Behavioral chặn thông tin hữu ích.
+- **HSL giờ kéo xuống:** cùng cấu hình, HSL thấp hơn HGNN 0,0038. Không còn
+  Behavioral thì ΔH cũng tắt, nên khác biệt chỉ còn mask cứng Me/Mv và
+  contrastive, phù hợp với mục 5. Khi còn Behavioral, nhiễu Gumbel có thể đã giúp
+  chống lại phần thừa; bỏ Behavioral đi thì lợi ích này mất.
+- Cần xác nhận bằng 5 seed, và bổ sung hai ô ablation `b1-hgnn` (HGNN + skip, đủ
+  family, không `W`) và `b12-nob-hgnn` (thêm `W`, bỏ Behavioral) để tách tác dụng
+  của việc bỏ Behavioral khỏi tác dụng của trọng số family.
+
 ## Tài liệu dẫn
 
 - Feng, Y. et al. *Hypergraph Neural Networks.* AAAI 2019 (ma trận `W`, Eq. 10).
