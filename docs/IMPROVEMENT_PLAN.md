@@ -60,6 +60,25 @@ ONLY="logreg gbdt mlp hgnn" SKIP_PREP=1 RUN_SCRIPT=scripts/run_p0.sh bash script
 | HGNN với HSL | \|Δ AUC\| < 0,003 | Module HSL chưa đóng góp gì (khớp với `kept` ≈ 0,99): làm bước C |
 | GBDT với mọi mô hình nơ-ron | GBDT hơn rõ | Dữ liệu dạng bảng; cần B và H4 để thu hẹp khoảng cách |
 
+**Kết quả bước A (29/09/2026, test, 5 seed):**
+
+| Mô hình | AUC | AUPRC | F1 | Macro-F1 | F1 lớp không bỏ | Best epoch / epoch đã chạy |
+|---|---|---|---|---|---|---|
+| GBDT | **0,8699 ± 0,0002** | **0,9418** | 0,9089 | 0,7771 | 0,6452 | – |
+| MLP | **0,8693 ± 0,0001** | 0,9410 | 0,9089 | **0,7800** | **0,6511** | 485–590 / 585–600 |
+| LR | 0,8544 ± 0 | 0,9318 | 0,9065 | 0,7698 | 0,6331 | – |
+| HGNN | 0,8398 ± 0,0081 | 0,9269 | 0,8991 | 0,7457 | 0,5923 | 45–600 / 145–600 |
+| HSL (lần 3) | 0,8324 ± 0,0009 | 0,9236 | 0,8969 | 0,7364 | 0,5758 | 65–115 / 165–215 |
+
+- **MLP ≥ HSL, và MLP ≈ GBDT.** Lan truyền trên graph làm mất khoảng 3 điểm AUC.
+  Encoder nơ-ron không kém mô hình cây; giới hạn khoảng 0,87 đến từ feature.
+- **Early stopping cắt ngang mô hình graph.** HGNN seed 111 và 11111 chạy hết 600
+  epoch (best 595–600, vẫn đang tăng), đạt AUC 0,846. Seed 11 và 1111 dừng ở epoch
+  145–180, chỉ đạt 0,829–0,833 (vì thế std lớn). HSL dừng ở epoch 165–215, rất có
+  thể cùng hiện tượng này. MLP cần 500–600 epoch.
+- **Chưa so sánh được HSL với HGNN**, vì hai bên chưa được train cùng điều kiện.
+  Bước B thêm cặp `b0` / `b0-hgnn` được train dài như nhau để trả lời câu này.
+
 #### Bước B. Sửa encoder cho khỏi underfit
 
 | Mã | Việc | File | Chi tiết |
@@ -69,17 +88,28 @@ ONLY="logreg gbdt mlp hgnn" SKIP_PREP=1 RUN_SCRIPT=scripts/run_p0.sh bash script
 | B2 | **Trọng số theo family** (H8, bước 1) | [5_model.py](../src/5_model.py) `hgnn_propagate`; cờ `--family-weights` | Mỗi family course/object/behavioral/self-loop có một trọng số học được `softplus(w_f)`, nhân vào trọng số membership. Model tự giảm ảnh hưởng của hyperedge course lớn |
 | B3 | Giảm regularization | chỉ dùng cờ | Quét `--weight-decay` {5e-4, 5e-5, 0}, `--dropout` {0,5; 0,2}, `--hidden-dim` {128, 256} |
 
-Sàng lọc với seed 1, mỗi cấu hình một `--tag`:
+Sàng lọc với seed 1 bằng `scripts/run_b.sh`. Mọi cấu hình train tối đa 1000
+epoch với patience 60 (300 epoch không cải thiện mới dừng), vì bước A cho thấy
+mô hình graph hay dừng ở đoạn đi ngang tạm thời:
 
 ```bash
-SEEDS="1" NOTE="B1 skip" bash scripts/run_tmux.sh --skip-prep --skip-connection --tag b1
-SEEDS="1" NOTE="B1+B2" bash scripts/run_tmux.sh --skip-prep --skip-connection --family-weights --tag b12
-SEEDS="1" NOTE="B1+B2, wd 5e-5" bash scripts/run_tmux.sh --skip-prep --skip-connection --family-weights --weight-decay 5e-5 --tag b12-wd5e-5
-# ... các ô còn lại của B3; mỗi lần chạy một cấu hình, không chạy song song
+RUN_SCRIPT=scripts/run_b.sh bash scripts/run_tmux.sh
 ```
 
-**Đạt khi:** train AUC > 0,87 và test AUC ≥ max(MLP, LR) + 0,005. Cấu hình tốt
-nhất được chạy lại 5 seed.
+| Tên | Mô hình | Cờ | Trả lời câu hỏi |
+|---|---|---|---|
+| b0 | HSL | (cấu hình P0) | Khoảng cách với MLP có phải do dừng sớm? |
+| b0-hgnn | HGNN | `--no-hsl` | HSL có hơn HGNN khi train như nhau? (quyết định bước C) |
+| b1 | HSL | `--skip-connection` | Skip có đưa HSL lên ít nhất bằng MLP? |
+| b12 | HSL | `--skip-connection --family-weights` | Trọng số family có thêm gì? |
+| b12-hgnn | HGNN | `--no-hsl --skip-connection --family-weights` | HSL với HGNN, khi cả hai có skip |
+
+Các cấu hình B3 (`b2`, `b12-wd5e-5`, `b12-wd0`, `b12-do0.2`, `b12-h256`) vẫn có sẵn
+trong script, chỉ chạy khi cần: `ONLY="b12-wd0 b12-h256" RUN_SCRIPT=scripts/run_b.sh bash scripts/run_tmux.sh`.
+
+**Mốc so sánh:** MLP seed 1, test AUC 0,8691. **Đạt khi** cấu hình tốt nhất có
+test AUC ≥ 0,8691 + 0,003, tức graph đóng góp thêm vào MLP. Cấu hình đó được chạy
+lại 5 seed.
 
 #### Cổng A/B
 
@@ -523,9 +553,9 @@ nghiệm cần chạy trên server.
 | H2 | Code: `--families`, `9_baselines.py` | xong | |
 | E1.1 | Đánh giá lại với `t*` | chưa chạy | `8_train.py --mode test --checkpoint <cũ>.pt` |
 | E1.2 + H3 | HSL, cấu hình P0 (lần 3) | xong, 5 seed | AUC 0,8324 ± 0,0009; F1 0,8969 ± 0,0005. Train AUC ≈ 0,85 (underfit); `kept_*` ≈ 0,99 |
-| A | LR, GBDT, MLP, HGNN × 5 seed | đang chạy trên server | |
+| A | LR, GBDT, MLP, HGNN × 5 seed | xong | AUC: GBDT 0,8699; MLP 0,8693; LR 0,8544; HGNN 0,8398 ± 0,0081. Graph đang làm giảm AUC |
 | B0–B2 | Code: tập con val cố định, `--skip-connection`, `--family-weights` | xong | |
-| B1–B3 | Sàng lọc 1 seed | chưa chạy | |
+| B (run_b.sh) | b0, b0-hgnn, b1, b12, b12-hgnn; seed 1; 1000 epoch, patience 60 | chưa chạy | |
 | C1–C3 | HSL cắt thật | chờ bước A | |
 | E3.1–E3.3 | lr, dropout, schedule | chưa chạy | |
 | E2.1 | LR, GBDT (chạy thử 1 seed trên máy local, 28/09) | xong 1 seed | Test: LR AUC 0,845, F1 0,905; GBDT AUC 0,868, AUPRC 0,941, F1 0,908. **Cả hai đều cao hơn HSL hiện tại (AUC 0,809).** Cần chạy đủ 5 seed |
