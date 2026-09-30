@@ -427,6 +427,33 @@ trên `[Z ‖ MLP(X)]`; BCE với `pos_weight` = 1; ngưỡng t\* chọn trên v
 | + Trọng số `W` học được (mô hình chính) | 0,8737 ± 0,0002 | 0,910 |
 | Mốc: GBDT / MLP | 0,8699 / 0,8693 | |
 
+**Lần chạy cuối (tag `final`, tối đa 1500 epoch, 5 seed, 02/10/2026):** test AUC
+0,8736 ± 0,0004, AUPRC 0,9448 ± 0,0004, F1 0,9099, macro-F1 0,7827 ± 0,0056, val AUC
+0,8714 ± 0,0007; epoch đã chạy 915–1485 (không seed nào chạm 1500).
+
+Tự phản biện sau lần chạy này:
+- Train tới 1500 epoch **không tăng** AUC so với 1000 epoch (0,8737 ± 0,0002): 1000
+  epoch là đủ. Hai lần chạy độc lập cùng cấu hình cho cùng con số, nên kết quả tái
+  lập được.
+- Cùng seed nhưng khác lần chạy vẫn khác nhau (seed 1: best epoch 715 và 615) do
+  `index_add_` trên GPU không tất định; std giữa các seed đã gồm dao động này.
+- Mức hơn của trọng số family so với b1-nob-hgnn (0,0007–0,0008) chỉ khoảng 2 std.
+  DeLong không tính dao động giữa các lần train. Kết luận đúng: trọng số family
+  không làm giảm độ chính xác và giúp model tự phát hiện Behavioral thừa (fw2-hgnn);
+  không khẳng định nó làm tăng AUC.
+- Tỉ lệ Course/self ở best epoch: 0,35 / 0,28 / 0,21 / 0,16 / 0,45 (trung bình
+  0,29 ± 0,11), giảm dần khi best epoch muộn hơn, trong khi AUC không đổi. Mô hình
+  không nhạy với trọng số Course, có thể vì mỗi hyperedge Object nằm trọn trong một
+  khoá. **Không diễn giải trọng số Course.** Chỉ khẳng định: Behavioral bị tắt
+  (1–3% so với self), Object/self ≈ 0,13–0,15 (ổn định qua ba nhóm run), self-loop
+  được tăng.
+
+**Mô hình chốt** (chờ kết quả User): Course + Object + self-loop; HGNN 2 lớp với
+trọng số family (lr 0,05, không weight decay); skip connection; không HSL mask, không
+ΔH, không contrastive; BCE `pos_weight` 1; t\* trên validation; lr 1e-3, dropout 0,5,
+weight decay 5e-4, tối đa 1000 epoch, patience 60, chọn checkpoint theo val AUPRC.
+Con số báo cáo: lần chạy `final`, kèm lần lặp lại 1000 epoch.
+
 **Chưa kết luận được:** (1) User hyperedge chưa thử; (2) trọng số cho từng hyperedge
 `α_e` chưa làm; (3) tác dụng riêng của contrastive loss chưa được đo tách biệt;
 (4) lệch graph train/đánh giá (H7) mới được giảm nhờ bỏ Behavioral, chưa giải quyết
