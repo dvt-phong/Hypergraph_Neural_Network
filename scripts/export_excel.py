@@ -88,6 +88,7 @@ EXTRA_PARAMETERS = (
     ("Tag", "tag"),
     ("Skip connection", "skip_connection"),
     ("Trọng số family", "family_weights"),
+    ("LR trọng số family", "family_weight_lr"),
 )
 PARAMETER_HEADERS = (("STT", "Ngày chạy", "Cấu hình") + tuple(h for h, _ in PARAMETERS) + ("Mã lần chạy",)
                      + tuple(h for h, _ in EXTRA_PARAMETERS))
