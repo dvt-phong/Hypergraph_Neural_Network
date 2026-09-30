@@ -90,6 +90,8 @@ EXTRA_PARAMETERS = (
     ("Trọng số family", "family_weights"),
     ("LR trọng số family", "family_weight_lr"),
     ("File hypergraph", "hypergraph"),
+    ("Trọng số từng hyperedge", "edge_weights"),
+    ("LR trọng số hyperedge", "edge_weight_lr"),
 )
 PARAMETER_HEADERS = (("STT", "Ngày chạy", "Cấu hình") + tuple(h for h, _ in PARAMETERS) + ("Mã lần chạy",)
                      + tuple(h for h, _ in EXTRA_PARAMETERS))
@@ -119,6 +121,13 @@ SEED_COLUMNS = (
     ("w behavioral", "w_behavioral", "0.000"),
     ("w self-loop", "w_self_loop", "0.000"),
     ("w user", "w_user", "0.000"),
+    ("Giữ user", "kept_user", "0.000"),
+    ("α course (TB)", "alpha_course", "0.000"),
+    ("α object (TB)", "alpha_object", "0.000"),
+    ("α behavioral (TB)", "alpha_behavioral", "0.000"),
+    ("α user (TB)", "alpha_user", "0.000"),
+    ("ACC val", "val_accuracy", "0.0000"),
+    ("ACC test", "test_accuracy", "0.0000"),
 )
 SEED_LETTER = {key: get_column_letter(index) for index, (_, key, _) in enumerate(SEED_COLUMNS, 1)}
 
@@ -229,11 +238,12 @@ def read_seed_rows(run_dir, run_id):
         for name in METRICS:
             row[f"val_{name}"] = train["best_validation"][name]
             row[f"test_{name}"] = test[name]
-        for name in EXTRA_METRICS:
+        for name in EXTRA_METRICS + ("accuracy",):
             row[f"val_{name}"] = train["best_validation"].get(name)
             row[f"test_{name}"] = test.get(name)
         for key in ("kept_course", "kept_object", "kept_behavioral", "added",
-                    "w_course", "w_object", "w_behavioral", "w_self_loop", "w_user"):
+                    "w_course", "w_object", "w_behavioral", "w_self_loop", "w_user", "kept_user",
+                    "alpha_course", "alpha_object", "alpha_behavioral", "alpha_user"):
             row[key] = best.get(key)
         rows.append(row)
     return sorted(rows, key=lambda row: row["seed"]), settings
@@ -293,6 +303,8 @@ def describe(settings):
         name += " + skip"
     if settings.get("family_weights"):
         name += " + trọng số family"
+    if settings.get("edge_weights"):
+        name += " + trọng số từng hyperedge"
     if settings.get("tag"):
         name += f" [{settings['tag']}]"
     return f"{name} (feature: {settings['feature_set']})"

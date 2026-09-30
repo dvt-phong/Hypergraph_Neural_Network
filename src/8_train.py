@@ -12,6 +12,7 @@
 # the checkpoint and reused for test. F1 at 0.5 is still reported for comparison.
 
 import argparse
+import csv
 import json
 import random
 import time
@@ -66,6 +67,10 @@ DEFAULT_SETTINGS = {
     # family weights could only change by ~0.6 in 600 epochs, and weight decay
     # pulled them all toward softplus(0). They get their own lr and no decay.
     "family_weight_lr": 0.05,
+    # One weight α_e per hyperedge on top of w_f, from a small MLP of the
+    # hyperedge (5_model.py). Its own lr, no weight decay, for the same reason.
+    "edge_weights": False,
+    "edge_weight_lr": 0.005,
     # HSL
     "hsl": True,                # False = plain HGNN baseline
     "edge_sampling": True,      # Me
@@ -107,6 +112,7 @@ def classification_metrics(labels, probabilities, threshold=0.5):
     precision, recall, f1, _ = scores_at(threshold)
     return {
         "auc": float(roc_auc_score(labels, probabilities)),
+        "accuracy": float(np.mean((probabilities >= threshold) == labels)),
         "auprc": float(average_precision_score(labels, probabilities)),
         "auprc_negative": float(average_precision_score(1 - labels, 1 - probabilities)),
         "threshold": float(threshold),
@@ -148,6 +154,8 @@ def make_run_name(settings, seed):
         name += "_skip"
     if settings["family_weights"]:
         name += "_fw"
+    if settings["edge_weights"]:
+        name += "_ew"
     name += f"_{settings['feature_set']}"
     if settings["tag"]:
         name += f"_{settings['tag']}"
@@ -164,7 +172,8 @@ def make_model(input_dim, settings):
         }
     return HSLModel(input_dim, settings["hidden_dim"], settings["dropout"], hsl_options,
                     skip_connection=settings["skip_connection"],
-                    family_weights=settings["family_weights"])
+                    family_weights=settings["family_weights"],
+                    edge_weights=settings["edge_weights"])
 
 
 def load_split(output_dir, split_name, settings):
@@ -214,6 +223,35 @@ def save_probabilities(run_name, split_name, labels, probabilities, threshold):
     log(split_name, f"probabilities={path}")
 
 
+# Learned weight of every train hyperedge (--edge-weights), one CSV row per
+# hyperedge without the self-loops: family, key, size, α_e, W_ee = w_f · α_e,
+# and the dropout rate of its members. Labels only describe the hyperedges for
+# analysis (docs/PHAN_TICH_HSL.md, section 7); the model never reads them.
+@torch.no_grad()
+def save_edge_weights(model, x, graph, train_data, run_name):
+    model.eval()
+    alpha = model.edge_alpha(x, graph)
+    weight = model.hyperedge_weights(graph, alpha).cpu().numpy()
+    alpha = alpha.cpu().numpy()
+    node_ids = train_data["graph"]["node_ids"]
+    edge_ids = train_data["graph"]["edge_ids"]
+    edge_family = train_data["graph"]["edge_family"]
+    size = np.bincount(edge_ids, minlength=len(edge_family))
+    dropouts = np.bincount(edge_ids, weights=train_data["labels"][node_ids], minlength=len(edge_family))
+
+    path = Path(config.REPORTS) / f"{run_name}_edge_weights.csv"
+    with open(path, "w", newline="", encoding="utf-8") as output:
+        writer = csv.writer(output)
+        writer.writerow(["edge_id", "family", "key", "size", "alpha", "weight", "dropout_rate"])
+        for edge_id, key in enumerate(train_data["edge_keys"]):  # self-loops come after these
+            writer.writerow([
+                edge_id, config.EDGE_FAMILIES[edge_family[edge_id]], key, size[edge_id],
+                f"{alpha[edge_id]:.4f}", f"{weight[edge_id]:.4f}",
+                f"{dropouts[edge_id] / size[edge_id]:.4f}",
+            ])
+    log("train", f"hyperedge weights={path}")
+
+
 def train(settings, *, seed, output_dir=config.PROCESSED, device_name="auto"):
     set_seed(seed)
     device = resolve_device(device_name)
@@ -236,10 +274,14 @@ def train(settings, *, seed, output_dir=config.PROCESSED, device_name="auto"):
         f"memberships={len(graph['node_ids']):,}, pos_weight={float(positive_weight):.3f}")
 
     model = make_model(x.shape[1], settings).to(device)
-    parameter_groups = [{"params": [p for n, p in model.named_parameters() if n != "family_logits"]}]
+    own_groups = ("family_logits", "edge_weight_scorer.")
+    parameter_groups = [{"params": [p for n, p in model.named_parameters() if not n.startswith(own_groups)]}]
     if model.family_logits is not None:
         parameter_groups.append({"params": [model.family_logits],
                                  "lr": settings["family_weight_lr"], "weight_decay": 0.0})
+    if model.edge_weight_scorer is not None:
+        parameter_groups.append({"params": list(model.edge_weight_scorer.parameters()),
+                                 "lr": settings["edge_weight_lr"], "weight_decay": 0.0})
     optimizer = torch.optim.Adam(
         parameter_groups, lr=settings["learning_rate"], weight_decay=settings["weight_decay"]
     )
@@ -329,6 +371,8 @@ def train(settings, *, seed, output_dir=config.PROCESSED, device_name="auto"):
     log("validation", f"full split at t*: {format_metrics(full_validation)}")
     save_probabilities(run_name, "validation", validation_labels, validation_probabilities, threshold)
     torch.save({**saved, "threshold": threshold, "full_validation": full_validation}, checkpoint_path)
+    if model.edge_weight_scorer is not None:
+        save_edge_weights(model, x, graph, train_data, run_name)
 
     report = {"checkpoint": str(checkpoint_path), "best_epoch": best["epoch"],
               "select_metric": select_metric, "threshold": threshold,
@@ -444,6 +488,10 @@ if __name__ == "__main__":
                         help="learn one weight per hyperedge family")
     parser.add_argument("--family-weight-lr", type=float,
                         help="Adam lr of the family weights (no weight decay)")
+    parser.add_argument("--edge-weights", action="store_true", default=None,
+                        help="learn one weight per hyperedge on top of the family weights")
+    parser.add_argument("--edge-weight-lr", type=float,
+                        help="Adam lr of the per-hyperedge weight scorer (no weight decay)")
     parser.add_argument("--lambda-cl", type=float)
     parser.add_argument("--add-per-edge", type=int)
     # Ablations (HSL paper, Fig. 3)

@@ -19,9 +19,11 @@ import sys
 from pathlib import Path
 
 METRICS = ("auc", "auprc", "f1", "precision", "recall",
-           "macro_f1", "f1_negative", "auprc_negative", "f1_at_0.5")
+           "macro_f1", "f1_negative", "auprc_negative", "f1_at_0.5", "accuracy")
 # Learned family weights (--family-weights) at the best epoch.
 FAMILY_WEIGHTS = ("w_course", "w_object", "w_behavioral", "w_self_loop", "w_user")
+# Mean per-hyperedge weight α_e of each family (--edge-weights) at the best epoch.
+EDGE_WEIGHTS = ("alpha_course", "alpha_object", "alpha_behavioral", "alpha_user")
 REPORT_PATTERN = re.compile(r"report=(.+_(train|test)\.json)\s*$")
 
 
@@ -45,8 +47,9 @@ def seed_row(entry, run_dir):
         if path.exists():
             shutil.copy2(path, run_dir / "reports" / path.name)
             run_name = path.name.removesuffix(f"_{kind}.json")
-            for probabilities in path.parent.glob(f"{run_name}_*_probs.npz"):
-                shutil.copy2(probabilities, run_dir / "reports" / probabilities.name)
+            for extra in [*path.parent.glob(f"{run_name}_*_probs.npz"),
+                          *path.parent.glob(f"{run_name}_edge_weights.csv")]:
+                shutil.copy2(extra, run_dir / "reports" / extra.name)
 
     train_path = paths.get("train")
     if train_path is not None and train_path.exists():
@@ -62,7 +65,7 @@ def seed_row(entry, run_dir):
         for name in METRICS:
             row[f"val_{name}"] = (train["best_validation"] or {}).get(name, "")
         best = next((record for record in train["history"] if record["epoch"] == train["best_epoch"]), {})
-        for name in FAMILY_WEIGHTS:
+        for name in FAMILY_WEIGHTS + EDGE_WEIGHTS:
             row[name] = best.get(name, "")
 
     test_path = paths.get("test")
@@ -80,7 +83,7 @@ def summary_rows(rows, columns):
     mean_row = {"seed": "mean", "status": f"n={len(finished)}"}
     std_row = {"seed": "std", "status": f"n={len(finished)}"}
     for column in columns:
-        if column.startswith(("val_", "test_", "w_")) or column in ("threshold", "duration_sec"):
+        if column.startswith(("val_", "test_", "w_", "alpha_")) or column in ("threshold", "duration_sec"):
             values = [float(row[column]) for row in finished if row.get(column, "") != ""]
             if values:
                 mean_row[column] = statistics.mean(values)
@@ -100,6 +103,7 @@ def main(run_dir):
         + [f"val_{name}" for name in METRICS]
         + [f"test_{name}" for name in METRICS]
         + list(FAMILY_WEIGHTS)
+        + list(EDGE_WEIGHTS)
         + ["duration_sec"]
     )
     rows += summary_rows(rows, columns)
