@@ -113,6 +113,10 @@ SEED_COLUMNS = (
       for index, name in enumerate(EXTRA_METRICS)],
     *[(f"{RESULT_HEADERS[FIRST_EXTRA_COLUMN - 1 + index]} test", f"test_{name}", "0.0000")
       for index, name in enumerate(EXTRA_METRICS)],
+    ("w course", "w_course", "0.000"),
+    ("w object", "w_object", "0.000"),
+    ("w behavioral", "w_behavioral", "0.000"),
+    ("w self-loop", "w_self_loop", "0.000"),
 )
 SEED_LETTER = {key: get_column_letter(index) for index, (_, key, _) in enumerate(SEED_COLUMNS, 1)}
 
@@ -226,7 +230,8 @@ def read_seed_rows(run_dir, run_id):
         for name in EXTRA_METRICS:
             row[f"val_{name}"] = train["best_validation"].get(name)
             row[f"test_{name}"] = test.get(name)
-        for key in ("kept_course", "kept_object", "kept_behavioral", "added"):
+        for key in ("kept_course", "kept_object", "kept_behavioral", "added",
+                    "w_course", "w_object", "w_behavioral", "w_self_loop"):
             row[key] = best.get(key)
         rows.append(row)
     return sorted(rows, key=lambda row: row["seed"]), settings
