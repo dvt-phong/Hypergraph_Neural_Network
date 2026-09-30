@@ -341,7 +341,24 @@ khoảng 0,5 điểm.
   - `w_self_loop` lớn chỉ nói về *nhánh lan truyền* (mô hình đã có skip đưa X thẳng
     vào lớp phân loại), không phải về tầm quan trọng của đặc trưng cá nhân trong toàn
     mô hình.
-  - Còn thiếu: `w_*` của 5 seed (để kiểm tra độ ổn định), và fw2-nob-hgnn 5 seed.
+  - Còn thiếu: kết quả AUC 5 seed của fw2-nob-hgnn.
+
+- **Trọng số family qua 5 seed** (quy về self-loop = 1; lấy ở epoch cuối, cần thay
+  bằng trọng số ở best epoch khi viết):
+
+  | Tỉ lệ | fw2-hgnn (5 seed) | fw2-hgnn (bỏ seed 111) | fw2-nob-hgnn (5 seed) |
+  |---|---|---|---|
+  | Course / self | 0,239 ± 0,060 | 0,214 ± 0,028 | 0,216 ± 0,034 |
+  | Object / self | 0,136 ± 0,016 | 0,130 ± 0,009 | 0,130 ± 0,009 |
+  | Behavioral / self | 0,015 ± 0,007 | 0,012 ± 0,001 | không dùng (w = 1,000) |
+
+  - Behavioral bị giảm còn 1–3% ở cả 5 seed: kết luận "model tự tắt Behavioral" là
+    chắc chắn.
+  - Object/self giống nhau ở hai cấu hình (0,130), Course/self gần nhau (0,214 và
+    0,216): trọng số phản ánh đặc tính của dữ liệu, không phải ngẫu nhiên.
+  - Seed 111 dừng sớm nhất, có Behavioral cao nhất (0,028) và AUC thấp nhất (0,8702):
+    Behavioral chưa được tắt hết thì AUC còn thấp. Std lớn của fw2-hgnn là do tối
+    ưu chưa xong.
 - (Ghi chú cũ) Cần bổ sung hai ô ablation `b1-hgnn` (HGNN + skip, đủ
   family, không `W`) và `b12-nob-hgnn` (thêm `W`, bỏ Behavioral) để tách tác dụng
   của việc bỏ Behavioral khỏi tác dụng của trọng số family.
