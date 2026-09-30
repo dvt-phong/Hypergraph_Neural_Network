@@ -359,6 +359,40 @@ khoảng 0,5 điểm.
   - Seed 111 dừng sớm nhất, có Behavioral cao nhất (0,028) và AUC thấp nhất (0,8702):
     Behavioral chưa được tắt hết thì AUC còn thấp. Std lớn của fw2-hgnn là do tối
     ưu chưa xong.
+
+## 10. Mô hình chính và kiểm định (01/10/2026)
+
+**Chọn theo val AUC trung bình 5 seed:**
+
+| Mô hình (5 seed) | Val AUC | Test AUC | Test AUPRC | Macro-F1 |
+|---|---|---|---|---|
+| MLP | 0,8673 | 0,8693 ± 0,0001 | 0,9410 | 0,7800 |
+| GBDT | 0,8691 | 0,8699 ± 0,0002 | 0,9418 | 0,7771 |
+| fw2-hgnn | 0,8705 ± 0,0006 | 0,8723 ± 0,0012 | 0,9441 | 0,7796 |
+| b1-nob-hgnn | 0,8709 ± 0,0003 | 0,8729 ± 0,0001 | 0,9449 | 0,7765 |
+| **fw2-nob-hgnn** | **0,8716 ± 0,0004** | **0,8737 ± 0,0002** | 0,9448 | **0,7810** |
+
+Mô hình chính: **HGNN + skip + trọng số family, hyperedge Course + Object**
+(fw2-nob-hgnn, thư mục kết quả `30-09-2026_08-51`). 3/5 seed chạy hết 1000 epoch
+(best 715, 780, 970) nên cần chạy lại với 1500 epoch; lý do dựa trên val.
+
+**DeLong trên 67 699 mẫu test** (`scripts/delong.py`, từng seed với cùng seed):
+
+| So với | Δ AUC | p |
+|---|---|---|
+| GBDT | +0,0033 đến +0,0043 | 6·10⁻⁷ đến 1·10⁻¹⁰ |
+| MLP | +0,0041 đến +0,0048 | 2·10⁻¹² đến 6·10⁻¹⁷ |
+| LR | +0,019 | < 10⁻⁹⁹ |
+| b1-nob-hgnn | +0,0006 đến +0,0010 | < 0,003 ở 4 seed; seed 1111: 0,054 |
+
+DeLong coi dự đoán là cố định, không tính dao động giữa các seed; luôn báo kèm
+mean ± std.
+
+**Trọng số ở best epoch** (fw2-nob-hgnn): Course/self 0,299 ± 0,091, Object/self
+0,148 ± 0,021 (ở epoch cuối: 0,216 và 0,130). Trọng số còn thay đổi sau best epoch.
+Trọng số Course dao động lớn (w từ 0,41 đến 0,83) trong khi AUC gần như không đổi:
+mô hình không nhạy với nó, nên chỉ diễn giải Course một cách xấp xỉ. Kết luận chắc
+chắn: Behavioral bị tắt (mục 9), self-loop được tăng.
 - (Ghi chú cũ) Cần bổ sung hai ô ablation `b1-hgnn` (HGNN + skip, đủ
   family, không `W`) và `b12-nob-hgnn` (thêm `W`, bỏ Behavioral) để tách tác dụng
   của việc bỏ Behavioral khỏi tác dụng của trọng số family.
