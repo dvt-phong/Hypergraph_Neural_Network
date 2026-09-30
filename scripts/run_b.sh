@@ -33,6 +33,12 @@
 #   u1-hgnn       HGNN   u0-hgnn + --family-weights               main model + User
 #   u2-hgnn       HGNN   --no-hsl --skip-connection --family-weights   all four families
 #   u1-temporal   HGNN   u1-hgnn on hypergraph_temporal.npz (User rule "temporal")
+#   -- The original model (HSL + contrastive) with W and User; scripts/run_o.sh --
+#   o1            HSL    all four families                       original model + User
+#   o2            HSL    o1 + --family-weights                   + W per family
+#   o3            HSL    o2 + --edge-weights                     + W per hyperedge (the proposed model)
+#   o3-skip       HSL    o3 + --skip-connection                  is the skip still needed with W?
+#   o3-hgnn       HGNN   o3 without HSL (--no-hsl)               does HSL add anything on top of W?
 #   b2            HSL    --family-weights
 #   b12-wd5e-5    HSL    b12 + --weight-decay 5e-5
 #   b12-wd0       HSL    b12 + --weight-decay 0
@@ -52,6 +58,7 @@ LONG=(--epochs 1000 --patience 60)
 # The configurations below were defined before User hyperedges existed, when
 # "all families" meant these three; keep that meaning.
 THREE=(--families course,object,behavioral)
+FOUR=(--families course,object,behavioral,user)
 
 FAILED=()
 run_config() {
@@ -61,7 +68,7 @@ run_config() {
         return
     fi
     echo "===== [$(date '+%d/%m/%Y %H:%M:%S')] $name: $*"
-    if ! NOTE="B, sàng lọc: $name" bash scripts/run_all.sh --skip-prep --tag "$name" "${LONG[@]}" "$@"; then
+    if ! NOTE="$name (seed $SEEDS)" bash scripts/run_all.sh --skip-prep --tag "$name" "${LONG[@]}" "$@"; then
         FAILED+=("$name")
     fi
 }
@@ -82,6 +89,11 @@ run_config u1-hgnn      --no-hsl --skip-connection --family-weights --families c
 run_config u2-hgnn      --no-hsl --skip-connection --family-weights
 run_config u1-temporal  --no-hsl --skip-connection --family-weights --families course,object,user \
                         --hypergraph hypergraph_temporal.npz
+run_config o1           "${FOUR[@]}"
+run_config o2           "${FOUR[@]}" --family-weights
+run_config o3           "${FOUR[@]}" --family-weights --edge-weights
+run_config o3-skip      "${FOUR[@]}" --family-weights --edge-weights --skip-connection
+run_config o3-hgnn      "${FOUR[@]}" --family-weights --edge-weights --no-hsl
 run_config b2         "${THREE[@]}" --family-weights
 run_config b12-wd5e-5 "${THREE[@]}" --skip-connection --family-weights --weight-decay 5e-5
 run_config b12-wd0    "${THREE[@]}" --skip-connection --family-weights --weight-decay 0
