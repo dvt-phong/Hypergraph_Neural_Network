@@ -281,7 +281,20 @@ khoảng 0,5 điểm.
   test AUC 0,8729 ± 0,0001, AUPRC 0,9449 ± 0,0001, AUPRC lớp không bỏ học
   0,7571 ± 0,0001 (MLP: 0,8693 / 0,9410 / 0,7514; GBDT: 0,8699 / 0,9418 / 0,7526).
   Macro-F1 0,7765 thấp hơn MLP (0,7800) một chút vì t\* tối ưu F1 của lớp bỏ học.
-- Cần bổ sung hai ô ablation `b1-hgnn` (HGNN + skip, đủ
+- **Ablation b1-hgnn (HGNN + skip, đủ 3 loại, không trọng số family), seed 1:**
+  test AUC 0,8665, val 0,8662, best epoch 305/605. So với b1-nob-hgnn (0,8730), riêng
+  việc bỏ Behavioral tăng **+0,0065**. Khi còn Behavioral, mô hình graph **thấp hơn
+  MLP** 0,0026 dù đã có skip: lớp phân loại dựa vào đặc trưng từ Behavioral lúc
+  train, rồi bị hại lúc đánh giá khi đặc trưng đó đổi phân phối (mục 4). b12-hgnn
+  (trọng số family bản cũ) cũng đạt 0,8665, xác nhận bản cũ không học được gì.
+- **HSL chỉ có lợi khi graph còn hyperedge có hại.** Cùng skip, HSL − HGNN =
+  +0,0034 (đủ 3 loại), +0,0032 (đủ 3 loại, trọng số family bản cũ), nhưng −0,0038
+  (bỏ Behavioral). Lấy mẫu Gumbel hoạt động như DropEdge, giảm mức dựa vào
+  Behavioral, nhưng không phát hiện được nó (`kept` ≈ 0,99). Bỏ Behavioral một cách
+  tường minh tốt hơn 0,003 AUC.
+- Còn chờ fw2-hgnn, fw2-nob-hgnn (trọng số family có lr riêng, không weight decay)
+  để xem model có tự đẩy `w_behavioral` về gần 0 hay không.
+- (Ghi chú cũ) Cần bổ sung hai ô ablation `b1-hgnn` (HGNN + skip, đủ
   family, không `W`) và `b12-nob-hgnn` (thêm `W`, bỏ Behavioral) để tách tác dụng
   của việc bỏ Behavioral khỏi tác dụng của trọng số family.
 
