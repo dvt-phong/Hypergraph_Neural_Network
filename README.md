@@ -90,6 +90,12 @@ NOTE="HSL, cấu hình P0" bash scripts/run_tmux.sh --skip-prep --tag p0        
 ONLY="gbdt hsl" SKIP_PREP=1 RUN_SCRIPT=scripts/run_p0.sh bash scripts/run_tmux.sh   # một phần bảng
 ```
 
+So sánh AUC test của hai lần chạy bằng kiểm định DeLong, từng seed với cùng seed:
+
+```bash
+python scripts/delong.py result/<mô hình chính> result/<baseline 1> result/<baseline 2>
+```
+
 Các bước chạy lâu đều in log có timestamp và `flush=True`. Bước 4 báo tiến độ
 exact kNN và dựng/lưu `H0`; bước 8 báo từng epoch (loss, train AUC, tỉ lệ
 membership HSL giữ lại theo family) và tiến độ validation/test.
