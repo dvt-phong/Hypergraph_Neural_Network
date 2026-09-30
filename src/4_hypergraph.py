@@ -249,6 +249,8 @@ def select_families(graph, families):
     new_edge_id = np.cumsum(keep_edge) - 1
     keep_membership = keep_edge[graph["edge_ids"]]
     keep_candidate = keep_edge[graph["candidate_edge_ids"]]
+    if "edge_keys" in graph:
+        graph = {**graph, "edge_keys": graph["edge_keys"][keep_edge]}
     return {
         **graph,
         "node_ids": graph["node_ids"][keep_membership],
@@ -269,6 +271,11 @@ def load_train_graph(
 ):
     output_dir = Path(output_dir)
     with np.load(output_dir / hypergraph_file) as bundle:
+        if USER in family_ids(families) and "user_rule" not in bundle.files:
+            raise ValueError(
+                f"{hypergraph_file} has no User hyperedges. Rebuild it (see docs/IMPROVEMENT_PLAN.md, "
+                "U0) or leave user out of --families."
+            )
         k = int(bundle["k"])
         edge_family = bundle["edge_family"]
         behavioral_edges = np.flatnonzero(edge_family == BEHAVIORAL)
@@ -277,11 +284,15 @@ def load_train_graph(
             "node_ids": bundle["node_ids"],
             "edge_ids": bundle["edge_ids"],
             "edge_family": edge_family,
+            "edge_keys": bundle["edge_keys"],
             "candidate_edge_ids": behavioral_edges,
             "candidate_node_ids": bundle["train_neighbors"][anchors, k:],
         }
 
     graph = select_families(graph, families)
+    # Keys name the hyperedges before the self-loops (course id, object key,
+    # anchor node, user id); only the per-hyperedge weight table uses them.
+    edge_keys = graph.pop("edge_keys")
     nodes = load_nodes(output_dir / "train.csv")
     features = np.load(output_dir / "train" / "X.npy")[:, feature_columns(feature_set)]
     graph["num_nodes"] = len(nodes)
@@ -289,6 +300,7 @@ def load_train_graph(
         "features": np.ascontiguousarray(features, dtype=np.float32),
         "labels": np.asarray([int(node["label"]) for node in nodes], dtype=np.float32),
         "graph": add_self_loops(graph),
+        "edge_keys": edge_keys,
     }
 
 
