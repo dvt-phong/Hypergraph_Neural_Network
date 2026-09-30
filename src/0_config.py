@@ -101,10 +101,13 @@ FEATURE_CLI_DESCRIPTION = "Build train, validation, and test node features."
 # Used by 4_hypergraph.py and 6_hsl.py. 
 # Every node also gets one self-loop
 # hyperedge that HSL never removes (Cai et al., 2022, Eq. 9).
-EDGE_FAMILIES = ("course", "object", "behavioral", "self_loop")
+EDGE_FAMILIES = ("course", "object", "behavioral", "user", "self_loop")
 # Families a run may keep or drop (8_train.py --families); self-loops always stay.
 GRAPH_FAMILIES = EDGE_FAMILIES[:-1]
-HYPERGRAPH_CLI_DESCRIPTION = "Build Course, Object, and Behavioral hypergraphs."
+HYPERGRAPH_CLI_DESCRIPTION = "Build Course, Object, Behavioral, and User hypergraphs."
+# User hyperedges: "any" links all enrollments of a learner; "temporal" links an
+# enrollment only to the learner's enrollments in courses that started no later.
+USER_RULES = ("any", "temporal")
 
 
 # Used by 5_model.py and 6_hsl.py. Memberships are processed in chunks of this

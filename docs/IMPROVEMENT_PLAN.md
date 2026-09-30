@@ -138,6 +138,67 @@ Làm theo Cổng A/B, chi tiết ở các mục H7, H4, H5 bên dưới.
 
 ---
 
+## H5. Hyperedge User: kế hoạch thực hiện (01/10/2026)
+
+**Mục tiêu.** Thêm quan hệ "cùng một học viên ở các khoá khác nhau" vào mô hình
+chính (HGNN + skip + trọng số family, Course + Object; val AUC 0,8716, test
+0,8737). Đây là nguồn thông tin mới duy nhất còn lại: Course và Object đã được
+khai thác gần hết (mục 1 của [PHAN_TICH_HSL.md](PHAN_TICH_HSL.md)).
+
+**Đo trước khi code** (thêm trung bình đặc trưng của các lượt đăng ký khác của cùng
+học viên vào X; GBDT, val AUC):
+
+| Đặc trưng | "any" | "temporal" |
+|---|---|---|
+| X | 0,8672 | 0,8672 |
+| X + Course + Object | 0,8726 | 0,8726 |
+| X + User | 0,8704 | 0,8690 |
+| X + Course + Object + User | **0,8763** (+0,0037) | 0,8736 (+0,0010) |
+| Target val có cùng học viên trong train | 75,6% | 52,4% |
+| AUC của tỉ lệ bỏ học cùng học viên (target có User) | 0,672 | 0,681 |
+
+Train có 63 277 học viên; 51,8% có ≥ 2 lượt đăng ký; trung bình 2,0, tối đa 111.
+
+**Thiết kế** ([4_hypergraph.py](../src/4_hypergraph.py), cờ `--user-rule`):
+- `any` (mặc định): mỗi học viên một hyperedge gồm mọi lượt đăng ký train của họ;
+  target validation/test nối tới mọi lượt đăng ký train của cùng học viên. Dựng
+  giống nhau lúc train và lúc đánh giá.
+- `temporal`: mỗi lượt đăng ký một hyperedge = chính nó + các lượt đăng ký của cùng
+  học viên ở khoá bắt đầu không muộn hơn. Chỉ dùng hành vi đã quan sát được tại thời
+  điểm dự đoán. Dùng làm **kiểm tra độ vững**.
+- Chỉ lan truyền **đặc trưng**, không bao giờ dùng nhãn của lượt đăng ký khác. Với
+  `any`, đặc trưng của các khoá bắt đầu *sau* khoá của target vẫn được dùng; phải
+  ghi rõ điều này khi viết, và báo kèm kết quả `temporal`.
+- Hyperedge User được thêm sau Course, Object, Behavioral nên id của các hyperedge
+  cũ không đổi; trọng số family có thêm `w_user`.
+
+**Việc trên server:**
+
+| Bước | Lệnh | Thời gian |
+|---|---|---|
+| U0. Dựng lại graph (dùng lại kNN, không tính lại) | `cp data/processed/simple/hypergraph.npz data/processed/simple/hypergraph_v3.npz`<br>`python src/4_hypergraph.py --reuse-neighbors hypergraph_v3.npz`<br>`python src/4_hypergraph.py --user-rule temporal --hypergraph-file hypergraph_temporal.npz --reuse-neighbors hypergraph_v3.npz` | vài phút |
+| U1. Sàng lọc seed 1 | `ONLY="u0-hgnn u1-hgnn u2-hgnn u1-temporal" RUN_SCRIPT=scripts/run_b.sh bash scripts/run_tmux.sh` | khoảng 2,5 giờ |
+| U2. 5 seed cho cấu hình tốt nhất theo val | `SEEDS="1 11 111 1111 11111" ONLY="<tên>" RUN_SCRIPT=scripts/run_b.sh bash scripts/run_tmux.sh` | khoảng 3 giờ |
+| U3. DeLong so với mô hình chính | `python scripts/delong.py result/<U2> result/<fw2-nob-hgnn>` | vài phút |
+
+| Tên | Cấu hình | Câu hỏi |
+|---|---|---|
+| u0-hgnn | HGNN + skip, Course + Object + User | User có giúp khi không có trọng số family? |
+| **u1-hgnn** | u0 + trọng số family | **Mô hình chính + User** |
+| u2-hgnn | HGNN + skip + trọng số family, đủ 4 loại | Model có tự tắt Behavioral khi có User? |
+| u1-temporal | u1 trên graph `temporal` | Kết quả có vững khi chặt chẽ về thời gian? |
+
+**Tiêu chí đạt:** val AUC của u1-hgnn (seed 1) ≥ 0,8740, tức hơn fw2-nob-hgnn seed 1
+(0,8720) ít nhất 0,002; sau đó 5 seed hơn mô hình chính có ý nghĩa theo DeLong. Mốc
+kỳ vọng từ phép đo GBDT: khoảng +0,003 đến +0,004 AUC. Nếu `temporal` chỉ tăng ít,
+báo trung thực: phần lớn lợi ích đến từ các khoá cùng thời hoặc muộn hơn.
+
+**Rủi ro:** học viên có nhiều lượt đăng ký (tối đa 111) tạo hyperedge lớn, nhưng
+chỉ khoảng 0,1% học viên có trên 10 lượt. Checkpoint cũ vẫn nạp được: `8_train.py`
+tự thêm mục User vào trọng số family và bộ chấm điểm HSL khi nạp.
+
+---
+
 ## 0. Hiện trạng
 
 Lần chạy 5 seed với cấu hình mặc định (`hidden 128`, `lr 1e-3`, `dropout 0.3`,

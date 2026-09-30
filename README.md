@@ -37,6 +37,8 @@ Trong PowerShell:
 .\.venv\Scripts\python.exe src/2_preprocess.py
 .\.venv\Scripts\python.exe src/3_features.py
 .\.venv\Scripts\python.exe src/4_hypergraph.py --k 10 --k-max 20 --device auto
+# Thêm User hyperedge vào graph đã có mà không tính lại kNN:
+#   src/4_hypergraph.py --reuse-neighbors hypergraph_v3.npz [--user-rule temporal --hypergraph-file hypergraph_temporal.npz]
 .\.venv\Scripts\python.exe src/8_train.py --seeds 1
 .\.venv\Scripts\python.exe src/8_train.py --mode test --checkpoint outputs/runs/hsl_full_seed_1.pt
 ```
@@ -61,7 +63,8 @@ Các tuỳ chọn thường dùng:
 | `--patience` | `20` | Số lần validate liên tiếp không cải thiện thì dừng |
 | `--validation-limit` | `5000` | Tập con validation cố định dùng trong lúc train (0 = toàn bộ) |
 | `--lr-schedule` | `none` | `multistep`: lr × 0,9 ở epoch 100, như HGNN |
-| `--families` | tất cả | Loại hyperedge được giữ, ví dụ `course,object`; `self_loop` = không graph |
+| `--families` | tất cả | Loại hyperedge được giữ, ví dụ `course,object,user`; `self_loop` = không graph |
+| `--hypergraph` | `hypergraph.npz` | File graph trong `data/processed/simple`, ví dụ `hypergraph_temporal.npz` |
 | `--tag` | rỗng | Hậu tố tên run, tránh ghi đè khi quét tham số, ví dụ `lr3e-3` |
 | `--skip-connection` | tắt | Lớp phân loại nhận thêm `MLP(X)` (đặc trưng riêng của node, không lan truyền) |
 | `--family-weights` | tắt | Học một trọng số cho mỗi loại hyperedge (ma trận `W` của HGNN), log ở `w_course`, `w_object`, … |
