@@ -397,6 +397,41 @@ chắn: Behavioral bị tắt (mục 9), self-loop được tăng.
   family, không `W`) và `b12-nob-hgnn` (thêm `W`, bỏ Behavioral) để tách tác dụng
   của việc bỏ Behavioral khỏi tác dụng của trọng số family.
 
+## 11. Kết luận: vấn đề của mô hình ban đầu và mô hình sửa đổi
+
+Tổng hợp sau khoảng 19 lần chạy (01/10/2026). Đối chiếu với sơ đồ
+[hypergraph-neural-network-v3.png](assets/hypergraph-neural-network-v3.png).
+
+| Khối trong sơ đồ | Vấn đề | Bằng chứng | Sửa thành |
+|---|---|---|---|
+| Behavioral hyperedge | Thừa so với X; chiếm 51% thông điệp khi train; hubness (tối đa 1 879 hyperedge/node); gây lệch train/đánh giá | GBDT + trung bình Behavioral: +0,000; bỏ Behavioral: 0,8665 → 0,8730; trọng số học được ≈ 1% self-loop | Bỏ |
+| User hyperedge | Có trong sơ đồ nhưng chưa được code | – | Code và thử (H5), hoặc bỏ khỏi sơ đồ |
+| Course, Object hyperedge | Có ích | GBDT + trung bình Course, Object: +0,5 điểm | Giữ |
+| HGNN (hai nhánh) | Pha loãng: phần đặc trưng của chính node còn khoảng 1,5% sau 2 lớp | HGNN 0,840 < MLP 0,869 | Skip connection (+3,7 điểm) và trọng số `W` theo family |
+| Hyperedge / Incident node sampling (mask cứng) | Không học được cách cắt (`kept` 0,90 → 0,99, gradient bão hoà); chỉ có lợi khi còn hyperedge có hại | Không skip: −1,35 điểm so với HGNN; graph sạch: 0,8692 < 0,8730 | Trọng số mềm `W` (mức family đã làm; mức từng hyperedge là hướng tiếp) |
+| Refine H\* (ΔH) | Thêm node vào đúng family thừa | 229 000 membership vào Behavioral | Bỏ |
+| Contrastive loss | Hai view gần trùng nhau; cặp âm ngược chiều lan truyền; bản HSL gốc tắt | Mô hình tốt nhất không dùng | Bỏ |
+| BCE, prediction | `pos_weight` 0,319, ngưỡng 0,5 cố định | F1 0,45 ± 0,31 | `pos_weight` 1, t\* trên validation → F1 0,910 ± 0,0002 |
+| Cách train (không có trong sơ đồ) | Dừng sau khoảng 20 bước cập nhật | Best epoch 10–20 | Patience 60, 1000–1500 epoch, chọn checkpoint theo val AUPRC |
+
+**Mô hình sửa đổi:** X → MLP (nhánh skip); X, H (Course + Object + self-loop) → HGNN
+với `Dv^-1/2 H W De^-1 Hᵀ Dv^-1/2` và `W` học được theo family → Z; lớp phân loại
+trên `[Z ‖ MLP(X)]`; BCE với `pos_weight` = 1; ngưỡng t\* chọn trên validation.
+
+| Bước | Test AUC | F1 |
+|---|---|---|
+| Mô hình ban đầu | 0,809 | 0,45 ± 0,31 |
+| Sửa đánh giá và cách train | 0,832 | 0,897 |
+| + Skip connection | 0,870 | 0,910 |
+| + Bỏ Behavioral, bỏ mask cứng HSL | 0,8729 | 0,910 |
+| + Trọng số `W` học được (mô hình chính) | 0,8737 ± 0,0002 | 0,910 |
+| Mốc: GBDT / MLP | 0,8699 / 0,8693 | |
+
+**Chưa kết luận được:** (1) User hyperedge chưa thử; (2) trọng số cho từng hyperedge
+`α_e` chưa làm; (3) tác dụng riêng của contrastive loss chưa được đo tách biệt;
+(4) lệch graph train/đánh giá (H7) mới được giảm nhờ bỏ Behavioral, chưa giải quyết
+triệt để.
+
 ## Tài liệu dẫn
 
 - Feng, Y. et al. *Hypergraph Neural Networks.* AAAI 2019 (ma trận `W`, Eq. 10).
