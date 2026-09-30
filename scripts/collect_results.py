@@ -20,6 +20,8 @@ from pathlib import Path
 
 METRICS = ("auc", "auprc", "f1", "precision", "recall",
            "macro_f1", "f1_negative", "auprc_negative", "f1_at_0.5")
+# Learned family weights (--family-weights) at the best epoch.
+FAMILY_WEIGHTS = ("w_course", "w_object", "w_behavioral", "w_self_loop")
 REPORT_PATTERN = re.compile(r"report=(.+_(train|test)\.json)\s*$")
 
 
@@ -59,6 +61,9 @@ def seed_row(entry, run_dir):
         row["threshold"] = train.get("threshold", "")
         for name in METRICS:
             row[f"val_{name}"] = (train["best_validation"] or {}).get(name, "")
+        best = next((record for record in train["history"] if record["epoch"] == train["best_epoch"]), {})
+        for name in FAMILY_WEIGHTS:
+            row[name] = best.get(name, "")
 
     test_path = paths.get("test")
     if test_path is not None and test_path.exists():
@@ -75,7 +80,7 @@ def summary_rows(rows, columns):
     mean_row = {"seed": "mean", "status": f"n={len(finished)}"}
     std_row = {"seed": "std", "status": f"n={len(finished)}"}
     for column in columns:
-        if column.startswith(("val_", "test_")) or column in ("threshold", "duration_sec"):
+        if column.startswith(("val_", "test_", "w_")) or column in ("threshold", "duration_sec"):
             values = [float(row[column]) for row in finished if row.get(column, "") != ""]
             if values:
                 mean_row[column] = statistics.mean(values)
@@ -94,6 +99,7 @@ def main(run_dir):
         ["seed", "run_name", "status", "best_epoch", "epochs_run", "threshold"]
         + [f"val_{name}" for name in METRICS]
         + [f"test_{name}" for name in METRICS]
+        + list(FAMILY_WEIGHTS)
         + ["duration_sec"]
     )
     rows += summary_rows(rows, columns)

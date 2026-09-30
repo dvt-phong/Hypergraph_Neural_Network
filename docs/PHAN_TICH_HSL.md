@@ -292,8 +292,38 @@ khoảng 0,5 điểm.
   (bỏ Behavioral). Lấy mẫu Gumbel hoạt động như DropEdge, giảm mức dựa vào
   Behavioral, nhưng không phát hiện được nó (`kept` ≈ 0,99). Bỏ Behavioral một cách
   tường minh tốt hơn 0,003 AUC.
-- Còn chờ fw2-hgnn, fw2-nob-hgnn (trọng số family có lr riêng, không weight decay)
-  để xem model có tự đẩy `w_behavioral` về gần 0 hay không.
+- **Trọng số family bản sửa (lr 0,05, không weight decay), seed 1:**
+
+  | HGNN + skip | Đủ 3 loại | Bỏ Behavioral |
+  |---|---|---|
+  | Không trọng số family | 0,8665 | 0,8730 (5 seed: 0,8729 ± 0,0001) |
+  | Trọng số family bản cũ | 0,8665 | – |
+  | **Trọng số family bản sửa** | **0,8728** (val 0,8711) | **0,8740** (val 0,8721) |
+
+  Với đủ 3 loại, trọng số family bản sửa tăng +0,0063, gần bằng bỏ Behavioral bằng
+  tay: model tự khắc phục tác hại của Behavioral. Khi đã bỏ Behavioral, trọng số
+  family vẫn thêm +0,0010 (0,8740, cấu hình tốt nhất đến nay). Macro-F1 của
+  fw2-hgnn là 0,7803, ngang MLP (0,7800). Lỗi của bản cũ là do tốc độ học và weight
+  decay, không phải do ý tưởng. Còn cần 5 seed cho fw2-hgnn, fw2-nob-hgnn.
+
+- **Trọng số family đã học** (epoch cuối, seed 1; quy về self-loop = 1, vì chỉ tỉ lệ
+  có nghĩa: nhân mọi `w` với cùng hệ số thì đầu ra không đổi):
+
+  | Family | fw2-hgnn | fw2-nob-hgnn |
+  |---|---|---|
+  | Self-loop | 1 (w = 4,25) | 1 (w = 2,14) |
+  | Course | 0,213 | 0,216 |
+  | Object | 0,132 | 0,126 |
+  | Behavioral | **0,013** | không dùng (w giữ đúng 1,000) |
+
+  Model **tự tắt Behavioral** (1/80 so với self-loop) và **tự tăng trọng số của
+  chính node khoảng 4 lần**, đúng hai nguyên nhân ở mục 2 và 3. Với một target
+  validation điển hình (1 course, 3 object, 1 behavioral, 1 self), phần đóng góp đổi
+  từ self 17% / object 50% / course 17% / behavioral 17% sang **self 62% / object
+  24% / course 13% / behavioral 0,8%**. Hai run độc lập cho cùng tỉ lệ (Course/self
+  0,213 và 0,216; Object/self 0,132 và 0,126), nên trọng số là một phép đo ổn định.
+  `w_behavioral` giữ đúng 1,000 khi không có Behavioral, xác nhận optimizer mới
+  không còn kéo trọng số bằng weight decay.
 - (Ghi chú cũ) Cần bổ sung hai ô ablation `b1-hgnn` (HGNN + skip, đủ
   family, không `W`) và `b12-nob-hgnn` (thêm `W`, bỏ Behavioral) để tách tác dụng
   của việc bỏ Behavioral khỏi tác dụng của trọng số family.
