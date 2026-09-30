@@ -559,7 +559,9 @@ nghiệm cần chạy trên server.
 | B-nob | b1-nob, b1-nob-hgnn (bỏ Behavioral) | xong, seed 1 | **b1-nob-hgnn 0,8730** (> MLP 0,8691 và GBDT 0,8699); b1-nob 0,8692 |
 | C0 | b1-nob-hgnn × 5 seed | xong | **AUC 0,8729 ± 0,0001; AUPRC 0,9449 ± 0,0001**; F1 0,9098; macro-F1 0,7765. Vượt MLP +0,0036 và GBDT +0,0030 AUC |
 | C0-ab | Ablation b1-hgnn; trọng số family bản sửa fw2-hgnn, fw2-nob-hgnn (seed 1) | xong | b1-hgnn 0,8665; **fw2-hgnn 0,8728**; **fw2-nob-hgnn 0,8740** (tốt nhất). Trọng số family bản sửa tự khắc phục Behavioral |
-| C1 | fw2-hgnn, fw2-nob-hgnn × 5 seed | chưa chạy | |
+| C1 | fw2-hgnn, fw2-nob-hgnn × 5 seed | fw2-hgnn xong; fw2-nob-hgnn chờ kết quả | fw2-hgnn: AUC 0,8723 ± 0,0012 (seed 111: 0,8702, dừng sớm); val 0,8705 ± 0,0006 |
+| C2 | Chốt mô hình chính bằng val AUC 5 seed; chạy lại 1500 epoch; kiểm định DeLong | chưa làm | |
+| C3 | Hyperedge User (H5), rồi trọng số `α_e` cho từng hyperedge | chưa làm | |
 | C1–C3 | HSL cắt thật | chờ bước A | |
 | E3.1–E3.3 | lr, dropout, schedule | chưa chạy | |
 | E2.1 | LR, GBDT (chạy thử 1 seed trên máy local, 28/09) | xong 1 seed | Test: LR AUC 0,845, F1 0,905; GBDT AUC 0,868, AUPRC 0,941, F1 0,908. **Cả hai đều cao hơn HSL hiện tại (AUC 0,809).** Cần chạy đủ 5 seed |

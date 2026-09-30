@@ -324,6 +324,24 @@ khoảng 0,5 điểm.
   0,213 và 0,216; Object/self 0,132 và 0,126), nên trọng số là một phép đo ổn định.
   `w_behavioral` giữ đúng 1,000 khi không có Behavioral, xác nhận optimizer mới
   không còn kéo trọng số bằng weight decay.
+
+- **fw2-hgnn, 5 seed (01/10/2026):** test AUC 0,8723 ± 0,0012, AUPRC 0,9441 ± 0,0006,
+  macro-F1 0,7796, val AUC 0,8705 ± 0,0006. Theo từng seed: 0,8728 / 0,8725 /
+  **0,8702** / 0,8731 / 0,8729. Seed 111 dừng ở epoch 535 (best 235); seed 1 và 11
+  bị chặn bởi giới hạn 1000 epoch (best 985 và 865). Bỏ seed 111 thì trung bình là
+  0,8728, bằng b1-nob-hgnn (0,8729 ± 0,0001).
+  **Kết luận:** trọng số family tự học khôi phục gần hết mức cải thiện của việc bỏ
+  Behavioral bằng tay, nhưng không vượt qua, và kém ổn định hơn (std lớn hơn khoảng
+  12 lần). Giá trị của nó là model *tự phát hiện* Behavioral thừa. Nhược điểm: hội
+  tụ chậm, vì trọng số thay đổi thì graph hiệu dụng cũng thay đổi theo.
+- **Lưu ý khi viết:**
+  - Các bước sàng lọc đã nhìn vào test AUC. Val AUC xếp hạng cùng chiều trong mọi so
+    sánh, nhưng cấu hình cuối cùng phải được chọn bằng val và báo test một lần.
+  - Mức hơn MLP/GBDT là 0,3–0,4 điểm AUC, cần kiểm định DeLong.
+  - `w_self_loop` lớn chỉ nói về *nhánh lan truyền* (mô hình đã có skip đưa X thẳng
+    vào lớp phân loại), không phải về tầm quan trọng của đặc trưng cá nhân trong toàn
+    mô hình.
+  - Còn thiếu: `w_*` của 5 seed (để kiểm tra độ ổn định), và fw2-nob-hgnn 5 seed.
 - (Ghi chú cũ) Cần bổ sung hai ô ablation `b1-hgnn` (HGNN + skip, đủ
   family, không `W`) và `b12-nob-hgnn` (thêm `W`, bỏ Behavioral) để tách tác dụng
   của việc bỏ Behavioral khỏi tác dụng của trọng số family.
