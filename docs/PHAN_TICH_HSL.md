@@ -277,7 +277,11 @@ khoảng 0,5 điểm.
   Behavioral thì ΔH cũng tắt, nên khác biệt chỉ còn mask cứng Me/Mv và
   contrastive, phù hợp với mục 5. Khi còn Behavioral, nhiễu Gumbel có thể đã giúp
   chống lại phần thừa; bỏ Behavioral đi thì lợi ích này mất.
-- Cần xác nhận bằng 5 seed, và bổ sung hai ô ablation `b1-hgnn` (HGNN + skip, đủ
+- **Đã xác nhận bằng 5 seed (30/09/2026):** HGNN + skip trên Course + Object đạt
+  test AUC 0,8729 ± 0,0001, AUPRC 0,9449 ± 0,0001, AUPRC lớp không bỏ học
+  0,7571 ± 0,0001 (MLP: 0,8693 / 0,9410 / 0,7514; GBDT: 0,8699 / 0,9418 / 0,7526).
+  Macro-F1 0,7765 thấp hơn MLP (0,7800) một chút vì t\* tối ưu F1 của lớp bỏ học.
+- Cần bổ sung hai ô ablation `b1-hgnn` (HGNN + skip, đủ
   family, không `W`) và `b12-nob-hgnn` (thêm `W`, bỏ Behavioral) để tách tác dụng
   của việc bỏ Behavioral khỏi tác dụng của trọng số family.
 

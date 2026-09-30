@@ -557,7 +557,8 @@ nghiệm cần chạy trên server.
 | B0–B2 | Code: tập con val cố định, `--skip-connection`, `--family-weights` | xong | |
 | B (run_b.sh) | b0, b0-hgnn, b1, b12, b12-hgnn; seed 1; 1000 epoch, patience 60 | xong | AUC: b0 0,8332; b0-hgnn 0,8467; **b1 0,8699**; b12 0,8697; b12-hgnn 0,8665. Skip +3,7 điểm nhưng mới ngang MLP (0,8691). Phân tích: [PHAN_TICH_HSL.md](PHAN_TICH_HSL.md) |
 | B-nob | b1-nob, b1-nob-hgnn (bỏ Behavioral) | xong, seed 1 | **b1-nob-hgnn 0,8730** (> MLP 0,8691 và GBDT 0,8699); b1-nob 0,8692 |
-| C0 | b1-nob-hgnn × 5 seed; ablation b1-hgnn, b12-nob-hgnn (seed 1) | chưa chạy | |
+| C0 | b1-nob-hgnn × 5 seed | xong | **AUC 0,8729 ± 0,0001; AUPRC 0,9449 ± 0,0001**; F1 0,9098; macro-F1 0,7765. Vượt MLP +0,0036 và GBDT +0,0030 AUC |
+| C0-ab | Ablation b1-hgnn, b12-nob-hgnn (seed 1) | chưa có kết quả | |
 | C1–C3 | HSL cắt thật | chờ bước A | |
 | E3.1–E3.3 | lr, dropout, schedule | chưa chạy | |
 | E2.1 | LR, GBDT (chạy thử 1 seed trên máy local, 28/09) | xong 1 seed | Test: LR AUC 0,845, F1 0,905; GBDT AUC 0,868, AUPRC 0,941, F1 0,908. **Cả hai đều cao hơn HSL hiện tại (AUC 0,809).** Cần chạy đủ 5 seed |
