@@ -68,6 +68,7 @@ Các tuỳ chọn thường dùng:
 | `--tag` | rỗng | Hậu tố tên run, tránh ghi đè khi quét tham số, ví dụ `lr3e-3` |
 | `--skip-connection` | tắt | Lớp phân loại nhận thêm `MLP(X)` (đặc trưng riêng của node, không lan truyền) |
 | `--family-weights` | tắt | Học một trọng số cho mỗi loại hyperedge (ma trận `W` của HGNN), log ở `w_course`, `w_object`, … |
+| `--edge-weights` | tắt | Thêm một trọng số `α_e` cho từng hyperedge (MLP nhỏ trên trung bình X, loại, kích thước); log ở `alpha_*`, bảng đầy đủ ở `outputs/reports/<run>_edge_weights.csv` |
 
 Baseline và ablation:
 
@@ -91,7 +92,13 @@ cho cả bảng P0 (LR, GBDT, MLP, HGNN, HSL). Chạy trong tmux để tắt SSH
 RUN_SCRIPT=scripts/run_p0.sh bash scripts/run_tmux.sh                          # cả bảng P0
 NOTE="HSL, cấu hình P0" bash scripts/run_tmux.sh --skip-prep --tag p0          # một cấu hình
 ONLY="gbdt hsl" SKIP_PREP=1 RUN_SCRIPT=scripts/run_p0.sh bash scripts/run_tmux.sh   # một phần bảng
+RUN_SCRIPT=scripts/run_o.sh bash scripts/run_tmux.sh                          # mô hình đề xuất + W + User (docs/KE_HOACH_V3.md)
+RUN_SCRIPT=scripts/run_night.sh bash scripts/run_tmux.sh                      # mọi thí nghiệm của KE_HOACH_V3, chạy qua đêm
 ```
+
+Bảng kết quả chi tiết của mọi lần chạy trong `result/` (siêu tham số; AUROC, AUPRC, ACC,
+Precision, Recall, F1, Specificity, Macro-F1 cho val và test; mean ± std) được ghi vào
+`result/tong_hop_ket_qua.xlsx` bởi `python scripts/summarize_results.py`.
 
 So sánh AUC test của hai lần chạy bằng kiểm định DeLong, từng seed với cùng seed:
 

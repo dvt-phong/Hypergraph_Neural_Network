@@ -16,6 +16,7 @@
 #
 #   bash scripts/run_o.sh                               all five, seed 1 (about 5-7 hours)
 #   ONLY="o3" bash scripts/run_o.sh                     one configuration
+#   ONLY=none bash scripts/run_o.sh                   only step 1 (the User graph)
 #   SEEDS="1 11 111 1111 11111" ONLY="o3" bash scripts/run_o.sh      five seeds
 #   RUN_SCRIPT=scripts/run_o.sh bash scripts/run_tmux.sh             the same, inside tmux
 
@@ -58,5 +59,8 @@ else
     "$PYTHON" -u src/4_hypergraph.py --reuse-neighbors hypergraph_v3.npz || exit 1
 fi
 
+if [[ "${ONLY:-}" == "none" ]]; then  # only build the graph
+    exit 0
+fi
 export ONLY="${ONLY:-o1 o2 o3 o3-skip o3-hgnn}"
 bash scripts/run_b.sh

@@ -1,5 +1,7 @@
 # Kế hoạch nâng cấp HGNN + HSL (bản 2)
 
+> Bản tổng hợp mới nhất: [KE_HOACH_V3.md](KE_HOACH_V3.md) (01/10/2026).
+
 Ngày lập: 28/09/2026. Bản 2 thay cho bản 1 cùng ngày, bổ sung ba phần:
 (1) chẩn đoán vì sao F1 và recall thấp, dao động mạnh; (2) đối chiếu siêu tham
 số với code HGNN và HSL gốc; (3) việc cần sửa theo từng file và bảng thí nghiệm
@@ -622,7 +624,7 @@ nghiệm cần chạy trên server.
 | C0-ab | Ablation b1-hgnn; trọng số family bản sửa fw2-hgnn, fw2-nob-hgnn (seed 1) | xong | b1-hgnn 0,8665; **fw2-hgnn 0,8728**; **fw2-nob-hgnn 0,8740** (tốt nhất). Trọng số family bản sửa tự khắc phục Behavioral |
 | C1 | fw2-hgnn, fw2-nob-hgnn × 5 seed | fw2-hgnn xong; fw2-nob-hgnn chờ kết quả | fw2-hgnn: AUC 0,8723 ± 0,0012 (seed 111: 0,8702, dừng sớm); val 0,8705 ± 0,0006 |
 | C2 | Chốt mô hình chính bằng val AUC 5 seed; chạy lại 1500 epoch; kiểm định DeLong | xong. Lần `final` (1500 epoch): test AUC 0,8736 ± 0,0004, không hơn 1000 epoch; 1000 epoch là đủ | **Mô hình chính: fw2-nob-hgnn**, val 0,8716 ± 0,0004, test AUC 0,8737 ± 0,0002. DeLong hơn GBDT p ≤ 6·10⁻⁷, hơn MLP p ≤ 2·10⁻¹² (5/5 seed) |
-| C3 | Hyperedge User (H5), rồi trọng số `α_e` cho từng hyperedge | chưa làm | |
+| C3 | Hyperedge User (H5), rồi trọng số `α_e` cho từng hyperedge | đã code (`--edge-weights`, `run_o.sh`), chưa chạy | Kế hoạch tiếp theo: [KE_HOACH_V3.md](KE_HOACH_V3.md) |
 | C1–C3 | HSL cắt thật | chờ bước A | |
 | E3.1–E3.3 | lr, dropout, schedule | chưa chạy | |
 | E2.1 | LR, GBDT (chạy thử 1 seed trên máy local, 28/09) | xong 1 seed | Test: LR AUC 0,845, F1 0,905; GBDT AUC 0,868, AUPRC 0,941, F1 0,908. **Cả hai đều cao hơn HSL hiện tại (AUC 0,809).** Cần chạy đủ 5 seed |
