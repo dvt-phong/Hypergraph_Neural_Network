@@ -28,6 +28,11 @@
 #   fw2-hgnn      HGNN   b12-hgnn again, family weights with their own lr and no decay
 #   fw2-nob-hgnn  HGNN   b12-nob-hgnn again, same
 #   (runs before 30/09/2026 trained family weights with the main lr and weight decay)
+#   -- User hyperedges (rebuild hypergraph.npz first, see docs/IMPROVEMENT_PLAN.md) --
+#   u0-hgnn       HGNN   --no-hsl --skip-connection --families course,object,user
+#   u1-hgnn       HGNN   u0-hgnn + --family-weights               main model + User
+#   u2-hgnn       HGNN   --no-hsl --skip-connection --family-weights   all four families
+#   u1-temporal   HGNN   u1-hgnn on hypergraph_temporal.npz (User rule "temporal")
 #   b2            HSL    --family-weights
 #   b12-wd5e-5    HSL    b12 + --weight-decay 5e-5
 #   b12-wd0       HSL    b12 + --weight-decay 0
@@ -44,6 +49,9 @@ export SEEDS="${SEEDS:-1}"
 export TRAIN_SCRIPT=src/8_train.py
 ONLY="${ONLY:-b0 b0-hgnn b1 b12 b12-hgnn}"
 LONG=(--epochs 1000 --patience 60)
+# The configurations below were defined before User hyperedges existed, when
+# "all families" meant these three; keep that meaning.
+THREE=(--families course,object,behavioral)
 
 FAILED=()
 run_config() {
@@ -58,22 +66,27 @@ run_config() {
     fi
 }
 
-run_config b0
-run_config b0-hgnn    --no-hsl
-run_config b1         --skip-connection
-run_config b12        --skip-connection --family-weights
-run_config b12-hgnn   --no-hsl --skip-connection --family-weights
+run_config b0         "${THREE[@]}"
+run_config b0-hgnn    "${THREE[@]}" --no-hsl
+run_config b1         "${THREE[@]}" --skip-connection
+run_config b12        "${THREE[@]}" --skip-connection --family-weights
+run_config b12-hgnn   "${THREE[@]}" --no-hsl --skip-connection --family-weights
 run_config b1-nob      --skip-connection --families course,object
 run_config b1-nob-hgnn --no-hsl --skip-connection --families course,object
-run_config b1-hgnn     --no-hsl --skip-connection
+run_config b1-hgnn     "${THREE[@]}" --no-hsl --skip-connection
 run_config b12-nob-hgnn --no-hsl --skip-connection --family-weights --families course,object
-run_config fw2-hgnn     --no-hsl --skip-connection --family-weights
+run_config fw2-hgnn     "${THREE[@]}" --no-hsl --skip-connection --family-weights
 run_config fw2-nob-hgnn --no-hsl --skip-connection --family-weights --families course,object
-run_config b2         --family-weights
-run_config b12-wd5e-5 --skip-connection --family-weights --weight-decay 5e-5
-run_config b12-wd0    --skip-connection --family-weights --weight-decay 0
-run_config b12-do0.2  --skip-connection --family-weights --dropout 0.2
-run_config b12-h256   --skip-connection --family-weights --hidden-dim 256
+run_config u0-hgnn      --no-hsl --skip-connection --families course,object,user
+run_config u1-hgnn      --no-hsl --skip-connection --family-weights --families course,object,user
+run_config u2-hgnn      --no-hsl --skip-connection --family-weights
+run_config u1-temporal  --no-hsl --skip-connection --family-weights --families course,object,user \
+                        --hypergraph hypergraph_temporal.npz
+run_config b2         "${THREE[@]}" --family-weights
+run_config b12-wd5e-5 "${THREE[@]}" --skip-connection --family-weights --weight-decay 5e-5
+run_config b12-wd0    "${THREE[@]}" --skip-connection --family-weights --weight-decay 0
+run_config b12-do0.2  "${THREE[@]}" --skip-connection --family-weights --dropout 0.2
+run_config b12-h256   "${THREE[@]}" --skip-connection --family-weights --hidden-dim 256
 
 if [[ ${#FAILED[@]} -gt 0 ]]; then
     echo "===== Finished with FAILED configurations: ${FAILED[*]} (see result/*/pipeline.log)"

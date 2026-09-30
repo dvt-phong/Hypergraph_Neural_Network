@@ -55,8 +55,9 @@ run_config() {
 run_config logreg src/9_baselines.py "E2.1 Logistic Regression" --model logreg
 run_config gbdt   src/9_baselines.py "E2.1 GBDT" --model gbdt
 run_config mlp    src/8_train.py "E2.2 MLP, cấu hình P0" --no-hsl --families self_loop --tag p0
-run_config hgnn   src/8_train.py "E2.3 HGNN, cấu hình P0" --no-hsl --tag p0
-run_config hsl    src/8_train.py "E1.2 + H3: HSL, cấu hình P0" --tag p0
+# Defined before User hyperedges existed: keep the three families of that time.
+run_config hgnn   src/8_train.py "E2.3 HGNN, cấu hình P0" --no-hsl --families course,object,behavioral --tag p0
+run_config hsl    src/8_train.py "E1.2 + H3: HSL, cấu hình P0" --families course,object,behavioral --tag p0
 
 if [[ ${#FAILED[@]} -gt 0 ]]; then
     echo "===== Finished with FAILED configurations: ${FAILED[*]} (see result/*/pipeline.log)"

@@ -45,6 +45,7 @@ total_loss = loss_module.total_loss
 DEFAULT_SETTINGS = {
     "feature_set": "full",
     "families": list(config.GRAPH_FAMILIES),  # hyperedge families; ["self_loop"] = MLP
+    "hypergraph": "hypergraph.npz",  # bundle from 4_hypergraph.py inside --output-dir
     "hidden_dim": 128,
     "dropout": 0.5,             # as in HGNN (Feng et al., 2019)
     "learning_rate": 1e-3,
@@ -140,6 +141,9 @@ def make_run_name(settings, seed):
         name = "mlp" if not settings["hsl"] else name + "_no-graph"
     elif families != list(config.GRAPH_FAMILIES):
         name += "_" + "-".join(families)
+    bundle = Path(settings["hypergraph"]).stem.removeprefix("hypergraph").strip("_")
+    if bundle:  # e.g. hypergraph_temporal.npz -> "_temporal"
+        name += f"_{bundle}"
     if settings["skip_connection"]:
         name += "_skip"
     if settings["family_weights"]:
@@ -166,7 +170,7 @@ def make_model(input_dim, settings):
 def load_split(output_dir, split_name, settings):
     return load_evaluation_split(
         output_dir, split_name=split_name, feature_set=settings["feature_set"],
-        families=settings.get("families", config.GRAPH_FAMILIES),
+        families=settings["families"], hypergraph_file=settings["hypergraph"],
     )
 
 
@@ -218,7 +222,8 @@ def train(settings, *, seed, output_dir=config.PROCESSED, device_name="auto"):
 
     # Data: X, labels, H0 of the train split; validation targets.
     train_data = load_train_graph(
-        output_dir, feature_set=settings["feature_set"], families=settings["families"]
+        output_dir, feature_set=settings["feature_set"], families=settings["families"],
+        hypergraph_file=settings["hypergraph"],
     )
     validation_data = load_split(output_dir, "validation", settings)
     x = torch.as_tensor(train_data["features"], device=device)
@@ -336,15 +341,36 @@ def train(settings, *, seed, output_dir=config.PROCESSED, device_name="auto"):
     return report
 
 
+# Checkpoints saved before the User family existed have one family fewer in the
+# family weights and in the family one-hot of the HSL hyperedge scorer. Insert
+# the User entry (initial weight / zero column), so those checkpoints still load.
+def upgrade_state_dict(state, model):
+    user = config.EDGE_FAMILIES.index("user")
+    current = model.state_dict()
+    state = dict(state)
+    if "family_logits" in state and state["family_logits"].shape != current["family_logits"].shape:
+        old = state["family_logits"]
+        state["family_logits"] = torch.cat([old[:user], current["family_logits"][user:user + 1], old[user:]])
+    name = "structure_learner.edge_scorer.0.weight"
+    if name in state and state[name].shape != current[name].shape:
+        old = state[name]
+        column = old.shape[1] - (len(config.EDGE_FAMILIES) - 1) + user
+        state[name] = torch.cat([old[:, :column], torch.zeros_like(old[:, :1]), old[:, column:]], dim=1)
+    return state
+
+
 # Test runs only on a checkpoint that validation has already selected, with the
 # threshold chosen on validation.
 def test(checkpoint_path, *, output_dir=config.PROCESSED, device_name="auto", limit=0):
     device = resolve_device(device_name)
     saved = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    # Older checkpoints lack newer settings; their defaults match the old behavior.
+    # Older checkpoints lack newer settings; their defaults match the old behavior,
+    # except families: before User hyperedges, "all families" had no User.
     settings = {**DEFAULT_SETTINGS, **saved["settings"]}
+    if "families" not in saved["settings"]:
+        settings["families"] = ["course", "object", "behavioral"]
     model = make_model(saved["input_dim"], settings).to(device)
-    model.load_state_dict(saved["state_dict"])
+    model.load_state_dict(upgrade_state_dict(saved["state_dict"], model))
     run_name = Path(checkpoint_path).stem
 
     threshold = saved.get("threshold")
@@ -397,7 +423,8 @@ if __name__ == "__main__":
     parser.add_argument("--test-limit", type=int, default=0)
     parser.add_argument("--feature-set", choices=("behavior", "behavior_user", "behavior_course", "full"))
     parser.add_argument("--families", type=families_argument,
-                        help="comma-separated, e.g. course,object; self_loop alone = MLP")
+                        help="comma-separated, e.g. course,object,user; self_loop alone = MLP")
+    parser.add_argument("--hypergraph", help="bundle inside --output-dir, e.g. hypergraph_temporal.npz")
     parser.add_argument("--hidden-dim", type=int)
     parser.add_argument("--dropout", type=float)
     parser.add_argument("--learning-rate", type=float)

@@ -21,7 +21,7 @@ from pathlib import Path
 METRICS = ("auc", "auprc", "f1", "precision", "recall",
            "macro_f1", "f1_negative", "auprc_negative", "f1_at_0.5")
 # Learned family weights (--family-weights) at the best epoch.
-FAMILY_WEIGHTS = ("w_course", "w_object", "w_behavioral", "w_self_loop")
+FAMILY_WEIGHTS = ("w_course", "w_object", "w_behavioral", "w_self_loop", "w_user")
 REPORT_PATTERN = re.compile(r"report=(.+_(train|test)\.json)\s*$")
 
 

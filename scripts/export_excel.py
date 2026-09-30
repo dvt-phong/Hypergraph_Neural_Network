@@ -89,6 +89,7 @@ EXTRA_PARAMETERS = (
     ("Skip connection", "skip_connection"),
     ("Trọng số family", "family_weights"),
     ("LR trọng số family", "family_weight_lr"),
+    ("File hypergraph", "hypergraph"),
 )
 PARAMETER_HEADERS = (("STT", "Ngày chạy", "Cấu hình") + tuple(h for h, _ in PARAMETERS) + ("Mã lần chạy",)
                      + tuple(h for h, _ in EXTRA_PARAMETERS))
@@ -117,6 +118,7 @@ SEED_COLUMNS = (
     ("w object", "w_object", "0.000"),
     ("w behavioral", "w_behavioral", "0.000"),
     ("w self-loop", "w_self_loop", "0.000"),
+    ("w user", "w_user", "0.000"),
 )
 SEED_LETTER = {key: get_column_letter(index) for index, (_, key, _) in enumerate(SEED_COLUMNS, 1)}
 
@@ -231,7 +233,7 @@ def read_seed_rows(run_dir, run_id):
             row[f"val_{name}"] = train["best_validation"].get(name)
             row[f"test_{name}"] = test.get(name)
         for key in ("kept_course", "kept_object", "kept_behavioral", "added",
-                    "w_course", "w_object", "w_behavioral", "w_self_loop"):
+                    "w_course", "w_object", "w_behavioral", "w_self_loop", "w_user"):
             row[key] = best.get(key)
         rows.append(row)
     return sorted(rows, key=lambda row: row["seed"]), settings
