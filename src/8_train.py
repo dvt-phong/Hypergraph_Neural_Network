@@ -61,6 +61,10 @@ DEFAULT_SETTINGS = {
     # Encoder (5_model.py)
     "skip_connection": False,   # classifier also sees MLP(X), the node's own features
     "family_weights": False,    # one learned weight per hyperedge family (HGNN's W)
+    # Adam moves each parameter by about lr per step, so with the main lr the
+    # family weights could only change by ~0.6 in 600 epochs, and weight decay
+    # pulled them all toward softplus(0). They get their own lr and no decay.
+    "family_weight_lr": 0.05,
     # HSL
     "hsl": True,                # False = plain HGNN baseline
     "edge_sampling": True,      # Me
@@ -227,8 +231,12 @@ def train(settings, *, seed, output_dir=config.PROCESSED, device_name="auto"):
         f"memberships={len(graph['node_ids']):,}, pos_weight={float(positive_weight):.3f}")
 
     model = make_model(x.shape[1], settings).to(device)
+    parameter_groups = [{"params": [p for n, p in model.named_parameters() if n != "family_logits"]}]
+    if model.family_logits is not None:
+        parameter_groups.append({"params": [model.family_logits],
+                                 "lr": settings["family_weight_lr"], "weight_decay": 0.0})
     optimizer = torch.optim.Adam(
-        model.parameters(), lr=settings["learning_rate"], weight_decay=settings["weight_decay"]
+        parameter_groups, lr=settings["learning_rate"], weight_decay=settings["weight_decay"]
     )
     scheduler = None
     if settings["lr_schedule"] == "multistep":
@@ -407,6 +415,8 @@ if __name__ == "__main__":
                         help="classifier also sees MLP(X), the node's own features")
     parser.add_argument("--family-weights", action="store_true", default=None,
                         help="learn one weight per hyperedge family")
+    parser.add_argument("--family-weight-lr", type=float,
+                        help="Adam lr of the family weights (no weight decay)")
     parser.add_argument("--lambda-cl", type=float)
     parser.add_argument("--add-per-edge", type=int)
     # Ablations (HSL paper, Fig. 3)
