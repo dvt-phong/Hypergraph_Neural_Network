@@ -16,6 +16,7 @@ import csv
 import json
 import random
 import time
+from collections import defaultdict
 from importlib import import_module
 from pathlib import Path
 
@@ -71,6 +72,12 @@ DEFAULT_SETTINGS = {
     # hyperedge (5_model.py). Its own lr, no weight decay, for the same reason.
     "edge_weights": False,
     "edge_weight_lr": 0.005,
+    # A node only receives from hyperedges whose members all started their
+    # course no later than it, so nothing comes from after its 35 days (5_model.py).
+    "causal": False,
+    # Control experiment: hyperedges keep their sizes but get random train
+    # members (permutation seed; None = the real hypergraph). 4_hypergraph.py.
+    "shuffle_graph": None,
     # HSL
     "hsl": True,                # False = plain HGNN baseline
     "edge_sampling": True,      # Me
@@ -150,6 +157,10 @@ def make_run_name(settings, seed):
     bundle = Path(settings["hypergraph"]).stem.removeprefix("hypergraph").strip("_")
     if bundle:  # e.g. hypergraph_temporal.npz -> "_temporal"
         name += f"_{bundle}"
+    if settings["causal"]:
+        name += "_causal"
+    if settings["shuffle_graph"] is not None:
+        name += f"_shuffled{settings['shuffle_graph']}"
     if settings["skip_connection"]:
         name += "_skip"
     if settings["family_weights"]:
@@ -173,20 +184,23 @@ def make_model(input_dim, settings):
     return HSLModel(input_dim, settings["hidden_dim"], settings["dropout"], hsl_options,
                     skip_connection=settings["skip_connection"],
                     family_weights=settings["family_weights"],
-                    edge_weights=settings["edge_weights"])
+                    edge_weights=settings["edge_weights"],
+                    causal=settings["causal"])
 
 
 def load_split(output_dir, split_name, settings):
     return load_evaluation_split(
         output_dir, split_name=split_name, feature_set=settings["feature_set"],
         families=settings["families"], hypergraph_file=settings["hypergraph"],
+        shuffle_seed=settings["shuffle_graph"],
     )
 
 
 # Dropout probabilities of validation/test targets; each target only sees
 # train enrollments. `limit` scores a fixed random subset (same for every call).
+# With return_parts, also the logit split {logit_graph, logit_self} (skip models).
 @torch.no_grad()
-def predict(model, split_data, settings, device, *, limit=0, seed=0):
+def predict(model, split_data, settings, device, *, limit=0, seed=0, return_parts=False):
     target_ids = np.arange(len(split_data["nodes"]))
     if limit:
         chosen = np.random.default_rng(seed).choice(target_ids, min(limit, len(target_ids)), replace=False)
@@ -196,6 +210,7 @@ def predict(model, split_data, settings, device, *, limit=0, seed=0):
     batch_size = settings["eval_batch_size"]
     all_labels = []
     all_probabilities = []
+    all_parts = defaultdict(list)
     started_at = last_log = time.perf_counter()
     for start in range(0, len(target_ids), batch_size):
         batch_ids = target_ids[start:start + batch_size]
@@ -203,9 +218,12 @@ def predict(model, split_data, settings, device, *, limit=0, seed=0):
         features, graph, target_rows, labels = merge_local_graphs(local_graphs)
 
         output = model(torch.as_tensor(features, device=device), graph_to_device(graph, device))
-        target_logits = output["logits"][torch.as_tensor(target_rows, device=device)]
-        all_probabilities.extend(torch.sigmoid(target_logits).cpu().tolist())
+        rows = torch.as_tensor(target_rows, device=device)
+        all_probabilities.extend(torch.sigmoid(output["logits"][rows]).cpu().tolist())
         all_labels.extend(labels.tolist())
+        for name in ("logit_graph", "logit_self"):
+            if name in output:
+                all_parts[name].extend(output[name][rows].cpu().tolist())
 
         if time.perf_counter() - last_log > 30:
             last_log = time.perf_counter()
@@ -213,13 +231,34 @@ def predict(model, split_data, settings, device, *, limit=0, seed=0):
             log(split_data["split_name"], f"{done:,}/{len(target_ids):,} targets, {last_log - started_at:.0f}s")
 
     log(split_data["split_name"], f"{len(target_ids):,} targets in {time.perf_counter() - started_at:.0f}s")
+    if return_parts:
+        parts = {name: np.asarray(values) for name, values in all_parts.items()}
+        return np.asarray(all_labels), np.asarray(all_probabilities), parts
     return np.asarray(all_labels), np.asarray(all_probabilities)
 
 
-# Labels and probabilities for plots (scripts/plot_results.py).
-def save_probabilities(run_name, split_name, labels, probabilities, threshold):
+# Which branch carries the prediction of a skip model. The logit is
+# logit_graph + logit_self + bias, so the AUC of one part alone is the AUC of
+# the model with the other branch held constant (AUC ignores the shift).
+def branch_metrics(labels, parts):
+    if not parts:
+        return {}
+    graph, own = parts["logit_graph"], parts["logit_self"]
+    return {
+        "auc_self_branch": float(roc_auc_score(labels, own)),
+        "auc_graph_branch": float(roc_auc_score(labels, graph)),
+        "std_logit_self": float(np.std(own)),
+        "std_logit_graph": float(np.std(graph)),
+        "corr_branches": float(np.corrcoef(own, graph)[0, 1]),
+    }
+
+
+# Labels and probabilities for plots (scripts/plot_results.py); `parts` adds
+# the logit split of skip models.
+def save_probabilities(run_name, split_name, labels, probabilities, threshold, parts=None):
     path = Path(config.REPORTS) / f"{run_name}_{split_name}_probs.npz"
-    np.savez_compressed(path, labels=labels, probabilities=probabilities, threshold=threshold)
+    np.savez_compressed(path, labels=labels, probabilities=probabilities, threshold=threshold,
+                        **(parts or {}))
     log(split_name, f"probabilities={path}")
 
 
@@ -261,7 +300,7 @@ def train(settings, *, seed, output_dir=config.PROCESSED, device_name="auto"):
     # Data: X, labels, H0 of the train split; validation targets.
     train_data = load_train_graph(
         output_dir, feature_set=settings["feature_set"], families=settings["families"],
-        hypergraph_file=settings["hypergraph"],
+        hypergraph_file=settings["hypergraph"], shuffle_seed=settings["shuffle_graph"],
     )
     validation_data = load_split(output_dir, "validation", settings)
     x = torch.as_tensor(train_data["features"], device=device)
@@ -429,14 +468,19 @@ def test(checkpoint_path, *, output_dir=config.PROCESSED, device_name="auto", li
     log("test", f"threshold t*={threshold:.4f} ({threshold_source})")
 
     test_data = load_split(output_dir, "test", settings)
-    labels, probabilities = predict(model, test_data, settings, device, limit=limit, seed=saved["seed"])
+    labels, probabilities, parts = predict(model, test_data, settings, device, limit=limit,
+                                           seed=saved["seed"], return_parts=True)
     metrics = classification_metrics(labels, probabilities, threshold)
     log("test", format_metrics(metrics))
-    save_probabilities(run_name, "test", labels, probabilities, threshold)
+    branches = branch_metrics(labels, parts)
+    if branches:
+        log("test", "branches: " + format_metrics(branches))
+    save_probabilities(run_name, "test", labels, probabilities, threshold, parts)
 
     report = {"checkpoint": str(checkpoint_path), "checkpoint_epoch": saved["epoch"],
               "checkpoint_validation": saved.get("full_validation", saved["validation"]),
-              "threshold": threshold, "threshold_source": threshold_source, "test": metrics}
+              "threshold": threshold, "threshold_source": threshold_source, "test": metrics,
+              "branches": branches}
     report_path = Path(config.REPORTS) / f"{run_name}_test.json"
     Path(config.REPORTS).mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
@@ -492,6 +536,10 @@ if __name__ == "__main__":
                         help="learn one weight per hyperedge on top of the family weights")
     parser.add_argument("--edge-weight-lr", type=float,
                         help="Adam lr of the per-hyperedge weight scorer (no weight decay)")
+    parser.add_argument("--causal", action="store_true", default=None,
+                        help="a node only receives from hyperedges whose members started no later")
+    parser.add_argument("--shuffle-graph", type=int, metavar="SEED",
+                        help="control: hyperedges keep their sizes but get random train members")
     parser.add_argument("--lambda-cl", type=float)
     parser.add_argument("--add-per-edge", type=int)
     # Ablations (HSL paper, Fig. 3)
