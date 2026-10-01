@@ -28,6 +28,17 @@
 #                    g starts at zero: α_e = 1 and W starts as without it.
 #                    Self-loops keep α = 1. With HSL, the same W is used for Z0
 #                    and Z* (H* keeps the hyperedges of H0).
+#   causal           every member still sends to its hyperedges, but node v only
+#                    receives from hyperedge e when no member of e started its
+#                    course later than v. Features cover the 35 days after the
+#                    course start, so nothing v receives comes from after its own
+#                    observation window, in training as in evaluation. Course and
+#                    Object hyperedges (one course) are unchanged; in a temporal
+#                    User hyperedge only the anchor (and same-day courses) receive.
+#
+# With skip_connection the classifier is linear in [Z ‖ MLP(X)], so the logit
+# splits exactly into logit_graph (from Z) + logit_self (from MLP(X)) + bias;
+# both parts are returned to measure which branch carries the prediction.
 
 import math
 from importlib import import_module
@@ -46,7 +57,8 @@ SELF_LOOP = config.EDGE_FAMILIES.index("self_loop")
 # Move a NumPy graph from 4_hypergraph.py to PyTorch tensors on `device`.
 def graph_to_device(graph, device):
     tensors = {"num_nodes": int(graph["num_nodes"])}
-    for name in ("node_ids", "edge_ids", "edge_family", "candidate_edge_ids", "candidate_node_ids"):
+    for name in ("node_ids", "edge_ids", "edge_family", "candidate_edge_ids", "candidate_node_ids",
+                 "node_start"):
         tensors[name] = torch.as_tensor(graph[name], dtype=torch.int64, device=device)
     tensors["num_edges"] = len(tensors["edge_family"])
     return tensors
@@ -74,16 +86,31 @@ def weighted_sum(source, weights, source_ids, target_ids, target_count):
     return output
 
 
+# 1 for memberships (v, e) where v may receive from e: no active member of e
+# started its course later than v (option causal).
+@torch.no_grad()
+def causal_receive(graph, weights):
+    member_start = graph["node_start"][graph["node_ids"]]
+    active = weights > 0
+    latest = torch.full((graph["num_edges"],), torch.iinfo(torch.int64).min,
+                        dtype=torch.int64, device=member_start.device)
+    latest = latest.scatter_reduce(0, graph["edge_ids"][active], member_start[active], reduce="amax")
+    return (member_start >= latest[graph["edge_ids"]]).to(weights.dtype)
+
+
 # One HGNN propagation Dv^-1/2 H W De^-1 H^T Dv^-1/2 x with membership weights.
 # Degrees are read from the (0/1) weights without gradient, so an emptied
 # hyperedge simply sends zero instead of dividing by zero. edge_weight is the
 # diagonal of W (None = identity); it enters Dv but not De, as in HGNN.
-def hgnn_propagate(x, graph, weights, edge_weight=None):
+# receive (None = all 1) masks only the hyperedge -> node step and Dv: every
+# member still counts in De and sends to the hyperedge.
+def hgnn_propagate(x, graph, weights, edge_weight=None, receive=None):
     node_ids, edge_ids = graph["node_ids"], graph["edge_ids"]
     constant_weights = weights.detach()
-    node_weights = constant_weights
+    receive_weights = weights if receive is None else weights * receive
+    node_weights = constant_weights if receive is None else constant_weights * receive
     if edge_weight is not None:
-        node_weights = constant_weights * edge_weight[edge_ids]
+        node_weights = node_weights * edge_weight[edge_ids]
     node_degree = x.new_zeros(graph["num_nodes"]).index_add_(0, node_ids, node_weights)
     edge_degree = x.new_zeros(graph["num_edges"]).index_add_(0, edge_ids, constant_weights)
     # Every node keeps its self-loop, so its degree is > 0; unweighted degrees are
@@ -94,7 +121,7 @@ def hgnn_propagate(x, graph, weights, edge_weight=None):
     edge_x = weighted_sum(x * node_scale, weights, node_ids, edge_ids, graph["num_edges"])
     if edge_weight is not None:
         edge_x = edge_x * edge_weight[:, None]
-    node_x = weighted_sum(edge_x * edge_scale, weights, edge_ids, node_ids, graph["num_nodes"])
+    node_x = weighted_sum(edge_x * edge_scale, receive_weights, edge_ids, node_ids, graph["num_nodes"])
     return node_x * node_scale
 
 
@@ -123,11 +150,12 @@ EDGE_SCORER_DIM = 32
 class HSLModel(nn.Module):
     # hsl_options=None gives the plain HGNN baseline (H* = H0, Z* = Z0).
     def __init__(self, input_dim, hidden_dim=64, dropout=0.5, hsl_options=None, *,
-                 skip_connection=False, family_weights=False, edge_weights=False):
+                 skip_connection=False, family_weights=False, edge_weights=False, causal=False):
         super().__init__()
         self.layer1 = nn.Linear(input_dim, hidden_dim)
         self.layer2 = nn.Linear(hidden_dim, hidden_dim)
         self.dropout = dropout
+        self.causal = causal
         self.structure_learner = None
         if hsl_options is not None:
             self.structure_learner = StructureLearner(hidden_dim, **hsl_options)
@@ -172,14 +200,21 @@ class HSLModel(nn.Module):
 
     # Two HGNN layers: Linear -> propagate -> ReLU -> Dropout -> Linear -> propagate -> ReLU.
     def encode(self, x, graph, weights, edge_weight=None):
-        hidden = F.relu(hgnn_propagate(self.layer1(x), graph, weights, edge_weight))
+        receive = causal_receive(graph, weights) if self.causal else None
+        hidden = F.relu(hgnn_propagate(self.layer1(x), graph, weights, edge_weight, receive))
         hidden = F.dropout(hidden, self.dropout, self.training)
-        return F.relu(hgnn_propagate(self.layer2(hidden), graph, weights, edge_weight))
+        return F.relu(hgnn_propagate(self.layer2(hidden), graph, weights, edge_weight, receive))
 
+    # Logits [num_nodes], and with the skip branch the exact split
+    # logits = logit_graph + logit_self + bias.
     def classify(self, x, z):
-        if self.self_encoder is not None:
-            z = torch.cat([z, self.self_encoder(x)], dim=1)
-        return self.classifier(z).squeeze(-1)  # [num_nodes]
+        if self.self_encoder is None:
+            return self.classifier(z).squeeze(-1), {}
+        z_self = self.self_encoder(x)
+        logits = self.classifier(torch.cat([z, z_self], dim=1)).squeeze(-1)
+        weight = self.classifier.weight[0]
+        parts = {"logit_graph": z @ weight[:z.shape[1]], "logit_self": z_self @ weight[z.shape[1]:]}
+        return logits, parts
 
     # Learned family weights w_f and mean α_e per family, logged next to the HSL statistics.
     @torch.no_grad()
@@ -204,15 +239,18 @@ class HSLModel(nn.Module):
         summary = self.weight_summary(graph, alpha) if self.training else {}
 
         if self.structure_learner is None:
-            return {"logits": self.classify(x, z0), "z0": z0, "z_star": z0, "structure": summary}
+            logits, parts = self.classify(x, z0)
+            return {"logits": logits, **parts, "z0": z0, "z_star": z0, "structure": summary}
 
         edge_representations = hyperedge_means(z0, graph)
         refined_graph, refined_weights, structure = self.structure_learner(
             z0, edge_representations, graph
         )
         z_star = self.encode(x, refined_graph, refined_weights, edge_weight)  # [num_nodes, hidden_dim]
+        logits, parts = self.classify(x, z_star)
         return {
-            "logits": self.classify(x, z_star),
+            "logits": logits,
+            **parts,
             "z0": z0,
             "z_star": z_star,
             "structure": {**structure, **summary},

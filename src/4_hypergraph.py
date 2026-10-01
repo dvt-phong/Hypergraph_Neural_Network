@@ -17,11 +17,21 @@
 #
 # Leakage rule: validation/test enrollments are never added to H0. Each target
 # gets its own local graph = the target + the train enrollments it is linked to.
+#
+# Every loaded graph also carries node_start[v], the start day of v's course.
+# Features of v cover the 35 days after it, so with --causal (5_model.py) a node
+# only receives from hyperedges whose members all started no later than it.
+#
+# shuffle_seed (control experiment): every hyperedge keeps its size and family,
+# but each train node v is replaced by a random train node π(v), the same π in
+# H0 and in the local graphs. Nodes keep their own features through the
+# self-loop; only who their neighbors are becomes random.
 # Tham khảo: HGNN (Feng et al., 2019), SIG-Net, CA-TFHN; xem docs/references.md.
 
 import argparse
 import time
 from collections import defaultdict
+from datetime import date
 from importlib import import_module
 from pathlib import Path
 
@@ -46,6 +56,22 @@ SELF_LOOP = config.EDGE_FAMILIES.index("self_loop")
 
 def log(message):
     print(f"[{time.strftime('%H:%M:%S')}][hypergraph] {message}", flush=True)
+
+
+# "2016-11-16 08:00:00" -> day number, so start days compare as integers.
+def start_day(course_start):
+    return date.fromisoformat(course_start[:10]).toordinal()
+
+
+def start_days(nodes):
+    return np.asarray([start_day(node["course_start"]) for node in nodes], dtype=np.int64)
+
+
+# π for shuffle_seed; None = identity.
+def node_permutation(count, shuffle_seed):
+    if shuffle_seed is None:
+        return None
+    return np.random.default_rng(shuffle_seed).permutation(count)
 
 
 def resolve_device(device_name):
@@ -267,7 +293,7 @@ def select_families(graph, families):
 # anchor's next neighbors a[k], ..., a[k_max-1] that are not yet members.
 def load_train_graph(
     output_dir=config.PROCESSED, *, feature_set="full", families=config.GRAPH_FAMILIES,
-    hypergraph_file=HYPERGRAPH_FILE_NAME,
+    hypergraph_file=HYPERGRAPH_FILE_NAME, shuffle_seed=None,
 ):
     output_dir = Path(output_dir)
     with np.load(output_dir / hypergraph_file) as bundle:
@@ -296,6 +322,11 @@ def load_train_graph(
     nodes = load_nodes(output_dir / "train.csv")
     features = np.load(output_dir / "train" / "X.npy")[:, feature_columns(feature_set)]
     graph["num_nodes"] = len(nodes)
+    graph["node_start"] = start_days(nodes)
+    permutation = node_permutation(len(nodes), shuffle_seed)
+    if permutation is not None:
+        graph["node_ids"] = permutation[graph["node_ids"]]
+        graph["candidate_node_ids"] = permutation[graph["candidate_node_ids"]]
     return {
         "features": np.ascontiguousarray(features, dtype=np.float32),
         "labels": np.asarray([int(node["label"]) for node in nodes], dtype=np.float32),
@@ -307,7 +338,7 @@ def load_train_graph(
 # Everything needed to build the local graph of any validation/test target.
 def load_evaluation_split(
     output_dir=config.PROCESSED, *, split_name, feature_set="full", families=config.GRAPH_FAMILIES,
-    hypergraph_file=HYPERGRAPH_FILE_NAME,
+    hypergraph_file=HYPERGRAPH_FILE_NAME, shuffle_seed=None,
 ):
     output_dir = Path(output_dir)
     columns = feature_columns(feature_set)
@@ -327,15 +358,24 @@ def load_evaluation_split(
     for edge_id in np.flatnonzero(np.isin(edge_family, [COURSE, OBJECT])):
         members_by_key[str(edge_keys[edge_id])] = node_ids[start[edge_id]:start[edge_id + 1]]
 
+    train_nodes = load_nodes(output_dir / "train.csv")
     # Train enrollments of every learner, with their course start, for User hyperedges.
     train_by_user = {}
     if user_rule is not None:
         grouped = defaultdict(list)
-        for node in load_nodes(output_dir / "train.csv"):
+        for node in train_nodes:
             grouped[node["user_id"]].append((int(node["node_id"]), node["course_start"]))
         for user_id, rows in grouped.items():
             train_by_user[user_id] = (np.asarray([r[0] for r in rows], dtype=np.int64),
                                       np.asarray([r[1] for r in rows]))
+
+    # Same π as load_train_graph: relabel train members after choosing them.
+    permutation = node_permutation(len(train_nodes), shuffle_seed)
+    if permutation is not None:
+        members_by_key = {key: permutation[members] for key, members in members_by_key.items()}
+        neighbors = permutation[neighbors]
+        train_by_user = {user_id: (permutation[ids], starts)
+                         for user_id, (ids, starts) in train_by_user.items()}
 
     object_keys = defaultdict(set)
     for node_id, object_key in read_object_events(output_dir / f"{split_name}.csv"):
@@ -348,6 +388,7 @@ def load_evaluation_split(
         "nodes": load_nodes(output_dir / f"{split_name}.csv"),
         "features": np.ascontiguousarray(target_features, dtype=np.float32),
         "train_features": np.ascontiguousarray(train_features, dtype=np.float32),
+        "train_start": start_days(train_nodes),
         "members_by_key": members_by_key,
         "object_keys": object_keys,
         "neighbors": neighbors,
@@ -412,6 +453,8 @@ def build_local_graph(split_data, target_id):
         candidate_node_ids = np.zeros((0, len(neighbors) - k), dtype=np.int64)
     graph = add_self_loops({
         "num_nodes": len(train_ids) + 1,
+        "node_start": np.concatenate([[start_day(target["course_start"])],
+                                      split_data["train_start"][train_ids]]).astype(np.int64),
         "node_ids": np.concatenate(node_ids).astype(np.int64),
         "edge_ids": np.concatenate(edge_ids),
         "edge_family": np.asarray([family for family, _ in hyperedges], dtype=np.int64),
@@ -434,6 +477,7 @@ def merge_local_graphs(local_graphs):
     target_rows = []
     for local_graph in local_graphs:
         graph = local_graph["graph"]
+        parts["node_start"].append(graph["node_start"])
         parts["node_ids"].append(graph["node_ids"] + node_offset)
         parts["edge_ids"].append(graph["edge_ids"] + edge_offset)
         parts["edge_family"].append(graph["edge_family"])
