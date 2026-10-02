@@ -1,0 +1,15 @@
+# .venvs/signet: SIG-Net (src/12_signet.py). DGL 2.4 is built for torch 2.4;
+# cu124 wheels run on newer drivers. Installed by scripts/setup_baselines.sh.
+--extra-index-url https://download.pytorch.org/whl/cu124
+--find-links https://data.dgl.ai/wheels/torch-2.4/cu124/repo.html
+torch==2.4.0
+dgl==2.4.0
+numpy<2
+scipy
+pandas
+scikit-learn
+tqdm
+pyyaml
+pydantic
+openpyxl
+matplotlib

@@ -64,7 +64,7 @@ def graph_to_device(graph, device):
     return tensors
 
 
-def _weighted_sum_chunk(source, weights, source_ids, target_ids, target_count):
+def weighted_sum_chunk(source, weights, source_ids, target_ids, target_count):
     messages = source[source_ids] * weights[:, None]
     output = source.new_zeros(target_count, source.shape[1])
     return output.index_add_(0, target_ids, messages)
@@ -79,7 +79,7 @@ def weighted_sum(source, weights, source_ids, target_ids, target_count):
     for start in range(0, len(weights), config.MEMBERSHIP_CHUNK_SIZE):
         part = slice(start, start + config.MEMBERSHIP_CHUNK_SIZE)
         output = output + checkpoint(
-            _weighted_sum_chunk,
+            weighted_sum_chunk,
             source, weights[part], source_ids[part], target_ids[part], target_count,
             use_reentrant=False,
         )
