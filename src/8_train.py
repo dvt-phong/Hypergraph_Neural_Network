@@ -413,10 +413,13 @@ def train(settings, *, seed, output_dir=config.PROCESSED, device_name="auto"):
     if model.edge_weight_scorer is not None:
         save_edge_weights(model, x, graph, train_data, run_name)
 
+    # The User rule is read from the bundle, so the report still says which one
+    # was used after the bundle file is rebuilt.
     report = {"checkpoint": str(checkpoint_path), "best_epoch": best["epoch"],
               "select_metric": select_metric, "threshold": threshold,
               "best_validation": full_validation, "selection_validation": best["validation"],
-              "settings": settings, "seed": seed, "history": history}
+              "settings": settings, "seed": seed, "user_rule": validation_data["user_rule"],
+              "history": history}
     report_path = Path(config.REPORTS) / f"{run_name}_train.json"
     report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
     log("train", f"best epoch={best['epoch']}, val_{select_metric}={best['score']:.4f}, "

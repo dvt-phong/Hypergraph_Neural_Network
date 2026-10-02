@@ -30,7 +30,7 @@ classification_metrics = train_module.classification_metrics
 format_metrics = train_module.format_metrics
 save_probabilities = train_module.save_probabilities
 
-DEFAULT_SETTINGS = {"model": "gbdt", "feature_set": "full", "hsl": False}
+DEFAULT_SETTINGS = {"model": "gbdt", "feature_set": "full", "hsl": False, "tag": ""}
 
 
 def load_split(output_dir, split_name, feature_set):
@@ -49,7 +49,8 @@ def make_model(name, seed):
 
 
 def train(settings, *, seed, output_dir=config.PROCESSED):
-    run_name = f"{settings['model']}_{settings['feature_set']}_seed_{seed}"
+    tag = f"_{settings['tag']}" if settings["tag"] else ""
+    run_name = f"{settings['model']}_{settings['feature_set']}{tag}_seed_{seed}"
     log("setup", f"run={run_name}, settings={settings}")
     started_at = time.perf_counter()
     x, y = load_split(output_dir, "train", settings["feature_set"])
@@ -106,6 +107,7 @@ if __name__ == "__main__":
     parser.add_argument("--model", choices=("gbdt", "logreg"), default=DEFAULT_SETTINGS["model"])
     parser.add_argument("--feature-set", choices=("behavior", "behavior_user", "behavior_course", "full"),
                         default=DEFAULT_SETTINGS["feature_set"])
+    parser.add_argument("--tag", default="", help="suffix for the run name (scenario code)")
     arguments = parser.parse_args()
 
     if arguments.mode == "test":
@@ -113,7 +115,8 @@ if __name__ == "__main__":
             parser.error("--checkpoint is required for --mode test")
         test(arguments.checkpoint, output_dir=arguments.output_dir)
     else:
-        settings = {**DEFAULT_SETTINGS, "model": arguments.model, "feature_set": arguments.feature_set}
+        settings = {**DEFAULT_SETTINGS, "model": arguments.model, "feature_set": arguments.feature_set,
+                    "tag": arguments.tag}
         for seed in arguments.seeds:
             report = train(settings, seed=seed, output_dir=arguments.output_dir)
             if arguments.mode == "both":

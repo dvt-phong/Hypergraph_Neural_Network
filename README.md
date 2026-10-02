@@ -21,6 +21,8 @@ Code chính gồm một file cấu hình, tám bước pipeline và một file b
 | 7 | `7_losses.py` | BCE (có tuỳ chọn `pos_weight`) và intra-hyperedge contrastive loss |
 | 8 | `8_train.py` | Train, validation, early stopping, chọn ngưỡng t\* và test |
 | 9 | `9_baselines.py` | Baseline không graph: Logistic Regression, GBDT |
+| 10 | `10_baseline_data.py` | Cache sự kiện và giao thức chung cho các baseline đã công bố (file 11–15) |
+| 11–15 | `11_hypergcn.py`, `12_signet.py`, `13_mstgcn.py`, `14_catfhn.py`, `15_cfin.py` | HyperGCN, SIG-Net, MST-GCN, CA-TFHN, CFIN trên cùng split và giao thức |
 
 Xem [dòng chảy dữ liệu và các cột](docs/data-flow-columns.md),
 [nguồn tham khảo của code](docs/references.md), và
@@ -83,22 +85,72 @@ Baseline và ablation:
 .\.venv\Scripts\python.exe src/8_train.py --families course,object                # bỏ Behavioral
 ```
 
-Trên server, `scripts/run_all.sh` chạy trọn một cấu hình: bước 2–4, đủ 5 seed,
-gom `results.csv`, vẽ hình, chép checkpoint, và ghi thêm một dòng vào
-`docs/ket_qua_thi_nghiem.xlsx`. `scripts/run_p0.sh` gọi `run_all.sh` lần lượt
-cho cả bảng P0 (LR, GBDT, MLP, HGNN, HSL). Chạy trong tmux để tắt SSH vẫn chạy:
+## Kịch bản thực nghiệm
+
+Mọi kịch bản của bài nằm trong một file, [scripts/scenarios.py](scripts/scenarios.py).
+Mã kịch bản cũng là `--tag` của lần chạy. Siêu tham số không ghi trong kịch bản lấy theo
+`DEFAULT_SETTINGS` của `src/8_train.py`.
+
+| Mã | Nhóm | Cấu hình | Câu hỏi |
+|---|---|---|---|
+| M-any | Chính | HGNN + skip MLP + W; Course, Object, User `any`, self-loop | Cùng điều kiện với baseline (User có cả khoá học tương lai); tái hiện 0,8749 |
+| **M0** | Chính | Như M-any, User `temporal` + `--causal` | Kết quả chính không rò rỉ |
+| A1 / A2 / A3 | Ablation | M0 bỏ User / bỏ Object / bỏ Course | Vai trò từng quan hệ |
+| A4 / A5 | Ablation | M0 bỏ W / bỏ skip MLP | Vai trò của W và của MLP |
+| C1 | Đối chứng | A1 trên graph xáo trộn | Lợi ích đến từ hàng xóm thật hay từ mô hình lớn hơn |
+| C2 | Đối chứng | MLP (chỉ self-loop) | Mốc không dùng graph |
+| B-LR / B-GBDT / B-HGNN | Baseline | LR, GBDT trên X; HGNN gốc với User `any` | Mốc không graph và hypergraph cổ điển |
+| B-HGNN-T | Baseline | HGNN gốc, User `temporal` + causal | Hypergraph cổ điển, cùng luật với M0 |
+| B-HyperGCN, B-SIGNet, B-MSTGCN, B-CATFHN, B-CFIN | Baseline | Mô hình đã công bố, User `temporal` | So với M0 (không tương lai) |
+| B-…-any | Baseline | Cùng mô hình, User `any` | So với M-any (như bản công bố) |
+
+Baseline đã công bố (GĐ2) dùng mô hình trong code gốc (`baseline/<repo>`, đúng commit
+ghi trong `scripts/setup_baselines.sh`) và cùng giao thức với mô hình chính: cùng
+split, chỉ dùng nhãn train, hàng xóm chỉ là enrollment train, luật User `temporal`/`any`,
+scaler fit trên train, chọn epoch theo AUPRC validation, t\* trên validation. Những chỗ
+phải khác code gốc (và lý do) ghi ở đầu từng file `src/11`–`15`. Chuẩn bị một lần trên
+server:
 
 ```bash
-RUN_SCRIPT=scripts/run_p0.sh bash scripts/run_tmux.sh                          # cả bảng P0
-NOTE="HSL, cấu hình P0" bash scripts/run_tmux.sh --skip-prep --tag p0          # một cấu hình
-ONLY="gbdt hsl" SKIP_PREP=1 RUN_SCRIPT=scripts/run_p0.sh bash scripts/run_tmux.sh   # một phần bảng
-RUN_SCRIPT=scripts/run_o.sh bash scripts/run_tmux.sh                          # mô hình đề xuất + W + User (docs/KE_HOACH_V3.md)
-RUN_SCRIPT=scripts/run_night.sh bash scripts/run_tmux.sh                      # mọi thí nghiệm của KE_HOACH_V3, chạy qua đêm
+bash scripts/setup_baselines.sh                  # clone repo gốc + .venvs/{signet,mstgcn,catfhn}
+python src/10_baseline_data.py                   # cache sự kiện (run_scenarios.sh tự chạy nếu thiếu)
+python src/11_hypergcn.py --check-laplacian      # HyperGCN: bản vector hoá khớp utils.Laplacian gốc
+ONLY="B-CFIN B-HyperGCN" SEEDS=1 bash scripts/run_scenarios.sh
+.venvs/signet/bin/python src/12_signet.py --limit 2000 --epochs 1 --tag smoke   # thử nhanh
 ```
 
-Bảng kết quả chi tiết của mọi lần chạy trong `result/` (siêu tham số; AUROC, AUPRC, ACC,
-Precision, Recall, F1, Specificity, Macro-F1 cho val và test; mean ± std) được ghi vào
-`result/tong_hop_ket_qua.xlsx` bởi `python scripts/summarize_results.py`.
+Hai bundle cần có trong `data/processed/simple`: `hypergraph.npz` với User `any` và
+`hypergraph_temporal.npz` với User `temporal`. Script chạy kiểm tra điều này trước khi
+train, rồi chạy `scripts/check_leakage.py` cho bundle `temporal`:
+
+```bash
+python scripts/scenarios.py list                                     # mã, mô tả, câu hỏi
+python scripts/check_leakage.py                                      # kiểm tra rò rỉ của M0 (khoảng 4 phút)
+python scripts/check_leakage.py --hypergraph hypergraph.npz          # đo lượng thông tin tương lai của M-any
+ONLY=M0 SEEDS=1 bash scripts/run_scenarios.sh                        # thử một kịch bản, một seed
+RUN_SCRIPT=scripts/run_scenarios.sh bash scripts/run_tmux.sh         # mọi kịch bản, 5 seed, trong tmux
+ONLY="M-any M0" RUN_SCRIPT=scripts/run_scenarios.sh bash scripts/run_tmux.sh
+```
+
+Mỗi kịch bản là một lần gọi `scripts/run_all.sh`: một thư mục `result/<ngày_giờ>` với
+report, file xác suất, checkpoint và `run_info.txt` (lệnh, mã kịch bản, git commit, máy,
+Python/torch, GPU). Sau mỗi lần chạy, `scripts/summarize_results.py` dựng lại
+**`result/so_thi_nghiem.xlsx`** từ mọi thư mục trong `result/`, nên sổ luôn khớp với dữ
+liệu trên đĩa:
+
+| Sheet | Nội dung |
+|---|---|
+| `Bang_chinh` | Mỗi kịch bản một dòng: chỉ số test mean ± std (lần chạy mới nhất của mỗi seed), Δ AUC và DeLong so với M0 và M-any |
+| `Kich_ban` | Danh mục: câu hỏi, script, tham số, file graph, User rule, số seed đã chạy |
+| `Lan_chay` | Mỗi thư mục một dòng: ngày, git, máy, GPU, mọi siêu tham số, val và test |
+| `Theo_seed` | Từng seed |
+| `DeLong` | DeLong ghép cặp từng seed, mỗi kịch bản so với M0 và M-any |
+| `Theo_cau_hinh` | Mỗi cấu hình một dòng, gồm cả các lần chạy cũ chưa có mã kịch bản |
+| `Giai_thich` | Ý nghĩa các cột |
+
+`scripts/export_excel.py` (sổ cũ `docs/ket_qua_thi_nghiem.xlsx`) không còn được
+`run_all.sh` gọi. Các script cũ `run_p0.sh`, `run_b.sh`, `run_o.sh`, `run_night.sh`,
+`run_integrity.sh` vẫn chạy được; kết quả của chúng nằm ở sheet `Theo_cau_hinh`.
 
 So sánh AUC test của hai lần chạy bằng kiểm định DeLong, từng seed với cùng seed:
 
