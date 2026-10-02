@@ -64,9 +64,12 @@ def plot_history(reports, output_path):
         validated = [record for record in history if "validation" in record]
         validated_epochs = [record["epoch"] for record in validated]
 
-        loss_axis.plot(epochs, [record["bce"] for record in history], color=color, label=label)
-        auc_axis.plot(epochs, [record["train_auc"] for record in history], color=color, linestyle="--",
-                      linewidth=1.2)
+        # The published baselines (src/11-15) log "loss" and no train AUC.
+        loss_axis.plot(epochs, [record.get("bce", record.get("loss")) for record in history],
+                       color=color, label=label)
+        if "train_auc" in history[0]:
+            auc_axis.plot(epochs, [record["train_auc"] for record in history], color=color, linestyle="--",
+                          linewidth=1.2)
         auc_axis.plot(validated_epochs, [record["validation"]["auc"] for record in validated],
                       color=color, label=label)
         best = next((record for record in validated if record["epoch"] == report["best_epoch"]), None)
