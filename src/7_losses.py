@@ -1,19 +1,6 @@
 # 7. Losses: BCE + intra-hyperedge contrastive loss.
 #
 #     L = BCE(logits, y; pos_weight) + λ · L_CL(Z0, Z*)
-#
-# pos_weight scales the loss of the positive (dropout) class. "balanced" means
-# #negative / #positive, which is 0.319 here because dropout is the majority
-# class: the model then outputs 0.5 where the true dropout probability is the
-# base rate 0.758, so a 0.5 threshold misses many dropouts. 1.0 is plain BCE.
-#
-# Intra-hyperedge contrastive loss (HSL, Cai et al., IJCAI 2022, Eq. 10):
-#   positive pair   the same enrollment in both views: Z0[i] <-> Z*[i]
-#   negatives       enrollments that share a hyperedge with i (T_i),
-#                   taken from both views: Z0[j] and Z*[j]
-# The loss keeps H* consistent with H0 while keeping learners of the same
-# course/object distinguishable (against over-smoothing). It is computed with
-# each view as anchor and averaged, like the SimCLR-style loss in HSL's code.
 
 from importlib import import_module
 

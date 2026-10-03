@@ -1,13 +1,5 @@
 # 9. Baselines without a graph, on the same node features, split, threshold
-#    rule, and report format as 8_train.py (so scripts/collect_results.py and
-#    scripts/export_excel.py read them too):
-#
-#   logreg  LogisticRegression; deterministic, so every seed gives the same result
-#   gbdt    HistGradientBoostingClassifier, a histogram GBDT in the style of
-#           LightGBM that ships with scikit-learn; early stopping on 10% of train
-#
-# The MLP baseline is 8_train.py --no-hsl --families self_loop (same encoder,
-# no hyperedge besides self-loops).
+#    rule, and report format as 8_train.py 
 
 import argparse
 import json

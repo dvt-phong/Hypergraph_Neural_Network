@@ -1,32 +1,5 @@
 # 4. Build the train hypergraph H0 and the local graphs used for validation/test.
-#
-# A hypergraph is stored as two parallel arrays with one entry per membership:
-#     node_ids[m] is a member of hyperedge edge_ids[m]
-# These are the non-zero cells of the incidence matrix H (rows = nodes,
-# columns = hyperedges). edge_family[e] says which relation built hyperedge e:
-#   course      enrollments of the same course
-#   object      enrollments that used the same video / problem / forum object
-#   behavioral  one enrollment (the anchor) + its k most similar train enrollments
-#   user        enrollments of the same learner in different courses, by --user-rule:
-#                 any       one hyperedge per learner with all their train enrollments
-#                 temporal  one hyperedge per enrollment (the anchor) + the learner's
-#                           enrollments in courses that started no later, so only
-#                           behavior already observable at prediction time is used
-#               Only features are propagated, never the labels of other enrollments.
-#   self_loop   one per node, added when a graph is loaded (HSL, Eq. 9)
-#
-# Leakage rule: validation/test enrollments are never added to H0. Each target
-# gets its own local graph = the target + the train enrollments it is linked to.
-#
-# Every loaded graph also carries node_start[v], the start day of v's course.
-# Features of v cover the 35 days after it, so with --causal (5_model.py) a node
-# only receives from hyperedges whose members all started no later than it.
-#
-# shuffle_seed (control experiment): every hyperedge keeps its size and family,
-# but each train node v is replaced by a random train node π(v), the same π in
-# H0 and in the local graphs. Nodes keep their own features through the
-# self-loop; only who their neighbors are becomes random.
-# Tham khảo: HGNN (Feng et al., 2019), SIG-Net, CA-TFHN; xem docs/references.md.
+# Tham khảo: HGNN (Feng et al., 2019), SIG-Net, CA-TFHN;
 
 import argparse
 import time

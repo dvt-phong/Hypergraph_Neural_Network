@@ -1,15 +1,4 @@
-# 8. Train on the train hypergraph, select the checkpoint on validation, pick
-#    the decision threshold on validation, then evaluate the selected checkpoint
-#    once on the official test split with that threshold.
-#
-# One epoch = one full-batch step on the whole train hypergraph:
-#     Z0, H*, Z*, logits = model(X, H0)
-#     loss = BCE + λ · intra-hyperedge contrastive(Z0, Z*)
-# Validation/test targets are scored on their own local graphs (4_hypergraph.py).
-#
-# Threshold: F1 is reported at the threshold t* that maximizes F1 on the full
-# validation split (Lipton et al., 2014), not at a fixed 0.5. t* is stored in
-# the checkpoint and reused for test. F1 at 0.5 is still reported for comparison.
+# 8. Train on the train hypergraph
 
 import argparse
 import csv

@@ -9,36 +9,6 @@
 #     Z*     = HGNN(X, H*)                         same weights as for Z0
 #     logits = Linear(Z*)
 #
-# H* is described by memberships (node_ids, edge_ids) plus one weight per
-# membership: 1 for H0, and a 0/1 learned mask for H*.
-#
-# Options (off by default, then the model is exactly the one above):
-#   skip_connection  logits = Linear([Z* ‖ MLP(X)]): the node's own features reach
-#                    the classifier without being averaged with its hyperedges
-#                    (initial-residual idea of UniGCNII, Huang & Yang, IJCAI 2021)
-#   family_weights   one learned weight w_f = softplus(θ_f) per hyperedge family,
-#                    the diagonal W of HGNN (Eq. 10):
-#                    Dv^-1/2 H W De^-1 H^T Dv^-1/2, with Dv = Σ_e w_e H(v, e)
-#   edge_weights     one learned weight per hyperedge on top of that,
-#                    W_ee = w_f(e) · α_e with α_e = 2σ(g([mean X of e ‖ family ‖ log |e|])),
-#                    so the model can tell which course, video or learner group
-#                    matters. g reads the raw features X, not Z0 (already
-#                    smoothed by propagation), and never the labels, so it also
-#                    scores hyperedges of unseen local graphs. The last layer of
-#                    g starts at zero: α_e = 1 and W starts as without it.
-#                    Self-loops keep α = 1. With HSL, the same W is used for Z0
-#                    and Z* (H* keeps the hyperedges of H0).
-#   causal           every member still sends to its hyperedges, but node v only
-#                    receives from hyperedge e when no member of e started its
-#                    course later than v. Features cover the 35 days after the
-#                    course start, so nothing v receives comes from after its own
-#                    observation window, in training as in evaluation. Course and
-#                    Object hyperedges (one course) are unchanged; in a temporal
-#                    User hyperedge only the anchor (and same-day courses) receive.
-#
-# With skip_connection the classifier is linear in [Z ‖ MLP(X)], so the logit
-# splits exactly into logit_graph (from Z) + logit_self (from MLP(X)) + bias;
-# both parts are returned to measure which branch carries the prediction.
 
 import math
 from importlib import import_module
