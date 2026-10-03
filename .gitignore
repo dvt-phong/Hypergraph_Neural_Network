@@ -19,3 +19,4 @@ dist/
 /third_party/*/
 /baseline/*/
 /result/*
+/docs/ket_qua/*

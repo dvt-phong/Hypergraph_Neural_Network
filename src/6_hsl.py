@@ -11,16 +11,6 @@
 #       probability σ(MLP([z_v ‖ h_e])). This also decides whether a ΔH
 #       addition stays.
 #   I   self-loops are never removed, so no node becomes isolated (Eq. 9).
-#
-# Training draws 0/1 masks with the straight-through Gumbel trick (hard 0/1
-# forward, smooth gradient backward). Validation/test keep a membership when
-# its probability is above 0.5, so the result is deterministic.
-#
-# Adaptation to MOOC data (the paper used transductive node classification):
-#   * Me is an MLP of the hyperedge representation instead of one free
-#     parameter per hyperedge, so it also works on unseen validation/test graphs.
-#   * ΔH only adds nodes to Behavioral hyperedges. Adding a learner of another
-#     course to a Course hyperedge would contradict its meaning.
 
 from importlib import import_module
 
