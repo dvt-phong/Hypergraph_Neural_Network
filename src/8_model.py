@@ -18,10 +18,10 @@ MLPEncoder = import_module("7_mlp").MLPEncoder
 
 class DropoutModel(nn.Module):
     # Input:  input_dim (columns of X), hidden_dim, dropout rate,
-    #         hgnn_layers (1 or 2), use_mlp (keep the MLP branch).
-    def __init__(self, input_dim, hidden_dim, dropout, *, hgnn_layers=2, use_mlp=True):
+    #         hgnn_layers (1 or 2), use_mlp (keep the MLP branch), learn_w (learn W).
+    def __init__(self, input_dim, hidden_dim, dropout, *, hgnn_layers=2, use_mlp=True, learn_w=True):
         super().__init__()
-        self.hgnn = HGNNEncoder(input_dim, hidden_dim, dropout, hgnn_layers)       # graph branch
+        self.hgnn = HGNNEncoder(input_dim, hidden_dim, dropout, hgnn_layers, learn_w)   # graph branch
         self.mlp = MLPEncoder(input_dim, hidden_dim, dropout) if use_mlp else None  # own-feature branch
         self.classifier = nn.Linear(hidden_dim * (2 if use_mlp else 1), 1)          # u, b
 
@@ -48,12 +48,13 @@ class DropoutModel(nn.Module):
         z_graph = self.hgnn.forward_targets(x, rows, edges, single_user, cache)
         return self.classifier(self.join(z_graph, x)).squeeze(-1)
 
-    # Learned family weights for the results table; families the scenario does not
-    # use stay at their initial value and are reported as "".
+    # Learned family weights for the results table; reported as "" when W is not learned
+    # (scenario W1) or when the scenario does not use the family (it stays at its start value).
     # Input:  families kept by the scenario.
     # Output: dict w_course, w_object, w_user, w_self_loop.
     @torch.no_grad()
     def weight_summary(self, families):
+        learned = isinstance(self.hgnn.family_logits, nn.Parameter)
         weights = F.softplus(self.hgnn.family_logits).tolist()     # w_f = softplus(θ_f)
-        return {f"w_{name}": (weight if name in families else "")
+        return {f"w_{name}": (weight if learned and name in families else "")
                 for name, weight in zip(config.EDGE_FAMILIES, weights)}

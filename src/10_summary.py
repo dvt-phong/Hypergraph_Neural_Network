@@ -39,6 +39,7 @@ def summarize():
         row.update({"features": group["features"].iloc[-1],
                     "hgnn_layers": group["hgnn_layers"].iloc[-1],
                     "mlp": "✓" if bool(group["use_mlp"].iloc[-1]) else "✗",
+                    "learn_w": "✓" if bool(group["learn_w"].iloc[-1]) else "✗",
                     "seeds": " ".join(str(seed) for seed in group["seed"]), "n": len(group)})
         for name in METRICS:
             mean, std = group[name].mean(), group[name].std(ddof=1)               # std = √(Σ(x − mean)²/(n − 1))

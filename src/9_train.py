@@ -3,7 +3,7 @@
 #    stopping on validation AUC, score validation and test once with the best weights at
 #    threshold 0.5, and append one row to outputs/results.csv. No other file is saved.
 #
-#   python src/9_train.py --scenario all --seeds 1 11 111 1111 11111     all 10 scenarios × 5 seeds
+#   python src/9_train.py --scenario all --seeds 1 11 111 1111 11111     all 11 scenarios × 5 seeds
 #   python src/9_train.py --scenario M A4 B1                             some scenarios
 #   python src/9_train.py --scenario all --seeds 1 --epochs 10 --eval-limit 2000   quick check
 # Tham khảo từ project/bài báo:
@@ -29,7 +29,7 @@ DropoutModel = import_module("8_model").DropoutModel
 
 RESULT_COLUMNS = (
     "time", "scenario", "seed",
-    "families", "features", "hgnn_layers", "use_mlp",
+    "families", "features", "hgnn_layers", "use_mlp", "learn_w",
     "epochs", "eval_every", "patience", "hidden_dim", "dropout", "learning_rate", "weight_decay",
     "best_epoch", "epochs_run",
     "val_auc", "val_auprc", "val_f1",
@@ -129,13 +129,13 @@ def train_one_seed(code, seed, settings, data, device):
     validation_labels = data["validation"]["labels"]
 
     model = DropoutModel(x.shape[1], settings["hidden_dim"], settings["dropout"],
-                         hgnn_layers=scenario["hgnn_layers"], use_mlp=scenario["use_mlp"]).to(device)
+                         hgnn_layers=scenario["hgnn_layers"], use_mlp=scenario["use_mlp"],
+                         learn_w=scenario["learn_w"]).to(device)
     family_logits = model.hgnn.family_logits
-    optimizer = torch.optim.Adam(
-        [{"params": [p for p in model.parameters() if p is not family_logits]},      # Θ, A, u: lr, L2
-         {"params": [family_logits], "lr": settings["family_weight_lr"], "weight_decay": 0.0}],   # W: own lr, no L2
-        lr=settings["learning_rate"], weight_decay=settings["weight_decay"],
-    )
+    groups = [{"params": [p for p in model.parameters() if p is not family_logits]}]   # Θ, A, u: lr, L2
+    if scenario["learn_w"]:                                                          # W: own lr, no L2
+        groups.append({"params": [family_logits], "lr": settings["family_weight_lr"], "weight_decay": 0.0})
+    optimizer = torch.optim.Adam(groups, lr=settings["learning_rate"], weight_decay=settings["weight_decay"])
 
     best = {"auc": -1.0, "epoch": 0, "state": None}
     stale = 0          # validations in a row without a better AUC
@@ -185,6 +185,7 @@ def train_one_seed(code, seed, settings, data, device):
         "time": time.strftime("%Y-%m-%d %H:%M:%S"), "scenario": code, "seed": seed,
         "families": "+".join(scenario["families"]), "features": scenario["features"],
         "hgnn_layers": scenario["hgnn_layers"], "use_mlp": scenario["use_mlp"],
+        "learn_w": scenario["learn_w"],
         **{name: settings[name] for name in ("epochs", "eval_every", "patience", "hidden_dim",
                                              "dropout", "learning_rate", "weight_decay")},
         "best_epoch": best["epoch"], "epochs_run": epoch,
@@ -236,7 +237,8 @@ if __name__ == "__main__":
     for code in codes:
         scenario = config.SCENARIOS[code]   # the Vietnamese description is not logged (Windows console)
         log("scenario", f"{code}: families={'+'.join(scenario['families'])}, features={scenario['features']}, "
-                        f"hgnn_layers={scenario['hgnn_layers']}, use_mlp={scenario['use_mlp']}")
+                        f"hgnn_layers={scenario['hgnn_layers']}, use_mlp={scenario['use_mlp']}, "
+                        f"learn_w={scenario['learn_w']}")
         data = graph_data.apply_scenario(loaded, config.SCENARIOS[code])
         for seed in arguments.seeds:
             train_one_seed(code, seed, settings, data, device)
