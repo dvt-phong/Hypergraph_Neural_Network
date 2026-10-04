@@ -64,7 +64,7 @@ def plot_history(reports, output_path):
         validated = [record for record in history if "validation" in record]
         validated_epochs = [record["epoch"] for record in validated]
 
-        # The published baselines (src/11-15) log "loss" and no train AUC.
+        # Old runs of the published baselines log "loss" and no train AUC.
         loss_axis.plot(epochs, [record.get("bce", record.get("loss")) for record in history],
                        color=color, label=label)
         if "train_auc" in history[0]:

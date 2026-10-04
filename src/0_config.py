@@ -1,9 +1,9 @@
-# Central configuration shared by all pipeline steps.
+# 0. Settings shared by every step: paths, seeds, feature layout, hyperedge families.
 
 from pathlib import Path
 
 
-# Shared project paths and experiment seeds.
+# Project paths and experiment seeds.
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw" / "xuetangx"
 PROCESSED = ROOT / "data" / "processed" / "simple"
@@ -98,22 +98,14 @@ for object_family, object_actions in ACTION_GROUPS.items():
 FEATURE_CLI_DESCRIPTION = "Build train, validation, and test node features."
 
 
-# Used by 4_hypergraph.py and 6_hsl.py. 
-# Every node also gets one self-loop
-# hyperedge that HSL never removes (Cai et al., 2022, Eq. 9).
+# Used by 4_hypergraph.py and 5_model.py. Every node also has one self-loop hyperedge.
 EDGE_FAMILIES = ("course", "object", "behavioral", "user", "self_loop")
-# Families a run may keep or drop (8_train.py --families); self-loops always stay.
+# Families that --families may keep or drop; self-loops always stay.
 GRAPH_FAMILIES = EDGE_FAMILIES[:-1]
 HYPERGRAPH_CLI_DESCRIPTION = "Build Course, Object, Behavioral, and User hypergraphs."
-# User hyperedges: "any" links all enrollments of a learner; "temporal" links an
-# enrollment only to the learner's enrollments in courses that started no later.
+# "any": all enrollments of a learner; "temporal": only courses that started no later.
 USER_RULES = ("any", "temporal")
 
 
-# Used by 5_model.py and 6_hsl.py. Memberships are processed in chunks of this
-# size so that the full XuetangX graph fits in GPU memory.
-MEMBERSHIP_CHUNK_SIZE = 1_000_000
-
-
-# Used by 8_train.py.
-TRAIN_CLI_DESCRIPTION = "Train HGSL, select on validation, and evaluate on test."
+# Used by 6_train.py.
+TRAIN_CLI_DESCRIPTION = "Train the model, select on validation, and evaluate on test."

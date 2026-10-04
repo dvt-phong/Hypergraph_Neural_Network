@@ -16,12 +16,6 @@
 #   - scripts/check_leakage.py on hypergraph_temporal.npz when a selected
 #     scenario uses it (about 4 minutes); a failed check stops everything.
 #     SKIP_LEAKAGE_CHECK=1 skips it.
-#   - the event cache of src/10_baseline_data.py is built once (about 2 minutes,
-#     needs pandas) when a selected baseline reads it.
-#
-# Published baselines B-SIGNet, B-MSTGCN, B-CATFHN (and their -any versions) run
-# with the Python of their own environment .venvs/<name>, made by
-# scripts/setup_baselines.sh; every other scenario runs with $PYTHON.
 
 set -uo pipefail
 
@@ -57,15 +51,6 @@ if ! "$PYTHON" scripts/scenarios.py check $ONLY; then
     exit 1
 fi
 
-# shellcheck disable=SC2086
-if "$PYTHON" scripts/scenarios.py cache $ONLY && [[ ! -f data/processed/simple/baselines/vocab.npz ]]; then
-    say "building the baseline event cache (src/10_baseline_data.py)"
-    if ! "$PYTHON" -u src/10_baseline_data.py; then
-        say "stopped before training: the event cache could not be built"
-        exit 1
-    fi
-fi
-
 if [[ "$SKIP_LEAKAGE_CHECK" != "1" ]]; then
     for code in $ONLY; do
         if [[ "$("$PYTHON" scripts/scenarios.py bundle "$code")" == "hypergraph_temporal.npz" ]]; then
@@ -81,14 +66,10 @@ fi
 
 FAILED=()
 for code in $ONLY; do
-    mapfile -t spec < <("$PYTHON" scripts/scenarios.py args "$code")
-    script="${spec[0]}"
-    arguments=("${spec[@]:1}")
+    mapfile -t arguments < <("$PYTHON" scripts/scenarios.py args "$code")
     note="$("$PYTHON" scripts/scenarios.py note "$code") (seeds $SEEDS)"
-    scenario_python="$("$PYTHON" scripts/scenarios.py python "$code")"
-    scenario_python="${scenario_python:-$PYTHON}"
-    say "$code: $script ${arguments[*]} (python: $scenario_python)"
-    if ! PYTHON="$scenario_python" SCENARIO="$code" NOTE="$note" TRAIN_SCRIPT="$script" \
+    say "$code: src/6_train.py ${arguments[*]}"
+    if ! SCENARIO="$code" NOTE="$note" \
             bash scripts/run_all.sh --skip-prep --tag "$code" "${arguments[@]}"; then
         FAILED+=("$code")
     fi

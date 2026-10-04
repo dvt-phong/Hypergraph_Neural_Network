@@ -3,18 +3,17 @@
 # results, draw plots, and rebuild the workbook result/so_thi_nghiem.xlsx.
 #
 #   2_preprocess -> 3_features -> 4_hypergraph      once (the split is fixed)
-#   8_train --mode both --seeds <seed>              once per seed
+#   6_train --mode both --seeds <seed>              once per seed
 #   collect_results -> plot_results -> summarize_results
 #
 # Usage (from anywhere):
 #   bash scripts/run_all.sh                       full pipeline, all seeds
 #   bash scripts/run_all.sh --skip-prep           reuse data/processed, train only
-#   bash scripts/run_all.sh --no-hsl              extra options go to 8_train.py
-#   TRAIN_SCRIPT=src/9_baselines.py bash scripts/run_all.sh --skip-prep --model gbdt
+#   bash scripts/run_all.sh --skip-connection     extra options go to 6_train.py
 #
 # Environment variables:
 #   SEEDS="1 11"          seeds to run          (default: 1 11 111 1111 11111)
-#   TRAIN_SCRIPT=path     training script       (default: src/8_train.py)
+#   TRAIN_SCRIPT=path     training script       (default: src/6_train.py)
 #   NOTE="..."            "Ghi chú" of this run in the workbook (default: the command)
 #   SCENARIO=M0           scenario code of scripts/scenarios.py (set by run_scenarios.sh)
 #   EXPORT_EXCEL=0        do not rebuild the workbook
@@ -37,7 +36,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 SEEDS="${SEEDS:-1 11 111 1111 11111}"
-TRAIN_SCRIPT="${TRAIN_SCRIPT:-src/8_train.py}"
+TRAIN_SCRIPT="${TRAIN_SCRIPT:-src/6_train.py}"
 NOTE="${NOTE:-}"
 SCENARIO="${SCENARIO:-}"
 EXPORT_EXCEL="${EXPORT_EXCEL:-1}"

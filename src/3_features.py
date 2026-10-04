@@ -1,4 +1,5 @@
-# 3. Build separate train, validation, and test node features.
+# 3. Build the node feature matrix X of each split: behavior counts, user context
+#    and course context; every transform is fitted on train only.
 # Tham khảo từ project/bài báo:
 # - SIG-Net, ACM SAC 2024: https://doi.org/10.1145/3605098.3636002
 #   Code: https://github.com/Noverse0/SIG-Net
@@ -22,7 +23,9 @@ read_csv = preprocess_module.read_csv
 write_csv = preprocess_module.write_csv
 
 
-# Return the columns belonging to one experimental feature set.
+# Columns of X used by one feature set.
+# Input:  "behavior", "behavior_user", "behavior_course" or "full".
+# Output: slice or index array of X columns.
 def feature_columns(feature_set):
     feature_sets = {
         "behavior": config.BEHAVIOR_FEATURE_SLICE,
@@ -36,7 +39,9 @@ def feature_columns(feature_set):
     return feature_sets[feature_set]
 
 
-# Build readable names and source descriptions in matrix-column order.
+# Name and description of every X column, in column order.
+# Input:  none.
+# Output: list of (name, description).
 def feature_metadata():
     metadata = []
 
@@ -50,7 +55,6 @@ def feature_metadata():
     # Action-count columns: total occurrences of each action across all days.
     for family, actions in config.ACTION_GROUPS.items():
         action_number = 1
-        # Keep action names in the same order as the behavior matrix columns.
         for action_name in actions:
             metadata.append((f"action_{family}_{action_number}", action_name))
             action_number += 1
@@ -88,7 +92,9 @@ def feature_metadata():
     return metadata
 
 
-# Set the known, missing, or other one-hot column for one categorical value.
+# Set one one-hot cell for a categorical value (known value, missing, or other).
+# Input:  feature matrix, row, value ("" = missing), vocabulary, first column.
+# Output: none (feature_matrix changed in place).
 def set_one_hot(feature_matrix, row_index, value, vocabulary, feature_start):
     if not value:
         value_index = len(vocabulary)
@@ -100,7 +106,9 @@ def set_one_hot(feature_matrix, row_index, value, vocabulary, feature_start):
     feature_matrix[row_index, feature_start + value_index] = 1.0
 
 
-# Fit median, mean, and standard deviation on one train numeric feature.
+# Statistics of a numeric train feature for filling and scaling.
+# Input:  train values (NaN = missing).
+# Output: (median of observed values, mean, std after filling with the median).
 def numeric_statistics(train_values):
     observed_values = train_values[np.isfinite(train_values)]
     median = float(np.median(observed_values))
@@ -112,7 +120,9 @@ def numeric_statistics(train_values):
     return median, mean, standard_deviation
 
 
-# Impute and standardize one numeric feature with train statistics.
+# Fill missing values with the train median, then standardize.
+# Input:  values (NaN = missing), output of numeric_statistics.
+# Output: (scaled values, missing flag 0/1).
 def scale_numeric(raw_values, statistics):
     median, mean, standard_deviation = statistics
     missing_mask = ~np.isfinite(raw_values)
@@ -121,16 +131,19 @@ def scale_numeric(raw_values, statistics):
     return scaled_values, missing_mask.astype(np.float32)
 
 
-# Build behavior, user, and course inputs from one complete split CSV.
+# Raw features of one split, before scaling.
+# Input:  path of the split CSV.
+# Output: behavior counts [N, 35 + actions], user one-hot [N, user cols],
+#         course one-hot [N, course cols], age [N] (NaN = missing).
 def build_split_features(data_path):
     action_indices = {}
-    # Map every action to its action-count column after the daily-count block.
+    # Column of every action, after the 35 day columns.
     for offset, action in enumerate(config.ACTIONS):
         action_indices[action] = config.ACTION_FEATURE_START + offset
 
     nodes = {}
     behavior_by_node = {}
-    # Aggregate every event row into daily counts and action counts per node.
+    # Count events per day and per action for every node.
     for row in read_csv(data_path):
         node_id = int(row["node_id"])
         if node_id not in nodes:
@@ -143,7 +156,6 @@ def build_split_features(data_path):
         action = row["action"].strip()
         if action:
             course_day = int(row["course_day"])
-            # One event increments its day column and its action column once.
             behavior_by_node[node_id][course_day] += 1
             behavior_by_node[node_id][action_indices[action]] += 1
 
@@ -212,12 +224,13 @@ def build_split_features(data_path):
     return behavior_features, user_context, course_context, ages
 
 
-# Build all three feature matrices with transforms fitted on train only.
+# Run step 3: log1p + standardize behavior, fill and scale age, save X per split.
+# Input:  output_dir with the split CSVs.
+# Output: dict split -> path of X.npy (also writes feature_names.csv).
 def build_features(output_dir=config.PROCESSED):
     output_dir = Path(output_dir)
     feature_data = {}
 
-    # Build raw feature groups independently for train, validation, and test.
     for split_name in config.SPLITS:
         split_dir = output_dir / split_name
         split_dir.mkdir(parents=True, exist_ok=True)
@@ -240,7 +253,7 @@ def build_features(output_dir=config.PROCESSED):
     age_statistics = numeric_statistics(feature_data["train"]["ages"])
 
     feature_paths = {}
-    # Apply train-fitted transforms and save one final matrix per split.
+    # Same train statistics for every split.
     for split_name in config.SPLITS:
         split_data = feature_data[split_name]
         logged_behavior = np.log1p(
@@ -269,7 +282,6 @@ def build_features(output_dir=config.PROCESSED):
         print(f"Saved {feature_path}", flush=True)
 
     feature_rows = []
-    # Number metadata rows so feature_names.csv matches X.npy column indices.
     for feature_index, metadata in enumerate(feature_metadata()):
         feature_name, feature_source = metadata
         feature_rows.append((feature_index, feature_name, feature_source))

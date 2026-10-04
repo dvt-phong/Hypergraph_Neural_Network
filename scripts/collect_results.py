@@ -3,7 +3,7 @@
 #   python scripts/collect_results.py result/<dd-mm-yyyy_HH-MM>
 #
 # Reads <run>/manifest.tsv (one row per seed), finds the report paths that
-# 8_train.py printed in each seed's log ("report=..._train.json" and
+# 6_train.py printed in each seed's log ("report=..._train.json" and
 # "report=..._test.json"), copies those reports and the matching
 # *_probs.npz files into <run>/reports/ and the selected checkpoint into
 # <run>/checkpoints/, and writes <run>/results.csv: one row

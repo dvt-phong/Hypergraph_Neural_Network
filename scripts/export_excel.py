@@ -175,8 +175,8 @@ def add_guide_sheet(sheet):
         ("", "Chạy lại trên cùng thư mục sẽ thay các dòng cũ của lần chạy đó (giữ nguyên STT)."),
         ("Ket_qua", "Chỉ số trên tập test, dạng trung bình ± độ lệch chuẩn mẫu (n − 1) qua các seed. "
                     "Công thức đọc từ Du_lieu_seed."),
-        ("Sieu_tham_so", "Cùng STT với Ket_qua. Toàn bộ settings của 8_train.py, cộng τ Gumbel, chiều MLP "
-                         "chấm điểm (6_hsl.py), k, k_max (hypergraph.npz), cấu hình chia dữ liệu (0_config.py)."),
+        ("Sieu_tham_so", "Cùng STT với Ket_qua. Toàn bộ settings của 6_train.py (HSL: chỉ các run cũ), "
+                         "k, k_max (hypergraph.npz), cấu hình chia dữ liệu (0_config.py)."),
         ("Du_lieu_seed", "Số liệu từng seed. 'Giữ ...' và 'ΔH được giữ' lấy ở best epoch."),
         ("Ngưỡng t*", "F1, Precision, Recall tính tại ngưỡng t* làm F1 cao nhất trên toàn bộ validation. "
                       "'F1 tại 0,5' giữ để so với các lần chạy cũ (ô trống nếu report cũ không có)."),
@@ -252,19 +252,12 @@ def read_seed_rows(run_dir, run_id):
 # Settings that are not in the train report: code defaults and graph parameters.
 def extra_settings(processed_dir):
     from importlib import import_module
-    import inspect
     config = import_module("0_config")
     extra = {
         "observation_days": config.OBSERVATION_DAYS,
         "train_ratio": config.TRAIN_RATIO,
         "split_seed": config.SPLIT_SEED,
     }
-    try:
-        defaults = inspect.signature(import_module("6_hsl").StructureLearner.__init__).parameters
-        extra["gumbel_temperature"] = defaults["temperature"].default
-        extra["scorer_dim"] = defaults["scorer_dim"].default
-    except ImportError:
-        pass
     bundle_path = Path(processed_dir) / "hypergraph.npz"
     if bundle_path.exists():
         import numpy as np
@@ -281,10 +274,11 @@ def describe(settings):
     if settings.get("model") in baselines:
         return f"{baselines[settings['model']]} (feature: {settings['feature_set']})"
     families = [family for family in settings.get("families", GRAPH_FAMILIES) if family != "self_loop"]
-    if not families and not settings["hsl"]:
-        return f"MLP (không graph) (feature: {settings['feature_set']})"
+    feature_set = settings.get("feature_set", "full")
+    if not families and not settings.get("hsl", False):
+        return f"MLP (không graph) (feature: {feature_set})"
 
-    if not settings["hsl"]:
+    if not settings.get("hsl", False):
         name = "HGNN (không HSL)"
     else:
         removed = []
@@ -307,7 +301,7 @@ def describe(settings):
         name += " + trọng số từng hyperedge"
     if settings.get("tag"):
         name += f" [{settings['tag']}]"
-    return f"{name} (feature: {settings['feature_set']})"
+    return f"{name} (feature: {feature_set})"
 
 
 # ---------------------------------------------------------------------------
