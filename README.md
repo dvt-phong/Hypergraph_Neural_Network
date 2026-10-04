@@ -1,33 +1,28 @@
-# XuetangX dropout prediction with HGSL
+# XuetangX dropout prediction with a hypergraph neural network
 
-Project nghiên cứu dự đoán dropout trên XuetangX. Mỗi enrollment là một node;
-Course, Object và Behavioral hyperedge tạo `H0`; HGNN tạo `Z0`; Hypergraph
-Structure Learning (HSL, IJCAI 2022) học `H* = Me ⊙ Mv ⊙ (H0 + ΔH) + I`; cùng
-HGNN tạo `Z*`; classifier sinh dropout logit. Loss là BCE cộng
-intra-hyperedge contrastive giữa `Z0` và `Z*`. Các điều chỉnh so với bài báo cho
-bài toán MOOC được liệt kê trong [references](docs/references.md#5-hsl).
+Project nghiên cứu dự đoán dropout trên XuetangX. Mỗi enrollment là một node. Các
+enrollment cùng khoá học (Course), cùng dùng một video/bài tập/forum (Object) và của
+cùng một học viên (User) được nối bằng hyperedge. Mô hình chính gồm hai nhánh:
 
-Code chính gồm một file cấu hình, tám bước pipeline và một file baseline:
+- **Nhánh graph:** HGNN 2 lớp (Feng et al., 2019). Mỗi lớp lan truyền
+  node → hyperedge → node, với một trọng số học được cho mỗi loại hyperedge (`W`).
+- **Nhánh MLP (skip):** chỉ dùng đặc trưng riêng của node.
+
+Lớp phân loại nhận `[z_graph ‖ z_self]` và cho ra dropout logit. Loss là BCE.
+Sơ đồ mô hình: [docs/assets/hypergraph-neural-network-v4.png](docs/assets/hypergraph-neural-network-v4.png).
 
 | Bước | File | Trách nhiệm |
 |---|---|---|
-| 0 | `0_config.py` | Quản lý đường dẫn, split, action và chỉ số feature |
-| 1 | `1_download.py` | Tải ba raw file nếu chưa tồn tại |
-| 2 | `2_preprocess.py` | Ghép metadata, giữ test gốc và tạo ba split CSV |
-| 3 | `3_features.py` | Tạo ba ma trận feature, fit transform trên train |
-| 4 | `4_hypergraph.py` | Tạo ba loại hyperedge (`H0`) và local graph cho validation/test |
-| 5 | `5_model.py` | HGNN propagation và `HSLModel` |
-| 6 | `6_hsl.py` | HSL: hyperedge sampling, incident node sampling, ΔH → `H*` |
-| 7 | `7_losses.py` | BCE (có tuỳ chọn `pos_weight`) và intra-hyperedge contrastive loss |
-| 8 | `8_train.py` | Train, validation, early stopping, chọn ngưỡng t\* và test |
-| 9 | `9_baselines.py` | Baseline không graph: Logistic Regression, GBDT |
-| 10 | `10_baseline_data.py` | Cache sự kiện và giao thức chung cho các baseline đã công bố (file 11–15) |
-| 11–15 | `11_hypergcn.py`, `12_signet.py`, `13_mstgcn.py`, `14_catfhn.py`, `15_cfin.py` | HyperGCN, SIG-Net, MST-GCN, CA-TFHN, CFIN trên cùng split và giao thức |
+| 0 | `0_config.py` | Đường dẫn, seed, bố cục cột feature, các loại hyperedge |
+| 1 | `1_download.py` | Tải ba raw file nếu chưa có |
+| 2 | `2_preprocess.py` | Giữ test gốc, chia train 80/20 thành train/validation, ghi ba split CSV |
+| 3 | `3_features.py` | Tạo ma trận feature `X` của từng split, fit transform trên train |
+| 4 | `4_hypergraph.py` | Tạo hypergraph train `H0` và local graph cho từng target validation/test |
+| 5 | `5_model.py` | `DropoutModel`: HGNN 2 lớp + nhánh MLP + trọng số theo loại hyperedge |
+| 6 | `6_train.py` | Train, chọn checkpoint và ngưỡng t\* trên validation, đánh giá test |
 
-Xem [dòng chảy dữ liệu và các cột](docs/data-flow-columns.md),
-[nguồn tham khảo của code](docs/references.md), và
-[sơ đồ mô hình](docs/assets/hypergraph-neural-network-v3.png). Để học sâu riêng
-các file 4–8, đọc [hướng dẫn từ `H0` đến huấn luyện](docs/FILES_4_TO_8_GUIDE.md).
+Bản có HSL, contrastive loss, trọng số từng hyperedge và các baseline rời được giữ ở
+git tag `full-hsl` (`git checkout full-hsl`).
 
 ## Cài đặt và chạy
 
@@ -39,176 +34,97 @@ Trong PowerShell:
 .\.venv\Scripts\python.exe src/2_preprocess.py
 .\.venv\Scripts\python.exe src/3_features.py
 .\.venv\Scripts\python.exe src/4_hypergraph.py --k 10 --k-max 20 --device auto
-# Thêm User hyperedge vào graph đã có mà không tính lại kNN:
-#   src/4_hypergraph.py --reuse-neighbors hypergraph_v3.npz [--user-rule temporal --hypergraph-file hypergraph_temporal.npz]
-.\.venv\Scripts\python.exe src/8_train.py --seeds 1
-.\.venv\Scripts\python.exe src/8_train.py --mode test --checkpoint outputs/runs/hsl_full_seed_1.pt
+# Bundle User temporal, dùng lại kNN của bundle trên:
+.\.venv\Scripts\python.exe src/4_hypergraph.py --user-rule temporal --hypergraph-file hypergraph_temporal.npz --reuse-neighbors hypergraph.npz
+# Mô hình chính M0, một seed, train rồi test:
+.\.venv\Scripts\python.exe src/6_train.py --mode both --seeds 1 --skip-connection --family-weights --families course,object,user --hypergraph hypergraph_temporal.npz --causal
+# Test lại một checkpoint:
+.\.venv\Scripts\python.exe src/6_train.py --mode test --checkpoint outputs/runs/<run>.pt
 ```
 
-Siêu tham số mặc định nằm trong `DEFAULT_SETTINGS` ở đầu `src/8_train.py`. Chạy
-nhanh để kiểm tra: `--epochs 10 --validation-limit 2000`. Chạy đủ 5 seed:
-`--seeds 1 11 111 1111 11111 --mode both`.
+Siêu tham số mặc định nằm trong `DEFAULT_SETTINGS` ở đầu `src/6_train.py`. Chạy nhanh
+để kiểm tra: `--epochs 10 --validation-limit 2000 --test-limit 2000`.
 
-Ngưỡng phân loại: sau khi train, best checkpoint được chạy trên **toàn bộ**
-validation để chọn ngưỡng t\* làm F1 (lớp dropout) cao nhất; t\* được lưu vào
-checkpoint và dùng cho test. Report có thêm `macro_f1`, `f1_negative`,
-`auprc_negative` (lớp không dropout) và `f1_at_0.5` để so với các lần chạy cũ.
-Chạy `--mode test` trên checkpoint cũ (chưa có t\*) sẽ tự chọn t\* trên validation
-trước khi đánh giá test.
-
-Các tuỳ chọn thường dùng:
+Ngưỡng phân loại: sau khi train, best checkpoint (theo AUPRC validation) được chạy trên
+**toàn bộ** validation để chọn ngưỡng t\* làm F1 (lớp dropout) cao nhất. t\* được lưu vào
+checkpoint và dùng cho test. Report có thêm `macro_f1`, `f1_negative`, `auprc_negative`
+(lớp không dropout) và `f1_at_0.5`.
 
 | Cờ | Mặc định | Ý nghĩa |
 |---|---|---|
-| `--pos-weight` | `1` | Trọng số BCE của lớp dropout; `balanced` = #âm / #dương (0,319, như bản cũ) |
-| `--select-metric` | `auprc` | Chỉ số validation để chọn checkpoint (`auprc` hoặc `auc`) |
+| `--families` | tất cả | Loại hyperedge được giữ, ví dụ `course,object,user`; `self_loop` = MLP |
+| `--hypergraph` | `hypergraph.npz` | Bundle trong `data/processed/simple`, ví dụ `hypergraph_temporal.npz` |
+| `--causal` | tắt | Node chỉ nhận từ hyperedge không có thành viên nào bắt đầu khoá học muộn hơn |
+| `--skip-connection` | tắt | Thêm nhánh `MLP(X)` |
+| `--family-weights` | tắt | Học một trọng số cho mỗi loại hyperedge, log ở `w_course`, `w_object`, … |
+| `--shuffle-graph SEED` | tắt | Đối chứng: hyperedge giữ kích thước nhưng thành viên ngẫu nhiên |
 | `--patience` | `20` | Số lần validate liên tiếp không cải thiện thì dừng |
 | `--validation-limit` | `5000` | Tập con validation cố định dùng trong lúc train (0 = toàn bộ) |
-| `--lr-schedule` | `none` | `multistep`: lr × 0,9 ở epoch 100, như HGNN |
-| `--families` | tất cả | Loại hyperedge được giữ, ví dụ `course,object,user`; `self_loop` = không graph |
-| `--hypergraph` | `hypergraph.npz` | File graph trong `data/processed/simple`, ví dụ `hypergraph_temporal.npz` |
-| `--tag` | rỗng | Hậu tố tên run, tránh ghi đè khi quét tham số, ví dụ `lr3e-3` |
-| `--skip-connection` | tắt | Lớp phân loại nhận thêm `MLP(X)` (đặc trưng riêng của node, không lan truyền) |
-| `--family-weights` | tắt | Học một trọng số cho mỗi loại hyperedge (ma trận `W` của HGNN), log ở `w_course`, `w_object`, … |
-| `--edge-weights` | tắt | Thêm một trọng số `α_e` cho từng hyperedge (MLP nhỏ trên trung bình X, loại, kích thước); log ở `alpha_*`, bảng đầy đủ ở `outputs/reports/<run>_edge_weights.csv` |
-
-Baseline và ablation:
-
-```powershell
-.\.venv\Scripts\python.exe src/9_baselines.py --model gbdt --seeds 1              # GBDT, không graph
-.\.venv\Scripts\python.exe src/9_baselines.py --model logreg                      # Logistic Regression
-.\.venv\Scripts\python.exe src/8_train.py --no-hsl --families self_loop           # MLP (cùng encoder)
-.\.venv\Scripts\python.exe src/8_train.py --no-hsl                                # HGNN baseline
-.\.venv\Scripts\python.exe src/8_train.py --no-node-sampling --add-per-edge 0     # chỉ hyperedge sampling
-.\.venv\Scripts\python.exe src/8_train.py --no-edge-sampling                      # chỉ incident node sampling
-.\.venv\Scripts\python.exe src/8_train.py --lambda-cl 0                           # bỏ contrastive
-.\.venv\Scripts\python.exe src/8_train.py --families course,object                # bỏ Behavioral
-```
+| `--tag` | rỗng | Hậu tố tên run, ví dụ mã kịch bản |
 
 ## Kịch bản thực nghiệm
 
-Mọi kịch bản của bài nằm trong một file, [scripts/scenarios.py](scripts/scenarios.py).
-Mã kịch bản cũng là `--tag` của lần chạy. Siêu tham số không ghi trong kịch bản lấy theo
-`DEFAULT_SETTINGS` của `src/8_train.py`.
+Mọi kịch bản nằm trong [scripts/scenarios.py](scripts/scenarios.py). Mã kịch bản cũng là
+`--tag` của lần chạy.
 
 | Mã | Nhóm | Cấu hình | Câu hỏi |
 |---|---|---|---|
-| M-any | Chính | HGNN + skip MLP + W; Course, Object, User `any`, self-loop | Cùng điều kiện với baseline (User có cả khoá học tương lai); tái hiện 0,8749 |
+| M-any | Chính | HGNN + skip MLP + W; Course, Object, User `any` | Cùng điều kiện với baseline có thông tin tương lai |
 | **M0** | Chính | Như M-any, User `temporal` + `--causal` | Kết quả chính không rò rỉ |
 | A1 / A2 / A3 | Ablation | M0 bỏ User / bỏ Object / bỏ Course | Vai trò từng quan hệ |
 | A4 / A5 | Ablation | M0 bỏ W / bỏ skip MLP | Vai trò của W và của MLP |
 | C1 | Đối chứng | A1 trên graph xáo trộn | Lợi ích đến từ hàng xóm thật hay từ mô hình lớn hơn |
 | C2 | Đối chứng | MLP (chỉ self-loop) | Mốc không dùng graph |
-| B-LR / B-GBDT / B-HGNN | Baseline | LR, GBDT trên X; HGNN gốc với User `any` | Mốc không graph và hypergraph cổ điển |
-| B-HGNN-T | Baseline | HGNN gốc, User `temporal` + causal | Hypergraph cổ điển, cùng luật với M0 |
-| B-HyperGCN, B-SIGNet, B-MSTGCN, B-CATFHN, B-CFIN | Baseline | Mô hình đã công bố, User `temporal` | So với M0 (không tương lai) |
-| B-…-any | Baseline | Cùng mô hình, User `any` | So với M-any (như bản công bố) |
+| B-HGNN / B-HGNN-T | Baseline | HGNN gốc, User `any` / `temporal` + causal | Hypergraph cổ điển |
 
-Baseline đã công bố (GĐ2) dùng mô hình trong code gốc (`baseline/<repo>`, đúng commit
-ghi trong `scripts/setup_baselines.sh`) và cùng giao thức với mô hình chính: cùng
-split, chỉ dùng nhãn train, hàng xóm chỉ là enrollment train, luật User `temporal`/`any`,
-scaler fit trên train, chọn epoch theo AUPRC validation, t\* trên validation. Những chỗ
-phải khác code gốc (và lý do) ghi ở đầu từng file `src/11`–`15`. Chuẩn bị một lần trên
-server:
-
-```bash
-bash scripts/setup_baselines.sh                  # clone repo gốc + .venvs/{signet,mstgcn,catfhn}
-python src/10_baseline_data.py                   # cache sự kiện (run_scenarios.sh tự chạy nếu thiếu)
-python src/11_hypergcn.py --check-laplacian      # HyperGCN: bản vector hoá khớp utils.Laplacian gốc
-ONLY="B-CFIN B-HyperGCN" SEEDS=1 bash scripts/run_scenarios.sh
-.venvs/signet/bin/python src/12_signet.py --limit 2000 --epochs 1 --tag smoke   # thử nhanh
-```
-
-Hai bundle cần có trong `data/processed/simple`: `hypergraph.npz` với User `any` và
-`hypergraph_temporal.npz` với User `temporal`. Script chạy kiểm tra điều này trước khi
-train, rồi chạy `scripts/check_leakage.py` cho bundle `temporal`:
+Hai bundle cần có trong `data/processed/simple`: `hypergraph.npz` (User `any`) và
+`hypergraph_temporal.npz` (User `temporal`). `run_scenarios.sh` kiểm tra điều này trước
+khi train, rồi chạy `scripts/check_leakage.py` cho bundle `temporal`:
 
 ```bash
 python scripts/scenarios.py list                                     # mã, mô tả, câu hỏi
 python scripts/check_leakage.py                                      # kiểm tra rò rỉ của M0 (khoảng 4 phút)
-python scripts/check_leakage.py --hypergraph hypergraph.npz          # đo lượng thông tin tương lai của M-any
 ONLY=M0 SEEDS=1 bash scripts/run_scenarios.sh                        # thử một kịch bản, một seed
 RUN_SCRIPT=scripts/run_scenarios.sh bash scripts/run_tmux.sh         # mọi kịch bản, 5 seed, trong tmux
-ONLY="M-any M0" RUN_SCRIPT=scripts/run_scenarios.sh bash scripts/run_tmux.sh
+bash scripts/run_integrity.sh                                        # i-mlp, i-co, i-cou, ... + phân tích đóng góp
 ```
 
-Mỗi kịch bản là một lần gọi `scripts/run_all.sh`: một thư mục `result/<ngày_giờ>` với
-report, file xác suất, checkpoint và `run_info.txt` (lệnh, mã kịch bản, git commit, máy,
-Python/torch, GPU). Sau mỗi lần chạy, `scripts/summarize_results.py` dựng lại
-**`result/so_thi_nghiem.xlsx`** từ mọi thư mục trong `result/`, nên sổ luôn khớp với dữ
-liệu trên đĩa:
+Mỗi kịch bản là một lần gọi `scripts/run_all.sh`, ghi vào một thư mục
+`result/<ngày_giờ>` gồm report, file xác suất, checkpoint và `run_info.txt`.
+Sau mỗi lần chạy, `scripts/summarize_results.py` dựng lại **`result/so_thi_nghiem.xlsx`**
+từ mọi thư mục trong `result/`:
 
 | Sheet | Nội dung |
 |---|---|
-| `Bang_chinh` | Mỗi kịch bản một dòng: chỉ số test mean ± std (lần chạy mới nhất của mỗi seed), Δ AUC và DeLong so với M0 và M-any |
-| `Kich_ban` | Danh mục: câu hỏi, script, tham số, file graph, User rule, số seed đã chạy |
+| `Bang_chinh` | Mỗi kịch bản một dòng: chỉ số test mean ± std, Δ AUC và DeLong so với M0 và M-any |
+| `Kich_ban` | Danh mục: câu hỏi, tham số, file graph, User rule, số seed đã chạy |
 | `Lan_chay` | Mỗi thư mục một dòng: ngày, git, máy, GPU, mọi siêu tham số, val và test |
 | `Theo_seed` | Từng seed |
 | `DeLong` | DeLong ghép cặp từng seed, mỗi kịch bản so với M0 và M-any |
 | `Theo_cau_hinh` | Mỗi cấu hình một dòng, gồm cả các lần chạy cũ chưa có mã kịch bản |
 | `Giai_thich` | Ý nghĩa các cột |
 
-`scripts/export_excel.py` (sổ cũ `docs/ket_qua_thi_nghiem.xlsx`) không còn được
-`run_all.sh` gọi. Các script cũ `run_p0.sh`, `run_b.sh`, `run_o.sh`, `run_night.sh`,
-`run_integrity.sh` vẫn chạy được; kết quả của chúng nằm ở sheet `Theo_cau_hinh`.
-
 So sánh AUC test của hai lần chạy bằng kiểm định DeLong, từng seed với cùng seed:
 
 ```bash
-python scripts/delong.py result/<mô hình chính> result/<baseline 1> result/<baseline 2>
+python scripts/delong.py result/<mô hình chính> result/<lần chạy khác>
 ```
 
-Các bước chạy lâu đều in log có timestamp và `flush=True`. Bước 4 báo tiến độ
-exact kNN và dựng/lưu `H0`; bước 8 báo từng epoch (loss, train AUC, tỉ lệ
-membership HSL giữ lại theo family) và tiến độ validation/test.
+## Dữ liệu và thiết kế thí nghiệm
 
-`1_download.py` không kiểm checksum và không giải nén archive. Nếu một raw file đã
-tồn tại, script bỏ qua file đó. Nếu lần tải trước bị lỗi, hãy xóa file tương ứng
-rồi chạy lại.
-
-`2_preprocess.py` giữ nguyên `test_log.csv` làm test cuối cùng. Chỉ các enrollment
-trong `train_log.csv` được shuffle một lần và chia 80/20 thành train/validation.
-Kết quả là `train.csv`, `validation.csv`, `test.csv`; mỗi dòng là một event đã
-ghép enrollment, label, user và course. Enrollment không có event hợp lệ trong
-35 ngày đầu vẫn có một dòng đại diện với behavior rỗng, nên node và label không
-bị mất. Mỗi split có `node_id` riêng và không cần `source_partition`.
-
-Feature và hypergraph không phụ thuộc seed huấn luyện nên chỉ cần tạo một lần.
-Các seed trong `0_config.py` chỉ điều khiển quá trình train mô hình.
-
-## Các artifact được giữ
-
-- Dữ liệu preprocess: `train.csv`, `validation.csv`, `test.csv`.
-- Metadata feature: `feature_names.csv`.
-- Mỗi thư mục `train/`, `validation/`, `test/`: một ma trận `X.npy`.
-- Hypergraph: một bundle `hypergraph.npz` chứa memberships của `H0`, loại/khóa
-  hyperedge, train/validation/test neighbors và `k`.
-- Experiment: checkpoint và train/test report trong `outputs/`.
-
-Đây là output thực của từng bước, không phải cache thông minh. Project không dùng
-hash, fingerprint, timestamp state hay run ID để quyết định artifact có hợp lệ.
-Nếu đổi `k`, `k_max` hoặc feature, hãy chạy lại `4_hypergraph.py` để ghi đè bundle.
-
-## Thiết kế thí nghiệm
-
-- Node là enrollment; `truth=1` là dropout.
-- Giữ nguyên test chính thức; raw train được chia 80/20 thành train/validation
-  bằng `SPLIT_SEED` cố định.
-- Các seed `1, 11, 111, 1111, 11111` chỉ dùng để lặp quá trình huấn luyện.
-- Normalization và imputation chỉ fit trên train node.
-- `test_truth.csv` chỉ được sử dụng khi chạy đánh giá test cuối cùng.
-- `H0` có Course, Object và Behavioral hyperedge.
-- Behavioral neighbor dùng exact cosine similarity theo batch bằng PyTorch.
-- Hyperedge luôn được ghi theo thứ tự Course, Object, rồi Behavioral kNN.
-- Mỗi node có thêm một self-loop hyperedge mà HSL không bao giờ xóa.
-- HSL giữ/bỏ hyperedge (`Me`) và membership (`Mv`) bằng Gumbel straight-through
-  khi train, ngưỡng 0.5 khi validation/test; ΔH chỉ thêm node vào Behavioral
-  hyperedge từ neighbor `k..k_max-1`.
-- Validation/test target chỉ nối tới train reference node.
-- Validation AUPRC chọn checkpoint; ngưỡng t\* chọn trên toàn bộ validation;
-  test chỉ chạy sau khi checkpoint và t\* đã được chọn.
-- `--no-hsl` chạy HGNN baseline với cùng encoder; thêm `--families self_loop`
-  thành MLP.
+- Node là enrollment; `truth=1` là dropout. Feature lấy từ 35 ngày đầu của khoá học.
+- Giữ nguyên test chính thức; raw train được chia 80/20 thành train/validation bằng
+  `SPLIT_SEED` cố định. Enrollment không có event trong 35 ngày đầu vẫn được giữ, với
+  behavior bằng 0.
+- Normalization và imputation chỉ fit trên train. Các seed `1, 11, 111, 1111, 11111`
+  chỉ điều khiển quá trình train.
+- Validation/test target chỉ nối tới train node (local graph); nhãn của node khác không
+  bao giờ được lan truyền.
+- Mỗi node có thêm một self-loop hyperedge.
+- Validation AUPRC chọn checkpoint; t\* chọn trên toàn bộ validation; test chỉ chạy sau
+  khi checkpoint và t\* đã được chọn.
+- Feature và hypergraph không phụ thuộc seed nên chỉ tạo một lần. Nếu đổi `k`, `k_max`
+  hoặc feature, hãy chạy lại `4_hypergraph.py`.
 
 ## Kiểm tra cú pháp
 

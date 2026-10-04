@@ -6,13 +6,11 @@
 # from the activated virtualenv or conda environment, else PYTHON=/path/to/python):
 #   bash scripts/run_tmux.sh
 #   bash scripts/run_tmux.sh --skip-prep
-#   SEEDS="1 11" bash scripts/run_tmux.sh --no-hsl
-#   TRAIN_SCRIPT=src/9_baselines.py bash scripts/run_tmux.sh --skip-prep --model gbdt
-#   RUN_SCRIPT=scripts/run_p0.sh bash scripts/run_tmux.sh       whole P0 table
-#   RUN_SCRIPT=scripts/run_b.sh bash scripts/run_tmux.sh        step B screening
-#   RUN_SCRIPT=scripts/run_night.sh bash scripts/run_tmux.sh    every experiment of docs/KE_HOACH_V3.md
+#   SEEDS="1 11" bash scripts/run_tmux.sh --skip-prep --skip-connection
+#   RUN_SCRIPT=scripts/run_scenarios.sh bash scripts/run_tmux.sh    the scenarios
+#   RUN_SCRIPT=scripts/run_integrity.sh bash scripts/run_tmux.sh    the integrity runs
 # Environment passed on: SEEDS, VENV_DIR, PYTHON, TRAIN_SCRIPT, NOTE,
-# EXPORT_EXCEL, ONLY, SKIP_PREP, STAGES (see run_all.sh, run_p0.sh, run_night.sh).
+# EXPORT_EXCEL, ONLY, SKIP_PREP, STAGES (see run_all.sh, run_scenarios.sh).
 #
 # Then:
 #   tmux attach -t <session>     watch the run      (detach again: Ctrl-b then d)

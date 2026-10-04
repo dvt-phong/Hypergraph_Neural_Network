@@ -32,11 +32,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 export SEEDS="${SEEDS:-1 11 111 1111 11111}"
-export TRAIN_SCRIPT=src/8_train.py
 ONLY="${ONLY:-i-mlp i-co i-cou i-cou-noskip i-co-shuffled}"
 PROCESSED=data/processed/simple
 LONG=(--epochs 1000 --patience 60)
-GRAPH=(--no-hsl --family-weights)
+GRAPH=(--family-weights)
 TEMPORAL=(--families course,object,user --hypergraph hypergraph_temporal.npz --causal)
 RUN_LIST=result/integrity_runs.txt
 
@@ -75,7 +74,7 @@ run_config() {
     fi
 }
 
-run_config i-mlp         --no-hsl --families self_loop
+run_config i-mlp         --families self_loop
 run_config i-co          "${GRAPH[@]}" --skip-connection --families course,object
 run_config i-cou         "${GRAPH[@]}" --skip-connection "${TEMPORAL[@]}"
 run_config i-cou-noskip  "${GRAPH[@]}" "${TEMPORAL[@]}"

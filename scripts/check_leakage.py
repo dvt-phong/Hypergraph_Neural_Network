@@ -126,14 +126,16 @@ def check_causal(output_dir, hypergraph_file):
 
     data = hypergraph_module.load_train_graph(output_dir, families=FAMILIES, hypergraph_file=hypergraph_file)
     graph = data["graph"]
-    tensors = model_module.graph_to_device(graph, torch.device("cpu"))
-    receive = model_module.causal_receive(tensors, torch.ones(len(graph["node_ids"]))).numpy() > 0
+    # Receive matrix the model uses (one value per membership).
+    receive_matrix = model_module.prepare_graph(graph, torch.device("cpu"), causal=True)["H_recv"]
+    node_ids, edge_ids = receive_matrix.indices().numpy()
+    receive = receive_matrix.values().numpy() > 0
 
-    member_start = graph["node_start"][graph["node_ids"]]
+    member_start = graph["node_start"][node_ids]
     latest = np.full(len(graph["edge_family"]), np.iinfo(np.int64).min)
-    np.maximum.at(latest, graph["edge_ids"], member_start)
-    expected = member_start >= latest[graph["edge_ids"]]
-    family = graph["edge_family"][graph["edge_ids"]]
+    np.maximum.at(latest, edge_ids, member_start)
+    expected = member_start >= latest[edge_ids]
+    family = graph["edge_family"][edge_ids]
     cut = {config.EDGE_FAMILIES[f]: int(np.sum(~expected & (family == f))) for f in np.unique(family)}
     report("4. causal", np.array_equal(receive, expected),
            f"{len(receive):,} memberships, {int(np.sum(~receive)):,} may not receive; by family {cut}")

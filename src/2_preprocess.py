@@ -1,4 +1,5 @@
-# 2. Preprocess XuetangX and preserve its official test partition.
+# 2. Split XuetangX into train / validation / test event files (days 0–34 of each
+#    course); the official test split is kept as is, train is split 80/20.
 # Tham khảo từ project/bài báo:
 # - SIG-Net, ACM SAC 2024: https://doi.org/10.1145/3605098.3636002
 #   Code: https://github.com/Noverse0/SIG-Net
@@ -21,13 +22,17 @@ from pathlib import Path
 config_constant = import_module("0_config")
 
 
-# Yield rows from a UTF-8 CSV file as dictionaries.
+# Read a UTF-8 CSV file row by row.
+# Input:  path of the CSV file.
+# Output: yields one dict per row.
 def read_csv(path):
     with open(path, newline="", encoding="utf-8") as source:
         yield from csv.DictReader(source)
 
 
-# Write column names and data rows to a UTF-8 CSV file.
+# Write a UTF-8 CSV file.
+# Input:  path, column names, data rows.
+# Output: none (file written).
 def write_csv(path, columns, rows):
     with open(path, "w", newline="", encoding="utf-8") as output:
         writer = csv.writer(output)
@@ -35,7 +40,9 @@ def write_csv(path, columns, rows):
         writer.writerows(rows)
 
 
-# Return one metadata row per node, ordered by local node identifier.
+# Read one row per node from a split CSV (which has one row per event).
+# Input:  path of train.csv, validation.csv or test.csv.
+# Output: list of dicts, list[node_id] = first row of that node.
 def load_nodes(path):
     nodes = {}
     for row in read_csv(path):
@@ -45,7 +52,9 @@ def load_nodes(path):
     return [nodes[node_id] for node_id in sorted(nodes)]
 
 
-# Read selected CSV members in one sequential pass through the archive.
+# Read selected CSV files inside prediction_data.tar.gz in one pass.
+# Input:  path of the archive, file names to read.
+# Output: yields (file name, row dict).
 def read_prediction_data(prediction_data_path, selected_names):
     with tarfile.open(prediction_data_path, "r|gz") as prediction_data:
         for member in prediction_data:
@@ -60,7 +69,9 @@ def read_prediction_data(prediction_data_path, selected_names):
                     yield name, row
 
 
-# Split enrollments in train data into train set and validation set.
+# Randomly split the official train enrollments into train and validation.
+# Input:  enrollment ids.
+# Output: dict enrollment id -> "train" or "validation".
 def split_train_enrollments(enrollment_ids):
     shuffled_ids = list(enrollment_ids)
     random.Random(config_constant.SPLIT_SEED).shuffle(shuffled_ids)
@@ -75,7 +86,10 @@ def split_train_enrollments(enrollment_ids):
     return split_by_enrollment
 
 
-# Stream valid events from both raw logs into three split CSV files.
+# Write the events of days 0–34 of every labeled enrollment to its split CSV.
+# Input:  archive path, output directory, user / course / label tables, split of
+#         every enrollment.
+# Output: none (train.csv, validation.csv, test.csv written).
 def stream_events(
     prediction_data_path,
     output_dir,
@@ -85,8 +99,7 @@ def stream_events(
     split_by_enrollment,
 ):
     node_ids = {split_name: {} for split_name in config_constant.SPLITS}
-    # Keep one raw-log identity row for every labeled enrollment. An enrollment
-    # may have events, but none inside the observation window.
+    # (user, course) of every enrollment, also those with no event in days 0–34.
     enrollment_metadata = {}
     columns = (
         "node_id", "enroll_id", "user_id", "course_id", "label",
@@ -151,9 +164,8 @@ def stream_events(
                     course_day,
                 ))
 
-        # Preserve labeled enrollments with no recognized event in days 0–34.
-        # Empty action/course_day makes file 3 create zero behavior counts while
-        # still retaining label, user context, course context, and graph nodes.
+        # Keep enrollments with no event in days 0–34 as one row with an empty
+        # action, so they get zero behavior counts but stay in the data.
         empty_behavior_count = 0
         for enrollment_id in sorted(split_by_enrollment):
             split_name = split_by_enrollment[enrollment_id]
@@ -197,7 +209,9 @@ def stream_events(
     )
 
 
-# Run preprocessing and write explicit train, validation, and test datasets.
+# Run step 2 (skipped when the three split CSVs already exist).
+# Input:  raw_dir with the downloaded files, output_dir.
+# Output: none (split CSVs written to output_dir).
 def preprocess(raw_dir=config_constant.RAW, output_dir=config_constant.PROCESSED):
     raw_dir = Path(raw_dir)
     output_dir = Path(output_dir)

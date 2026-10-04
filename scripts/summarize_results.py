@@ -155,7 +155,7 @@ def folder_time(run_dir):
         return datetime.fromtimestamp(run_dir.stat().st_mtime)
 
 
-# settings["model"] of src/9_baselines.py and of the published baselines (files 11-15).
+# settings["model"] of the separate baselines (removed; old runs only).
 BASELINE_NAMES = {"gbdt": "GBDT", "logreg": "LR", "hypergcn": "HyperGCN", "signet": "SIG-Net",
                   "mstgcn": "MST-GCN", "catfhn": "CA-TFHN", "cfin": "CFIN"}
 
@@ -164,9 +164,9 @@ def model_name(settings):
     if settings.get("model") in BASELINE_NAMES:
         return BASELINE_NAMES[settings["model"]]
     families = [f for f in settings.get("families", ["course", "object", "behavioral"]) if f != "self_loop"]
-    if not families and not settings.get("hsl", True):
+    if not families and not settings.get("hsl", False):
         return "MLP"
-    return "HSL" if settings.get("hsl", True) else "HGNN"
+    return "HSL" if settings.get("hsl", False) else "HGNN"
 
 
 def seed_rows(run_dir):
@@ -192,7 +192,7 @@ def seed_rows(run_dir):
             "torch": info.get("torch", ""),
             "scenario": re.sub(r"_seed_\d+$", "", run_name),
             "tag": settings.get("tag", ""),
-            # Read from the bundle by 8_train.py; runs before that left it out.
+            # Read from the bundle by 6_train.py; runs before that left it out.
             "user_rule": train.get("user_rule"),
             "test_probs": reports / f"{run_name}_test_probs.npz",
             "model": model_name(settings),
@@ -368,7 +368,7 @@ def main_table(by_code, comparisons):
 # Kich_ban: the scenario catalog, and how many seeds each one has so far.
 def catalog_table(by_code):
     return [{"Mã": code, "Nhóm": spec["group"], "Mô tả": spec["description"], "Câu hỏi": spec["question"],
-             "Script": spec["script"], "Tham số": " ".join(spec["args"]),
+             "Script": "src/6_train.py", "Tham số": " ".join(spec["args"]),
              "File graph": hypergraph_file(spec) or "", "User rule cần": spec["user_rule"] or "",
              "Số seed đã chạy": len(by_code.get(code, []))}
             for code, spec in SCENARIOS.items()]
@@ -378,7 +378,7 @@ GUIDE = (
     ("Bang_chinh", "Mỗi dòng là một kịch bản của scripts/scenarios.py (mã kịch bản = --tag của lần chạy). "
                    "Với mỗi seed lấy lần chạy mới nhất, nên các seed chạy ở nhiều thư mục được gộp lại."),
     ("Kich_ban", "Danh mục kịch bản: câu hỏi cần trả lời, script, tham số dòng lệnh, file graph, User rule cần. "
-                 "Siêu tham số không ghi ở đây lấy mặc định của DEFAULT_SETTINGS trong src/8_train.py; "
+                 "Siêu tham số không ghi ở đây lấy mặc định của DEFAULT_SETTINGS trong src/6_train.py; "
                  "giá trị thật của từng lần chạy nằm ở Lan_chay."),
     ("Lan_chay", "Mỗi dòng là một thư mục result/<ngày_giờ> (một lần gọi run_all.sh): git commit, máy, GPU, "
                  "mọi siêu tham số, mean ± std trên các seed của nó."),

@@ -4,7 +4,7 @@
 #
 # The first folder is compared with each of the others, seed by seed: for
 # every seed found in both folders, reads reports/*_seed_<seed>_test_probs.npz
-# (written by 8_train.py and 9_baselines.py), checks that both hold the same
+# (written by 6_train.py), checks that both hold the same
 # test targets in the same order, and prints AUC A, AUC B, their difference,
 # z and the two-sided p-value. A seed-free model (logreg) is matched to every
 # seed of the other folder.

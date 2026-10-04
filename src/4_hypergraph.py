@@ -1,5 +1,12 @@
-# 4. Build the train hypergraph H0 and the local graphs used for validation/test.
-# Tham khảo: HGNN (Feng et al., 2019), SIG-Net, CA-TFHN;
+# 4. Build the train hypergraph H0 (Course, Object, Behavioral, User hyperedges)
+#    and the local graph of every validation/test target.
+# Tham khảo từ project/bài báo:
+# - HGNN, AAAI 2019 (Feng et al.): https://doi.org/10.1609/aaai.v33i01.33013558
+#   Code: https://github.com/iMoonLab/HGNN
+# - SIG-Net, ACM SAC 2024: https://doi.org/10.1145/3605098.3636002
+#   Code: https://github.com/Noverse0/SIG-Net
+# - CA-TFHN, ICONIP 2023: https://doi.org/10.1007/978-981-99-8184-7_31
+#   Code: https://github.com/codeds27/CA-TFHN
 
 import argparse
 import time
@@ -27,26 +34,36 @@ USER = config.EDGE_FAMILIES.index("user")
 SELF_LOOP = config.EDGE_FAMILIES.index("self_loop")
 
 
+# Print a message with the time.
 def log(message):
     print(f"[{time.strftime('%H:%M:%S')}][hypergraph] {message}", flush=True)
 
 
-# "2016-11-16 08:00:00" -> day number, so start days compare as integers.
+# Course start as a day number, so start days compare as integers.
+# Input:  date text, e.g. "2016-11-16 08:00:00".
+# Output: int day number.
 def start_day(course_start):
     return date.fromisoformat(course_start[:10]).toordinal()
 
 
+# Course start day of every node.
+# Input:  node rows from load_nodes.
+# Output: int64 array [N].
 def start_days(nodes):
     return np.asarray([start_day(node["course_start"]) for node in nodes], dtype=np.int64)
 
 
-# π for shuffle_seed; None = identity.
+# Random relabeling of the train nodes for the shuffled-graph control.
+# Input:  number of train nodes, seed (None = no shuffle).
+# Output: permutation array [count], or None.
 def node_permutation(count, shuffle_seed):
     if shuffle_seed is None:
         return None
     return np.random.default_rng(shuffle_seed).permutation(count)
 
 
+# Input:  "auto", "cpu" or "cuda".
+# Output: torch.device ("auto" = cuda when available).
 def resolve_device(device_name):
     if device_name == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -59,8 +76,10 @@ def resolve_device(device_name):
 # Building H0 (run once with `python src/4_hypergraph.py`)
 # ---------------------------------------------------------------------------
 
-# Exact cosine kNN on the behavior columns. Queries are processed in batches so
-# the full query x train similarity matrix is never stored.
+# Nearest train nodes by cosine similarity of the behavior columns (in batches).
+# Input:  train X, query X, number of neighbors, exclude_self (True when the
+#         queries are the train nodes), device, batch size.
+# Output: int64 array [queries, count] of train node ids, most similar first.
 def nearest_train_neighbors(
     train_features, query_features, count, *, exclude_self, device, batch_size
 ):
@@ -85,8 +104,9 @@ def nearest_train_neighbors(
     return neighbors
 
 
-# Yield (node_id, object_key) for every video, problem, or forum event.
-# The course is part of the key so equal object IDs in two courses stay apart.
+# Objects (video, problem, forum) used by each node.
+# Input:  path of a split CSV.
+# Output: yields (node_id, "course|type|object_id").
 def read_object_events(events_path):
     for row in read_csv(events_path):
         object_type = config.OBJECT_ACTIONS.get(row["action"])
@@ -95,7 +115,12 @@ def read_object_events(events_path):
             yield int(row["node_id"]), f"{row['course_id']}|{object_type}|{object_id}"
 
 
-# User hyperedges of the train split: (USER, key, members), see the file header.
+# User hyperedges of the train split.
+#   "any":      one hyperedge per learner with all their enrollments.
+#   "temporal": one hyperedge per enrollment (anchor) + the learner's enrollments
+#               in courses that started no later.
+# Input:  train node rows, user rule.
+# Output: list of (USER, key, member node ids).
 def user_hyperedges(train_nodes, user_rule):
     by_user = defaultdict(list)
     for node in train_nodes:
@@ -113,7 +138,10 @@ def user_hyperedges(train_nodes, user_rule):
     return hyperedges
 
 
-# Group train enrollments into Course, Object, Behavioral, and User hyperedges.
+# Build H0: Course, Object, Behavioral (anchor + k nearest) and User hyperedges.
+# Input:  train node rows, train.csv path, train kNN lists, k, user rule.
+# Output: dict node_ids, edge_ids (one entry per membership, sorted by edge),
+#         edge_family, edge_keys (one entry per hyperedge).
 def build_train_hyperedges(train_nodes, train_events_path, neighbors, k, user_rule):
     course_hyperedge_members = defaultdict(list)
     for node in train_nodes:
@@ -131,13 +159,11 @@ def build_train_hyperedges(train_nodes, train_events_path, neighbors, k, user_ru
     for anchor in range(len(train_nodes)):
         members = [anchor] + neighbors[anchor, :k].tolist()
         hyperedges.append((BEHAVIORAL, str(anchor), members))
-    # Added last, so Course, Object, and Behavioral keep the ids they had before.
     hyperedges.extend(user_hyperedges(train_nodes, user_rule))
 
-    # A hyperedge with a single member links nobody; the self-loop covers it.
+    # Drop single-member hyperedges; the self-loop already covers them.
     hyperedges = [edge for edge in hyperedges if len(edge[2]) >= 2]
 
-    # Memberships are written hyperedge by hyperedge, so edge_ids is sorted.
     node_ids = []
     edge_ids = []
     for edge_id, (_, _, members) in enumerate(hyperedges):
@@ -152,8 +178,11 @@ def build_train_hyperedges(train_nodes, train_events_path, neighbors, k, user_ru
     }
 
 
-# reuse_neighbors: take the kNN lists from an existing bundle with the same
-# k_max instead of recomputing them (the slow part), e.g. to add User hyperedges.
+# Run step 4: compute the kNN lists, build H0 and save them in one bundle.
+# Input:  output_dir, k (Behavioral size), k_max (k..k_max-1 = HSL candidates),
+#         device, batch size, user rule, bundle name, reuse_neighbors (bundle to
+#         copy the kNN lists from instead of recomputing them).
+# Output: none (writes output_dir/hypergraph_file).
 def build_hypergraph(
     output_dir=config.PROCESSED, *, k=10, k_max=20, device_name="auto", batch_size=1024,
     user_rule="any", hypergraph_file=HYPERGRAPH_FILE_NAME, reuse_neighbors=None,
@@ -222,7 +251,9 @@ def build_hypergraph(
 # Loading graphs for training and evaluation
 # ---------------------------------------------------------------------------
 
-# Append one self-loop hyperedge per node.
+# Add one self-loop hyperedge per node.
+# Input:  graph dict (num_nodes, node_ids, edge_ids, edge_family, ...).
+# Output: new graph dict with the self-loops appended last.
 def add_self_loops(graph):
     nodes = np.arange(graph["num_nodes"], dtype=np.int64)
     first_self_loop = len(graph["edge_family"])
@@ -236,13 +267,15 @@ def add_self_loops(graph):
     }
 
 
+# Input:  family names, e.g. ["course", "object"].
+# Output: their indices in EDGE_FAMILIES (self_loop left out).
 def family_ids(families):
     return [config.EDGE_FAMILIES.index(name) for name in families if name != "self_loop"]
 
 
-# Keep only the hyperedges of the given families and renumber them, so no
-# hyperedge is left empty. With no family left, only self-loops remain and the
-# HGNN encoder reduces to an MLP.
+# Keep only the hyperedges of the given families and renumber them.
+# Input:  graph dict, family names (none left = MLP).
+# Output: new graph dict.
 def select_families(graph, families):
     keep_edge = np.isin(graph["edge_family"], family_ids(families))
     new_edge_id = np.cumsum(keep_edge) - 1
@@ -260,10 +293,10 @@ def select_families(graph, families):
     }
 
 
-# X, labels, and H0 of the train split.
-#
-# HSL candidates (ΔH): the Behavioral hyperedge of anchor a may recruit the
-# anchor's next neighbors a[k], ..., a[k_max-1] that are not yet members.
+# Load the train split for training.
+# Input:  output_dir, feature set, families, bundle name, shuffle seed.
+# Output: dict features [N, D], labels [N], graph (H0 + self-loops, plus the HSL
+#         candidates k..k_max-1 of every Behavioral hyperedge), edge_keys.
 def load_train_graph(
     output_dir=config.PROCESSED, *, feature_set="full", families=config.GRAPH_FAMILIES,
     hypergraph_file=HYPERGRAPH_FILE_NAME, shuffle_seed=None,
@@ -272,8 +305,8 @@ def load_train_graph(
     with np.load(output_dir / hypergraph_file) as bundle:
         if USER in family_ids(families) and "user_rule" not in bundle.files:
             raise ValueError(
-                f"{hypergraph_file} has no User hyperedges. Rebuild it (see docs/IMPROVEMENT_PLAN.md, "
-                "U0) or leave user out of --families."
+                f"{hypergraph_file} has no User hyperedges. Rebuild it with 4_hypergraph.py "
+                "--user-rule, or leave user out of --families."
             )
         k = int(bundle["k"])
         edge_family = bundle["edge_family"]
@@ -289,8 +322,7 @@ def load_train_graph(
         }
 
     graph = select_families(graph, families)
-    # Keys name the hyperedges before the self-loops (course id, object key,
-    # anchor node, user id); only the per-hyperedge weight table uses them.
+    # Hyperedge names, only used by the per-hyperedge weight table.
     edge_keys = graph.pop("edge_keys")
     nodes = load_nodes(output_dir / "train.csv")
     features = np.load(output_dir / "train" / "X.npy")[:, feature_columns(feature_set)]
@@ -308,7 +340,10 @@ def load_train_graph(
     }
 
 
-# Everything needed to build the local graph of any validation/test target.
+# Load a validation/test split: everything build_local_graph needs.
+# Input:  output_dir, split name, feature set, families, bundle name, shuffle seed.
+# Output: dict with target nodes and features, train features, train members of
+#         every Course/Object hyperedge, kNN lists, train enrollments per user.
 def load_evaluation_split(
     output_dir=config.PROCESSED, *, split_name, feature_set="full", families=config.GRAPH_FAMILIES,
     hypergraph_file=HYPERGRAPH_FILE_NAME, shuffle_seed=None,
@@ -323,7 +358,7 @@ def load_evaluation_split(
         start = np.searchsorted(bundle["edge_ids"], np.arange(len(edge_family) + 1))
         neighbors = bundle[f"{split_name}_neighbors"]
         k = int(bundle["k"])
-        # Bundles built before User hyperedges existed have none, in training either.
+        # Old bundles have no User hyperedges.
         user_rule = str(bundle["user_rule"]) if "user_rule" in bundle.files else None
 
     # Train members of every Course and Object hyperedge, looked up by key.
@@ -372,11 +407,10 @@ def load_evaluation_split(
     }
 
 
-# Local graph of one validation/test target. Local node 0 is the target; the
-# other nodes are train enrollments. The target joins its course hyperedge, the
-# object hyperedges of objects it used, a User hyperedge with the learner's train
-# enrollments (only those in courses that started no later, for rule
-# "temporal"), and its own Behavioral hyperedge.
+# Local graph of one validation/test target: the target (local node 0) joins its
+# Course, Object, User and Behavioral hyperedges, whose other members are train nodes.
+# Input:  output of load_evaluation_split, target id.
+# Output: dict features [n, D], graph, label.
 def build_local_graph(split_data, target_id):
     target = split_data["nodes"][target_id]
     neighbors = split_data["neighbors"][target_id]
@@ -441,8 +475,9 @@ def build_local_graph(split_data, target_id):
     return {"features": features, "graph": graph, "label": int(target["label"])}
 
 
-# Put several local graphs side by side in one graph. No hyperedge links two
-# local graphs, so the targets never see each other.
+# Put several local graphs side by side in one batch; they stay disconnected.
+# Input:  list of outputs of build_local_graph.
+# Output: (features, merged graph, row of each target, labels).
 def merge_local_graphs(local_graphs):
     parts = defaultdict(list)
     node_offset = 0

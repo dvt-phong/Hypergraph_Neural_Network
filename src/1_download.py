@@ -1,4 +1,6 @@
-# 1. Download the raw XuetangX dataset.
+# 1. Download the raw XuetangX files (prediction_data, user_info, course_info).
+# Tham khảo: XuetangX dataset từ CFIN (Feng et al., "Understanding Dropouts in MOOCs",
+#   AAAI 2019), tải tại http://moocdata.cn/data/user-activity
 
 import argparse
 import urllib.request
@@ -6,7 +8,9 @@ from importlib import import_module
 from pathlib import Path
 config = import_module("0_config")
 
-# Download every missing raw file into the requested directory.
+# Download the raw files that are not in raw_dir yet.
+# Input:  raw_dir, target directory.
+# Output: none (files written to raw_dir).
 def download(raw_dir=config.RAW):
     raw_dir = Path(raw_dir)
     raw_dir.mkdir(parents=True, exist_ok=True)
