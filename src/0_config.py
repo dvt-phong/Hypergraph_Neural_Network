@@ -1,4 +1,5 @@
-# 0. Settings shared by every step: paths, seeds, feature layout, hyperedge families.
+# 0. Settings shared by every step: paths, seeds, feature layout, hyperedge families,
+#    training hyperparameters.
 
 from pathlib import Path
 
@@ -7,8 +8,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw" / "xuetangx"
 PROCESSED = ROOT / "data" / "processed" / "simple"
-RUNS = ROOT / "outputs" / "runs"
-REPORTS = ROOT / "outputs" / "reports"
+OUTPUTS = ROOT / "outputs"
+RESULTS_CSV = OUTPUTS / "results.csv"
 SEEDS = (1, 11, 111, 1111, 11111)
 
 
@@ -21,7 +22,6 @@ DOWNLOAD_FILES = {
     "course_info.csv":
         "https://lfs.aminer.cn/misc/moocdata/data/course_info.csv",
 }
-DOWNLOAD_CLI_DESCRIPTION = "Download the raw XuetangX dataset."
 
 
 # Used by 2_preprocess.py.
@@ -46,17 +46,12 @@ ACTION_GROUPS = {
         "click_progress", "close_courseware", "close_info",
     ),
 }
-ACTIONS = []
-for action_group in ACTION_GROUPS.values():
-    for action_name in action_group:
-        ACTIONS.append(action_name)
-ACTIONS = tuple(ACTIONS)
+ACTIONS = tuple(action for actions in ACTION_GROUPS.values() for action in actions)
 TRUTH_FILES = ("train_truth.csv", "test_truth.csv")
 LOG_FILES = ("train_log.csv", "test_log.csv")
-PREPROCESS_CLI_DESCRIPTION = "Preprocess the XuetangX dataset."
 
 
-# Used by 3_features.py.
+# Used by 3_features.py: vocabularies and the column layout of X.
 GENDERS = ("female", "male")
 EDUCATIONS = (
     "Associate", "Bachelor's", "Doctorate", "High", "Master's", "Middle", "Primary"
@@ -68,18 +63,19 @@ CATEGORIES = (
 )
 MISSING_VALUES = ("", "na", "n/a", "none", "null", "no data", "-")
 
+# X = [behavior (35 days + 23 actions) | user (gender, education) | course (category)]
+# Age is left out: birth is missing for 71.5% of the enrollments.
 DAY_FEATURE_COUNT = OBSERVATION_DAYS
 ACTION_FEATURE_START = DAY_FEATURE_COUNT
 ACTION_FEATURE_COUNT = len(ACTIONS)
 BEHAVIOR_FEATURE_COUNT = ACTION_FEATURE_START + ACTION_FEATURE_COUNT
 
+# Each one-hot block ends with a "missing" and an "other" column.
 GENDER_FEATURE_START = 0
 GENDER_FEATURE_COUNT = len(GENDERS) + 2
 EDUCATION_FEATURE_START = GENDER_FEATURE_START + GENDER_FEATURE_COUNT
 EDUCATION_FEATURE_COUNT = len(EDUCATIONS) + 2
-AGE_FEATURE_INDEX = EDUCATION_FEATURE_START + EDUCATION_FEATURE_COUNT
-AGE_MISSING_FEATURE_INDEX = AGE_FEATURE_INDEX + 1
-USER_FEATURE_COUNT = AGE_MISSING_FEATURE_INDEX + 1
+USER_FEATURE_COUNT = EDUCATION_FEATURE_START + EDUCATION_FEATURE_COUNT
 
 CATEGORY_FEATURE_START = 0
 CATEGORY_FEATURE_COUNT = len(CATEGORIES) + 2
@@ -88,24 +84,60 @@ COURSE_FEATURE_COUNT = CATEGORY_FEATURE_COUNT
 USER_FEATURE_START = BEHAVIOR_FEATURE_COUNT
 COURSE_FEATURE_START = USER_FEATURE_START + USER_FEATURE_COUNT
 TOTAL_FEATURE_COUNT = COURSE_FEATURE_START + COURSE_FEATURE_COUNT
-BEHAVIOR_FEATURE_SLICE = slice(0, BEHAVIOR_FEATURE_COUNT)
-
-OBJECT_ACTIONS = {}
-for object_family, object_actions in ACTION_GROUPS.items():
-    if object_family != "web_page":
-        for object_action in object_actions:
-            OBJECT_ACTIONS[object_action] = object_family
-FEATURE_CLI_DESCRIPTION = "Build train, validation, and test node features."
 
 
-# Used by 4_hypergraph.py and 5_model.py. Every node also has one self-loop hyperedge.
-EDGE_FAMILIES = ("course", "object", "behavioral", "user", "self_loop")
-# Families that --families may keep or drop; self-loops always stay.
-GRAPH_FAMILIES = EDGE_FAMILIES[:-1]
-HYPERGRAPH_CLI_DESCRIPTION = "Build Course, Object, Behavioral, and User hypergraphs."
-# "any": all enrollments of a learner; "temporal": only courses that started no later.
-USER_RULES = ("any", "temporal")
+# Used by 4_hypergraph.py and 6_hgnn.py.
+# Actions on an object (video, problem, forum post) -> object family; web pages have no object.
+OBJECT_ACTIONS = {
+    action: family
+    for family, actions in ACTION_GROUPS.items() if family != "web_page"
+    for action in actions
+}
+# Hyperedge families. Every node also gets one self-loop hyperedge when the graph is loaded.
+EDGE_FAMILIES = ("course", "object", "user", "self_loop")
 
 
-# Used by 6_train.py.
-TRAIN_CLI_DESCRIPTION = "Train the model, select on validation, and evaluate on test."
+# Used by 9_train.py and 10_summary.py: the experiment scenarios (docs/KICH_BAN_THUC_NGHIEM.md).
+# Every scenario changes ONE factor of the main model M:
+#   families     hyperedge families the graph keeps ("self_loop" is one of them)
+#   features     columns of X (3_features.feature_columns):
+#                "feature" = behavior, "feature+user", "feature+course", "full" = all 90
+#   hgnn_layers  1 or 2 HGNN layers in the graph branch (the MLP branch is always 2 layers)
+#   use_mlp      keep the MLP branch next to the HGNN branch
+#   description  one line for the results table
+def scenario(description, *, families=EDGE_FAMILIES, features="full", hgnn_layers=2, use_mlp=True):
+    return {"description": description, "families": tuple(families), "features": features,
+            "hgnn_layers": hgnn_layers, "use_mlp": use_mlp}
+
+
+SCENARIOS = {
+    "M":  scenario("Mô hình chính: Course + Object + User + self-loop, full, HGNN 2 layer, có MLP"),
+    "A1": scenario("M bỏ Course", families=("object", "user", "self_loop")),
+    "A2": scenario("M bỏ Object", families=("course", "user", "self_loop")),
+    "A3": scenario("M bỏ User", families=("course", "object", "self_loop")),
+    "A4": scenario("M bỏ self-loop", families=("course", "object", "user")),
+    "F1": scenario("M chỉ dùng feature hành vi", features="feature"),
+    "F2": scenario("M dùng feature hành vi + người học", features="feature+user"),
+    "F3": scenario("M dùng feature hành vi + khóa học", features="feature+course"),
+    "L1": scenario("M với HGNN 1 layer", hgnn_layers=1),
+    "B1": scenario("M bỏ nhánh MLP (chỉ còn HGNN)", use_mlp=False),
+    # Optional, not part of "all": no neighbours at all (G = I, the HGNN branch becomes an MLP).
+    "X1": scenario("Tùy chọn: chỉ self-loop, không có hàng xóm", families=("self_loop",)),
+}
+# What `--scenario all` runs, in this order (X1 is left out on purpose).
+SCENARIOS_ALL = ("M", "A1", "A2", "A3", "A4", "F1", "F2", "F3", "L1", "B1")
+
+
+# Used by 9_train.py.
+THRESHOLD = 0.5  # p >= 0.5 -> predicted dropout
+TRAIN = {
+    "hidden_dim": 128,          # as in HGNN (Feng et al., 2019)
+    "dropout": 0.5,             # as in HGNN (Feng et al., 2019)
+    "learning_rate": 1e-3,
+    "weight_decay": 5e-4,       # L2 on every weight except the family weights
+    "family_weight_lr": 0.05,   # own lr for the family weights W, no weight decay
+    "epochs": 1000,             # maximum number of epochs
+    "eval_every": 5,            # validation AUC every N epochs
+    "patience": 40,             # stop after N validations without a better AUC
+    "eval_batch_size": 4096,    # validation/test targets per batch
+}

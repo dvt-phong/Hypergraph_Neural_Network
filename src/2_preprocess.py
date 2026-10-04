@@ -1,5 +1,7 @@
 # 2. Split XuetangX into train / validation / test event files (days 0–34 of each
-#    course); the official test split is kept as is, train is split 80/20.
+#    course): the official train enrollments are shuffled (seed 1) and split 80/20
+#    into train / validation; the official test split is kept as is. Enrollments
+#    with no event in days 0–34 are kept with zero behavior.
 # Tham khảo từ project/bài báo:
 # - SIG-Net, ACM SAC 2024: https://doi.org/10.1145/3605098.3636002
 #   Code: https://github.com/Noverse0/SIG-Net
@@ -74,8 +76,8 @@ def read_prediction_data(prediction_data_path, selected_names):
 # Output: dict enrollment id -> "train" or "validation".
 def split_train_enrollments(enrollment_ids):
     shuffled_ids = list(enrollment_ids)
-    random.Random(config_constant.SPLIT_SEED).shuffle(shuffled_ids)
-    train_count = int(len(shuffled_ids) * config_constant.TRAIN_RATIO)
+    random.Random(config_constant.SPLIT_SEED).shuffle(shuffled_ids)            # random order, seed 1
+    train_count = int(len(shuffled_ids) * config_constant.TRAIN_RATIO)         # n_train = ⌊0.8·n⌋
 
     split_by_enrollment = {}
     for position, enrollment_id in enumerate(shuffled_ids):
@@ -103,7 +105,7 @@ def stream_events(
     enrollment_metadata = {}
     columns = (
         "node_id", "enroll_id", "user_id", "course_id", "label",
-        "gender", "education", "birth", "course_start", "course_end",
+        "gender", "education", "course_start", "course_end",
         "category", "action", "object_id", "course_day",
     )
 
@@ -138,8 +140,8 @@ def stream_events(
 
             event_date = date.fromisoformat(row["time"][:10])
             course_start = date.fromisoformat(courses[course_id]["start"][:10])
-            course_day = (event_date - course_start).days
-            if 0 <= course_day < config_constant.OBSERVATION_DAYS:
+            course_day = (event_date - course_start).days                       # d = date(event) − date(course start)
+            if 0 <= course_day < config_constant.OBSERVATION_DAYS:              # keep 0 ≤ d < 35
                 split_name = split_by_enrollment[enrollment_id]
                 split_node_ids = node_ids[split_name]
                 if enrollment_id not in split_node_ids:
@@ -155,7 +157,6 @@ def stream_events(
                     labels[enrollment_id],
                     user["gender"],
                     user["education"],
-                    user["birth"],
                     course["start"],
                     course["end"],
                     course["category"],
@@ -189,7 +190,6 @@ def stream_events(
                 labels[enrollment_id],
                 user["gender"],
                 user["education"],
-                user["birth"],
                 course["start"],
                 course["end"],
                 course["category"],
@@ -263,7 +263,7 @@ def preprocess(raw_dir=config_constant.RAW, output_dir=config_constant.PROCESSED
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=config_constant.PREPROCESS_CLI_DESCRIPTION)
+    parser = argparse.ArgumentParser(description="Split XuetangX into train, validation and test CSVs.")
     parser.add_argument("--raw-dir", type=Path, default=config_constant.RAW)
     parser.add_argument("--output-dir", type=Path, default=config_constant.PROCESSED)
     arguments = parser.parse_args()
