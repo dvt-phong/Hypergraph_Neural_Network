@@ -26,7 +26,7 @@ def download(raw_dir=config.RAW):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=config.DOWNLOAD_CLI_DESCRIPTION)
+    parser = argparse.ArgumentParser(description="Download the raw XuetangX dataset.")
     parser.add_argument("--raw-dir", type=Path, default=config.RAW)
     arguments = parser.parse_args()
     download(arguments.raw_dir)

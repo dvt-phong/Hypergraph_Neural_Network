@@ -12,10 +12,7 @@ dist/
 !/data/raw/.gitkeep
 /data/processed/*
 !/data/processed/.gitkeep
-/outputs/runs/*
-!/outputs/runs/.gitkeep
-/outputs/reports/*
-!/outputs/reports/.gitkeep
+/outputs/*
 /third_party/*/
 /baseline/*/
 /result/*

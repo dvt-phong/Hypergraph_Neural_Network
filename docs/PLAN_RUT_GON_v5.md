@@ -1,4 +1,13 @@
-# Plan rút gọn project, bản 5 (để em kiểm tra, CHƯA thực hiện)
+# Plan rút gọn project, bản 5
+
+> **Đã thực hiện ngày 2026-10-04, có 3 thay đổi so với nội dung bên dưới:**
+> 1. User dùng luật **"any"** (giống SIG-Net, MST-GCN): mỗi người học có 1 hyperedge gồm mọi
+>    enrollment train của người đó. Vì vậy **bỏ causal mask**, và G trở về đúng Eq. 10 của HGNN.
+>    Các mục 6.3, 6.4 và lớp bảo vệ thứ tự thời gian ở 7.3 không còn áp dụng.
+> 2. **Không dùng bảng Object 1 thành viên** (ảnh hưởng 0.08%, xem CHI_TIET_4_5_6.md, mục 1.5).
+> 3. User của target: nếu người học có ≥ 2 enrollment train thì t tham gia hyperedge H0;
+>    nếu có đúng 1 thì tạo hyperedge mới {t, u}.
+> Mô tả đúng với code hiện tại nằm trong README.md.
 
 Ngày lập: 2026-10-04. Chưa có file code nào bị sửa và chưa train lần nào.
 

@@ -1,4 +1,12 @@
-# Chi tiết 3 file: 4_hypergraph.py, 5_graph_data.py, 6_hgnn.py (để em kiểm tra, CHƯA thực hiện)
+# Chi tiết 3 file: 4_hypergraph.py, 5_graph_data.py, 6_hgnn.py
+
+> **Đã thực hiện ngày 2026-10-04 với luật User "any"**, thay cho temporal. Các thay đổi:
+> - mỗi người học có 1 hyperedge (32,797 trong H0; 75.9% node train và 76.1% target test có);
+> - bỏ causal mask, nên H_recv = H;
+> - bỏ bảng Object 1 thành viên.
+>
+> Các phần nói về temporal / causal / so sánh theo ngày bên dưới không còn áp dụng. Mô tả đúng
+> với code nằm trong README.md.
 
 Ngày lập: 2026-10-04. File này bổ sung cho [PLAN_RUT_GON_v5.md](PLAN_RUT_GON_v5.md). Nếu em duyệt, nó thay cho mục 4 (các dòng của file 4, 5, 6) và mục 7.3–7.4 của bản 5.
 

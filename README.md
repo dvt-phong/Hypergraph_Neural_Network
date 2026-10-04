@@ -1,133 +1,147 @@
 # XuetangX dropout prediction with a hypergraph neural network
 
 Project nghiên cứu dự đoán dropout trên XuetangX. Mỗi enrollment là một node. Các
-enrollment cùng khoá học (Course), cùng dùng một video/bài tập/forum (Object) và của
-cùng một học viên (User) được nối bằng hyperedge. Mô hình chính gồm hai nhánh:
+enrollment cùng khóa học (Course), cùng dùng một video/bài tập/forum (Object) và của
+cùng một người học (User) được nối bằng hyperedge; mỗi node có thêm một self-loop.
 
-- **Nhánh graph:** HGNN 2 lớp (Feng et al., 2019). Mỗi lớp lan truyền
-  node → hyperedge → node, với một trọng số học được cho mỗi loại hyperedge (`W`).
-- **Nhánh MLP (skip):** chỉ dùng đặc trưng riêng của node.
+Mô hình có hai nhánh, đọc chung bởi một classifier tuyến tính:
 
-Lớp phân loại nhận `[z_graph ‖ z_self]` và cho ra dropout logit. Loss là BCE.
-Sơ đồ mô hình: [docs/assets/hypergraph-neural-network-v4.png](docs/assets/hypergraph-neural-network-v4.png).
+- **Nhánh graph** (`6_hgnn.py`): HGNN 2 lớp theo `HGNN_embedding` của Feng et al. (2019),
+  với một trọng số học được cho mỗi loại hyperedge (`W`, ý tưởng nhóm hyperedge của HGNN+).
+- **Nhánh MLP** (`7_mlp.py`): chỉ đặc trưng riêng của node, không lan truyền.
 
-| Bước | File | Trách nhiệm |
+Sơ đồ: [docs/assets/hypergraph-neural-network-v4.png](docs/assets/hypergraph-neural-network-v4.png).
+
+## Các file
+
+| Bước | File | Việc |
 |---|---|---|
-| 0 | `0_config.py` | Đường dẫn, seed, bố cục cột feature, các loại hyperedge |
-| 1 | `1_download.py` | Tải ba raw file nếu chưa có |
-| 2 | `2_preprocess.py` | Giữ test gốc, chia train 80/20 thành train/validation, ghi ba split CSV |
-| 3 | `3_features.py` | Tạo ma trận feature `X` của từng split, fit transform trên train |
-| 4 | `4_hypergraph.py` | Tạo hypergraph train `H0` và local graph cho từng target validation/test |
-| 5 | `5_model.py` | `DropoutModel`: HGNN 2 lớp + nhánh MLP + trọng số theo loại hyperedge |
-| 6 | `6_train.py` | Train, chọn checkpoint và ngưỡng t\* trên validation, đánh giá test |
+| 0 | `src/0_config.py` | Đường dẫn, seed, bố cục cột X, loại hyperedge, siêu tham số train |
+| 1 | `src/1_download.py` | Tải 3 file raw |
+| 2 | `src/2_preprocess.py` | Chia train/validation/test, giữ sự kiện ngày 0–34, ghi 3 CSV |
+| 3 | `src/3_features.py` | Ma trận đặc trưng X (90 cột) của mỗi split, fit trên train |
+| 4 | `src/4_hypergraph.py` | Dựng hypergraph train H0 (Course, Object, User) → `hypergraph.npz`, chạy 1 lần |
+| 5 | `src/5_graph_data.py` | Đọc H0 cho train; tìm hyperedge của từng target val/test |
+| 6 | `src/6_hgnn.py` | Nhánh graph: lan truyền HGNN, 2 lớp, cách tính cho target mới |
+| 7 | `src/7_mlp.py` | Nhánh MLP |
+| 8 | `src/8_model.py` | Ghép 2 nhánh: `logit = [z_g ‖ z_s]·u + b` |
+| 9 | `src/9_train.py` | Chạy các kịch bản: train, early stopping theo val AUC, chấm val/test ở 0.5, ghi `outputs/results.csv` |
+| 10 | `src/10_summary.py` | `results.csv` → `outputs/summary.csv` + `outputs/ket_qua.xlsx` (mean ± std, Δ so với M) |
+| | `scripts/run_tmux.sh` | Chạy 9 + 10 trong tmux trên server |
 
-Bản có HSL, contrastive loss, trọng số từng hyperedge và các baseline rời được giữ ở
-git tag `full-hsl` (`git checkout full-hsl`).
+Bản cũ có kịch bản, checkpoint, DeLong và các script báo cáo nằm ở git tag `before-simple`;
+bản có HSL và các baseline rời nằm ở tag `full-hsl`.
 
-## Cài đặt và chạy
-
-Trong PowerShell:
+## Chạy
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\python.exe src/1_download.py
 .\.venv\Scripts\python.exe src/2_preprocess.py
 .\.venv\Scripts\python.exe src/3_features.py
-.\.venv\Scripts\python.exe src/4_hypergraph.py --k 10 --k-max 20 --device auto
-# Bundle User temporal, dùng lại kNN của bundle trên:
-.\.venv\Scripts\python.exe src/4_hypergraph.py --user-rule temporal --hypergraph-file hypergraph_temporal.npz --reuse-neighbors hypergraph.npz
-# Mô hình chính M0, một seed, train rồi test:
-.\.venv\Scripts\python.exe src/6_train.py --mode both --seeds 1 --skip-connection --family-weights --families course,object,user --hypergraph hypergraph_temporal.npz --causal
-# Test lại một checkpoint:
-.\.venv\Scripts\python.exe src/6_train.py --mode test --checkpoint outputs/runs/<run>.pt
+.\.venv\Scripts\python.exe src/4_hypergraph.py
+.\.venv\Scripts\python.exe src/9_train.py --scenario all --seeds 1 11 111 1111 11111
+.\.venv\Scripts\python.exe src/10_summary.py
 ```
 
-Siêu tham số mặc định nằm trong `DEFAULT_SETTINGS` ở đầu `src/6_train.py`. Chạy nhanh
-để kiểm tra: `--epochs 10 --validation-limit 2000 --test-limit 2000`.
+Chạy một phần: `--scenario M A4 B1`. Chạy thử nhanh: `--scenario all --seeds 1 --epochs 10 --eval-limit 2000`.
+Trên server: `bash scripts/run_tmux.sh --scenario all --seeds 1 11 111 1111 11111`.
 
-Ngưỡng phân loại: sau khi train, best checkpoint (theo AUPRC validation) được chạy trên
-**toàn bộ** validation để chọn ngưỡng t\* làm F1 (lớp dropout) cao nhất. t\* được lưu vào
-checkpoint và dùng cho test. Report có thêm `macro_f1`, `f1_negative`, `auprc_negative`
-(lớp không dropout) và `f1_at_0.5`.
+Siêu tham số nằm trong `TRAIN`, kịch bản nằm trong `SCENARIOS` của `src/0_config.py`. Dòng lệnh
+chỉ đổi được `--scenario`, `--seeds`, `--epochs`, `--eval-every`, `--patience`, `--eval-limit`
+(chỉ để thử), `--device`.
 
-| Cờ | Mặc định | Ý nghĩa |
-|---|---|---|
-| `--families` | tất cả | Loại hyperedge được giữ, ví dụ `course,object,user`; `self_loop` = MLP |
-| `--hypergraph` | `hypergraph.npz` | Bundle trong `data/processed/simple`, ví dụ `hypergraph_temporal.npz` |
-| `--causal` | tắt | Node chỉ nhận từ hyperedge không có thành viên nào bắt đầu khoá học muộn hơn |
-| `--skip-connection` | tắt | Thêm nhánh `MLP(X)` |
-| `--family-weights` | tắt | Học một trọng số cho mỗi loại hyperedge, log ở `w_course`, `w_object`, … |
-| `--shuffle-graph SEED` | tắt | Đối chứng: hyperedge giữ kích thước nhưng thành viên ngẫu nhiên |
-| `--patience` | `20` | Số lần validate liên tiếp không cải thiện thì dừng |
-| `--validation-limit` | `5000` | Tập con validation cố định dùng trong lúc train (0 = toàn bộ) |
-| `--tag` | rỗng | Hậu tố tên run, ví dụ mã kịch bản |
+## Kịch bản
 
-## Kịch bản thực nghiệm
+Mỗi kịch bản chỉ đổi một yếu tố so với mô hình chính M (chi tiết: [docs/KICH_BAN_THUC_NGHIEM.md](docs/KICH_BAN_THUC_NGHIEM.md)).
+`--scenario all` chạy 10 kịch bản đầu × 5 seed = 50 lần; X1 chỉ chạy khi gọi tên.
 
-Mọi kịch bản nằm trong [scripts/scenarios.py](scripts/scenarios.py). Mã kịch bản cũng là
-`--tag` của lần chạy.
+| Mã | Course | Object | User | Self-loop | Feature | Layer HGNN | MLP |
+|---|---|---|---|---|---|---|---|
+| **M** | ✓ | ✓ | ✓ | ✓ | full | 2 | ✓ |
+| A1 | **✗** | ✓ | ✓ | ✓ | full | 2 | ✓ |
+| A2 | ✓ | **✗** | ✓ | ✓ | full | 2 | ✓ |
+| A3 | ✓ | ✓ | **✗** | ✓ | full | 2 | ✓ |
+| A4 | ✓ | ✓ | ✓ | **✗** | full | 2 | ✓ |
+| F1 | ✓ | ✓ | ✓ | ✓ | **feature** (58) | 2 | ✓ |
+| F2 | ✓ | ✓ | ✓ | ✓ | **feature+user** (71) | 2 | ✓ |
+| F3 | ✓ | ✓ | ✓ | ✓ | **feature+course** (77) | 2 | ✓ |
+| L1 | ✓ | ✓ | ✓ | ✓ | full | **1** | ✓ |
+| B1 | ✓ | ✓ | ✓ | ✓ | full | 2 | **✗** |
+| X1 (tùy chọn) | ✗ | ✗ | ✗ | ✓ | full | 2 | ✓ |
 
-| Mã | Nhóm | Cấu hình | Câu hỏi |
-|---|---|---|---|
-| M-any | Chính | HGNN + skip MLP + W; Course, Object, User `any` | Cùng điều kiện với baseline có thông tin tương lai |
-| **M0** | Chính | Như M-any, User `temporal` + `--causal` | Kết quả chính không rò rỉ |
-| A1 / A2 / A3 | Ablation | M0 bỏ User / bỏ Object / bỏ Course | Vai trò từng quan hệ |
-| A4 / A5 | Ablation | M0 bỏ W / bỏ skip MLP | Vai trò của W và của MLP |
-| C1 | Đối chứng | A1 trên graph xáo trộn | Lợi ích đến từ hàng xóm thật hay từ mô hình lớn hơn |
-| C2 | Đối chứng | MLP (chỉ self-loop) | Mốc không dùng graph |
-| B-HGNN / B-HGNN-T | Baseline | HGNN gốc, User `any` / `temporal` + causal | Hypergraph cổ điển |
+## Giao thức
 
-Hai bundle cần có trong `data/processed/simple`: `hypergraph.npz` (User `any`) và
-`hypergraph_temporal.npz` (User `temporal`). `run_scenarios.sh` kiểm tra điều này trước
-khi train, rồi chạy `scripts/check_leakage.py` cho bundle `temporal`:
-
-```bash
-python scripts/scenarios.py list                                     # mã, mô tả, câu hỏi
-python scripts/check_leakage.py                                      # kiểm tra rò rỉ của M0 (khoảng 4 phút)
-ONLY=M0 SEEDS=1 bash scripts/run_scenarios.sh                        # thử một kịch bản, một seed
-RUN_SCRIPT=scripts/run_scenarios.sh bash scripts/run_tmux.sh         # mọi kịch bản, 5 seed, trong tmux
-bash scripts/run_integrity.sh                                        # i-mlp, i-co, i-cou, ... + phân tích đóng góp
-```
-
-Mỗi kịch bản là một lần gọi `scripts/run_all.sh`, ghi vào một thư mục
-`result/<ngày_giờ>` gồm report, file xác suất, checkpoint và `run_info.txt`.
-Sau mỗi lần chạy, `scripts/summarize_results.py` dựng lại **`result/so_thi_nghiem.xlsx`**
-từ mọi thư mục trong `result/`:
-
-| Sheet | Nội dung |
+| Mục | Cách làm |
 |---|---|
-| `Bang_chinh` | Mỗi kịch bản một dòng: chỉ số test mean ± std, Δ AUC và DeLong so với M0 và M-any |
-| `Kich_ban` | Danh mục: câu hỏi, tham số, file graph, User rule, số seed đã chạy |
-| `Lan_chay` | Mỗi thư mục một dòng: ngày, git, máy, GPU, mọi siêu tham số, val và test |
-| `Theo_seed` | Từng seed |
-| `DeLong` | DeLong ghép cặp từng seed, mỗi kịch bản so với M0 và M-any |
-| `Theo_cau_hinh` | Mỗi cấu hình một dòng, gồm cả các lần chạy cũ chưa có mã kịch bản |
-| `Giai_thich` | Ý nghĩa các cột |
+| Dữ liệu | XuetangX (CFIN, Feng et al., 2019); node = enrollment; đặc trưng = 35 ngày đầu của khóa |
+| Chia | train chính thức → 80% train / 20% validation (xáo với seed 1); test chính thức giữ nguyên (67,699) |
+| Tỉ lệ dropout | train 0.758, validation 0.760, test 0.758 (dropout là lớp đa số; AUPRC ngẫu nhiên ≈ 0.758) |
+| Đặc trưng (90 cột) | hành vi: số sự kiện mỗi ngày (35) và mỗi action (23), `x = (log(1 + c) − μ_train)/σ_train`; người học: one-hot giới tính (4) và học vấn (9); khóa học: one-hot lĩnh vực (19). Mỗi one-hot có thêm cột "missing" và "other", nên không phải điền giá trị. Không dùng tuổi (71.5% thiếu năm sinh) |
+| Graph | H0 chỉ gồm enrollment train; target val/test tham gia các hyperedge của nó và chỉ đọc từ node train |
+| Train | full-batch, BCE, Adam, tối đa 1000 epoch, early stopping theo val AUC (mỗi 5 epoch, patience 40); trọng số tốt nhất giữ trong RAM |
+| Đánh giá | val và test một lần với trọng số tốt nhất, ngưỡng 0.5 |
+| Lặp | 5 seed (1, 11, 111, 1111, 11111), báo cáo mean ± std |
 
-So sánh AUC test của hai lần chạy bằng kiểm định DeLong, từng seed với cùng seed:
+So với các bài tham khảo (đọc từ code gốc): SIG-Net và MST-GCN không có validation, lấy
+epoch cuối, ngưỡng 0.5; CA-TFHN in kết quả test mỗi epoch.
 
-```bash
-python scripts/delong.py result/<mô hình chính> result/<lần chạy khác>
+## Hyperedge
+
+| Loại | Định nghĩa | Số trong H0 | % node train có |
+|---|---|---|---|
+| Course | `e_C(c) = {v : course(v) = c}` | 247 | 100% |
+| Object | `e_O(o) = {v : v dùng video/bài tập/forum o trong ngày 0–34}` | 21,747 | 88.4% |
+| User ("any", như SIG-Net, MST-GCN) | `e_U(l) = {v : user(v) = l}`: mọi enrollment train của người học | 32,797 | 75.9% |
+| Self-loop | `{v}` | N | 100% |
+
+Hyperedge có ít hơn 2 thành viên bị bỏ (self-loop đã bao). Với target t (val/test): Course,
+các Object có trong H0, User = {t} ∪ mọi enrollment train của người học đó, self-loop {t}.
+Không có node val/test nào trong H0, không dùng nhãn của node khác, các target không nối với nhau.
+
+## Công thức
+
+Ký hiệu: H ∈ {0,1}^{N×E}, `h(v,e) = 1` khi v ∈ e; `w_e = softplus(θ_f(e))`, một θ cho mỗi
+loại; `δ(e) = |e|`; `d(v) = Σ_e h(v,e)·w_e`.
+
+```
+G     = Dv^-1/2 · H · W · De^-1 · Hᵀ · Dv^-1/2                (Feng et al., 2019, Eq. 10)
+Z1    = ReLU( G · (X·Θ1 + b1) )
+Z_g   = ReLU( G · (Dropout(Z1)·Θ2 + b2) )                     (HGNN_embedding)
+Z_s   = ReLU( Dropout(ReLU(X·A1 + c1))·A2 + c2 )              (MLP)
+logit = [Z_g ‖ Z_s]·u + b,   p = σ(logit)
+L     = −(1/N)·Σ [y·log p + (1 − y)·log(1 − p)]
 ```
 
-## Dữ liệu và thiết kế thí nghiệm
+Target t của val/test: các node train giữ trạng thái đã tính trên H0, t được thêm vào các
+hyperedge E(t) của nó (nên mỗi hyperedge H0 có δ(e) + 1 thành viên). Với
+`S1_e = Σ_{u∈e} d(u)^-1/2·(x_u·Θ1 + b1)` và `S2_e = Σ_{u∈e} d(u)^-1/2·(Z1_u·Θ2 + b2)`:
 
-- Node là enrollment; `truth=1` là dropout. Feature lấy từ 35 ngày đầu của khoá học.
-- Giữ nguyên test chính thức; raw train được chia 80/20 thành train/validation bằng
-  `SPLIT_SEED` cố định. Enrollment không có event trong 35 ngày đầu vẫn được giữ, với
-  behavior bằng 0.
-- Normalization và imputation chỉ fit trên train. Các seed `1, 11, 111, 1111, 11111`
-  chỉ điều khiển quá trình train.
-- Validation/test target chỉ nối tới train node (local graph); nhãn của node khác không
-  bao giờ được lan truyền.
-- Mỗi node có thêm một self-loop hyperedge.
-- Validation AUPRC chọn checkpoint; t\* chọn trên toàn bộ validation; test chỉ chạy sau
-  khi checkpoint và t\* đã được chọn.
-- Feature và hypergraph không phụ thuộc seed nên chỉ tạo một lần. Nếu đổi `k`, `k_max`
-  hoặc feature, hãy chạy lại `4_hypergraph.py`.
-
-## Kiểm tra cú pháp
-
-```powershell
-.\.venv\Scripts\python.exe -m py_compile src/*.py
 ```
+d(t)  = Σ_{e∈E(t)} w_e
+z1_t  = ReLU( d(t)^-1/2 · Σ_{e∈E(t)} w_e/(δ(e)+1) · ( S1_e + d(t)^-1/2·(x_t·Θ1 + b1) ) )
+z_g,t = ReLU( d(t)^-1/2 · Σ_{e∈E(t)} w_e/(δ(e)+1) · ( S2_e + d(t)^-1/2·(z1_t·Θ2 + b2) ) )
+```
+
+Cho một node train đi qua công thức này (không cộng 1, không cộng số hạng của chính nó) thì
+ra đúng forward trên H0.
+
+## Kết quả
+
+`outputs/results.csv`, mỗi (kịch bản, seed) một dòng, ghi ngay khi chạy xong:
+
+| Nhóm | Cột |
+|---|---|
+| Nhận dạng | time, scenario, seed |
+| Kịch bản | families, features, hgnn_layers, use_mlp |
+| Siêu tham số | epochs, eval_every, patience, hidden_dim, dropout, learning_rate, weight_decay |
+| Dừng | best_epoch, epochs_run |
+| Validation | val_auc, val_auprc, val_f1 |
+| Test | test_auc, test_auprc, test_accuracy, test_precision, test_recall, test_f1 |
+| W học được | w_course, w_object, w_user, w_self_loop (trống nếu kịch bản không dùng loại đó) |
+| Thời gian | minutes |
+
+`src/10_summary.py` gom theo kịch bản, theo thứ tự trong `SCENARIOS` (mean ± std; một (kịch bản,
+seed) chạy nhiều lần thì lấy dòng mới nhất). Bảng có các cột ✓/✗, `delta_test_auc_vs_M` (AUC test
+trung bình của kịch bản − của M) và tỉ lệ `w_f / Σ w` (chỉ tỉ lệ giữa các w có nghĩa: nhân mọi w
+với cùng một hằng số thì G không đổi).

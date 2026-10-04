@@ -1,64 +1,46 @@
 #!/usr/bin/env bash
-# Start scripts/run_all.sh inside a detached tmux session, so the run keeps
-# going after the SSH/remote connection is closed.
+# Run src/9_train.py and then src/10_summary.py inside a detached tmux session, so
+# training keeps going after the SSH connection is closed. Arguments go to 9_train.py.
 #
-# Usage (same options as run_all.sh; python comes from <project>/.venv, else
-# from the activated virtualenv or conda environment, else PYTHON=/path/to/python):
-#   bash scripts/run_tmux.sh
-#   bash scripts/run_tmux.sh --skip-prep
-#   SEEDS="1 11" bash scripts/run_tmux.sh --skip-prep --skip-connection
-#   RUN_SCRIPT=scripts/run_scenarios.sh bash scripts/run_tmux.sh    the scenarios
-#   RUN_SCRIPT=scripts/run_integrity.sh bash scripts/run_tmux.sh    the integrity runs
-# Environment passed on: SEEDS, VENV_DIR, PYTHON, TRAIN_SCRIPT, NOTE,
-# EXPORT_EXCEL, ONLY, SKIP_PREP, STAGES (see run_all.sh, run_scenarios.sh).
+#   bash scripts/run_tmux.sh --scenario all --seeds 1 11 111 1111 11111
+#   bash scripts/run_tmux.sh --scenario all --seeds 1 --epochs 10 --eval-limit 2000
+#   PYTHON=/path/to/python bash scripts/run_tmux.sh ...   (default: .venv, else python3)
 #
 # Then:
 #   tmux attach -t <session>     watch the run      (detach again: Ctrl-b then d)
-#   tmux ls                      list sessions
-#   tmux kill-session -t <name>  stop a run
+#   tmux kill-session -t <name>  stop the run
+# The log is written to outputs/logs/<dd-mm-yyyy_HH-MM>.log.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
 if ! command -v tmux > /dev/null 2>&1; then
     echo "tmux is not installed (Ubuntu: sudo apt install tmux)" >&2
     exit 1
 fi
 
-# tmux session names cannot contain "." or ":".
-SESSION="${SESSION:-hsl_$(date +%d%m%Y_%H%M)}"
-if tmux has-session -t "$SESSION" 2> /dev/null; then
-    echo "tmux session '$SESSION' already exists: tmux attach -t $SESSION" >&2
-    exit 1
-fi
-
-# Quote every argument so it reaches run_all.sh unchanged.
-printf -v ARGUMENTS " %q" "$@"
-# The tmux shell may not have this shell's environment activated, so resolve
-# Python here when there is no project .venv: activated virtualenv, then conda.
-VENV_DIR="${VENV_DIR:-$ROOT/.venv}"
 PYTHON="${PYTHON:-}"
-if [[ -z "$PYTHON" && ! -x "$VENV_DIR/bin/python" ]]; then
-    if [[ -n "${VIRTUAL_ENV:-}" && -x "$VIRTUAL_ENV/bin/python" ]]; then
-        PYTHON="$VIRTUAL_ENV/bin/python"
-    elif [[ -n "${CONDA_PREFIX:-}" && -x "$CONDA_PREFIX/bin/python" ]]; then
-        PYTHON="$CONDA_PREFIX/bin/python"
+if [[ -z "$PYTHON" ]]; then
+    if [[ -x "$ROOT/.venv/bin/python" ]]; then
+        PYTHON="$ROOT/.venv/bin/python"
+    else
+        PYTHON="$(command -v python3)"
     fi
 fi
-# Pass the settings explicitly: the tmux shell does not inherit this shell's variables.
-# Unset variables are passed empty; each script applies its own default
-# (e.g. run_all.sh: all seeds, run_b.sh: seed 1).
-printf -v ENVIRONMENT "SEEDS=%q VENV_DIR=%q PYTHON=%q TRAIN_SCRIPT=%q NOTE=%q EXPORT_EXCEL=%q ONLY=%q SKIP_PREP=%q STAGES=%q" \
-    "${SEEDS:-}" "$VENV_DIR" "$PYTHON" "${TRAIN_SCRIPT:-}" \
-    "${NOTE:-}" "${EXPORT_EXCEL:-}" "${ONLY:-}" "${SKIP_PREP:-}" "${STAGES:-}"
-RUN_SCRIPT="${RUN_SCRIPT:-scripts/run_all.sh}"
 
-# The pane stays open after the run so the final message can still be read.
+STAMP="$(date +%d-%m-%Y_%H-%M)"
+SESSION="${SESSION:-hgnn_${STAMP//-/}}"
+LOG="outputs/logs/$STAMP.log"
+mkdir -p "$ROOT/outputs/logs"
+
+# Quote every argument so it reaches 9_train.py unchanged.
+printf -v ARGUMENTS " %q" "$@"
+# The pane stays open after the run so the last lines can still be read.
 tmux new-session -d -s "$SESSION" -c "$ROOT" \
-    "$ENVIRONMENT bash $RUN_SCRIPT$ARGUMENTS; status=\$?; echo; echo \"Run finished (exit \$status). Press Enter to close.\"; read _"
+    "{ $PYTHON -u src/9_train.py$ARGUMENTS && $PYTHON src/10_summary.py; } 2>&1 | tee $LOG; echo; echo 'Run finished. Press Enter to close.'; read _"
 
 echo "Started tmux session: $SESSION"
-echo "  watch:  tmux attach -t $SESSION   (detach: Ctrl-b then d)"
-echo "  stop:   tmux kill-session -t $SESSION"
-echo "  output: $ROOT/result/<dd-mm-yyyy_HH-MM>/"
+echo "  watch:   tmux attach -t $SESSION   (detach: Ctrl-b then d)"
+echo "  stop:    tmux kill-session -t $SESSION"
+echo "  log:     $ROOT/$LOG"
+echo "  results: $ROOT/outputs/results.csv, summary.csv, ket_qua.xlsx"
