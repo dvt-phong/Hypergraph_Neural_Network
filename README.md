@@ -54,21 +54,22 @@ chỉ đổi được `--scenario`, `--seeds`, `--epochs`, `--eval-every`, `--pa
 ## Kịch bản
 
 Mỗi kịch bản chỉ đổi một yếu tố so với mô hình chính M (chi tiết: [docs/KICH_BAN_THUC_NGHIEM.md](docs/KICH_BAN_THUC_NGHIEM.md)).
-`--scenario all` chạy 10 kịch bản đầu × 5 seed = 50 lần; X1 chỉ chạy khi gọi tên.
+`--scenario all` chạy 11 kịch bản đầu × 5 seed = 55 lần; X1 chỉ chạy khi gọi tên.
 
-| Mã | Course | Object | User | Self-loop | Feature | Layer HGNN | MLP |
-|---|---|---|---|---|---|---|---|
-| **M** | ✓ | ✓ | ✓ | ✓ | full | 2 | ✓ |
-| A1 | **✗** | ✓ | ✓ | ✓ | full | 2 | ✓ |
-| A2 | ✓ | **✗** | ✓ | ✓ | full | 2 | ✓ |
-| A3 | ✓ | ✓ | **✗** | ✓ | full | 2 | ✓ |
-| A4 | ✓ | ✓ | ✓ | **✗** | full | 2 | ✓ |
-| F1 | ✓ | ✓ | ✓ | ✓ | **feature** (58) | 2 | ✓ |
-| F2 | ✓ | ✓ | ✓ | ✓ | **feature+user** (71) | 2 | ✓ |
-| F3 | ✓ | ✓ | ✓ | ✓ | **feature+course** (77) | 2 | ✓ |
-| L1 | ✓ | ✓ | ✓ | ✓ | full | **1** | ✓ |
-| B1 | ✓ | ✓ | ✓ | ✓ | full | 2 | **✗** |
-| X1 (tùy chọn) | ✗ | ✗ | ✗ | ✓ | full | 2 | ✓ |
+| Mã | Course | Object | User | Self-loop | Feature | Layer HGNN | MLP | Học W |
+|---|---|---|---|---|---|---|---|---|
+| **M** | ✓ | ✓ | ✓ | ✓ | full | 2 | ✓ | ✓ |
+| A1 | **✗** | ✓ | ✓ | ✓ | full | 2 | ✓ | ✓ |
+| A2 | ✓ | **✗** | ✓ | ✓ | full | 2 | ✓ | ✓ |
+| A3 | ✓ | ✓ | **✗** | ✓ | full | 2 | ✓ | ✓ |
+| A4 | ✓ | ✓ | ✓ | **✗** | full | 2 | ✓ | ✓ |
+| F1 | ✓ | ✓ | ✓ | ✓ | **feature** (58) | 2 | ✓ | ✓ |
+| F2 | ✓ | ✓ | ✓ | ✓ | **feature+user** (71) | 2 | ✓ | ✓ |
+| F3 | ✓ | ✓ | ✓ | ✓ | **feature+course** (77) | 2 | ✓ | ✓ |
+| L1 | ✓ | ✓ | ✓ | ✓ | full | **1** | ✓ | ✓ |
+| B1 | ✓ | ✓ | ✓ | ✓ | full | 2 | **✗** | ✓ |
+| W1 | ✓ | ✓ | ✓ | ✓ | full | 2 | ✓ | **✗** (W = I cố định) |
+| X1 (tùy chọn) | ✗ | ✗ | ✗ | ✓ | full | 2 | ✓ | ✓ |
 
 ## Giao thức
 

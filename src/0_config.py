@@ -104,10 +104,13 @@ EDGE_FAMILIES = ("course", "object", "user", "self_loop")
 #                "feature" = behavior, "feature+user", "feature+course", "full" = all 90
 #   hgnn_layers  1 or 2 HGNN layers in the graph branch (the MLP branch is always 2 layers)
 #   use_mlp      keep the MLP branch next to the HGNN branch
+#   learn_w      learn one weight per hyperedge family (W); False = W = I fixed, as in the
+#                original HGNN code
 #   description  one line for the results table
-def scenario(description, *, families=EDGE_FAMILIES, features="full", hgnn_layers=2, use_mlp=True):
+def scenario(description, *, families=EDGE_FAMILIES, features="full", hgnn_layers=2, use_mlp=True,
+             learn_w=True):
     return {"description": description, "families": tuple(families), "features": features,
-            "hgnn_layers": hgnn_layers, "use_mlp": use_mlp}
+            "hgnn_layers": hgnn_layers, "use_mlp": use_mlp, "learn_w": learn_w}
 
 
 SCENARIOS = {
@@ -121,11 +124,12 @@ SCENARIOS = {
     "F3": scenario("M dùng feature hành vi + khóa học", features="feature+course"),
     "L1": scenario("M với HGNN 1 layer", hgnn_layers=1),
     "B1": scenario("M bỏ nhánh MLP (chỉ còn HGNN)", use_mlp=False),
+    "W1": scenario("M không học W (W = I cố định, như HGNN gốc)", learn_w=False),
     # Optional, not part of "all": no neighbours at all (G = I, the HGNN branch becomes an MLP).
     "X1": scenario("Tùy chọn: chỉ self-loop, không có hàng xóm", families=("self_loop",)),
 }
 # What `--scenario all` runs, in this order (X1 is left out on purpose).
-SCENARIOS_ALL = ("M", "A1", "A2", "A3", "A4", "F1", "F2", "F3", "L1", "B1")
+SCENARIOS_ALL = ("M", "A1", "A2", "A3", "A4", "F1", "F2", "F3", "L1", "B1", "W1")
 
 
 # Used by 9_train.py.

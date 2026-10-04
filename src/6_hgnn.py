@@ -11,6 +11,7 @@
 # Notation (N train nodes, E hyperedges kept by the scenario, self-loops included if kept):
 #   H ∈ {0,1}^{N×E}  h(v,e) = 1 when node v belongs to hyperedge e
 #   W = diag(w_e)     w_e = softplus(θ_f(e)), one θ per family f: course, object, user, self_loop
+#                     (learned; scenario W1 keeps W = I fixed, as in the original code)
 #   De = diag(δ(e))   δ(e) = |e|, the number of members of e
 #   Dv = diag(d(v))   d(v) = Σ_e h(v,e)·w_e   (> 0: every node is in its Course hyperedge
 #                                               or in its self-loop, in every scenario)
@@ -56,17 +57,20 @@ def prepare_graph(graph, device):
 
 
 class HGNNEncoder(nn.Module):
-    # Input:  input_dim (columns of X), hidden_dim, dropout rate, layers (1 or 2).
-    def __init__(self, input_dim, hidden_dim, dropout, layers=2):
+    # Input:  input_dim (columns of X), hidden_dim, dropout rate, layers (1 or 2),
+    #         learn_w (True: θ_f is trained; False: θ_f stays fixed so W = I).
+    def __init__(self, input_dim, hidden_dim, dropout, layers=2, learn_w=True):
         super().__init__()
         if layers not in (1, 2):
             raise ValueError("layers must be 1 or 2")
         self.layer1 = nn.Linear(input_dim, hidden_dim)                       # Θ1, b1
         self.layer2 = nn.Linear(hidden_dim, hidden_dim) if layers == 2 else None   # Θ2, b2 (2 layers only)
         self.dropout = dropout
-        self.family_logits = nn.Parameter(                                   # θ_f, one per hyperedge family
-            torch.full((len(config.EDGE_FAMILIES),), INITIAL_FAMILY_LOGIT)
-        )
+        logits = torch.full((len(config.EDGE_FAMILIES),), INITIAL_FAMILY_LOGIT)   # θ_f, one per hyperedge family
+        if learn_w:
+            self.family_logits = nn.Parameter(logits)                        # learned: W = diag(softplus(θ_f(e)))
+        else:
+            self.register_buffer("family_logits", logits)                    # fixed: softplus(θ) = 1, so W = I
 
     # Output: [families], w_f = softplus(θ_f) > 0.
     def family_weights(self):

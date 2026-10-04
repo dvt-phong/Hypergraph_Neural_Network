@@ -33,22 +33,23 @@ Các nhóm feature:
 | `feature+course` | hành vi + lĩnh vực khóa học (19) | 77 |
 | `full` | hành vi + người học + khóa học | 90 |
 
-## 2. Bảng kịch bản (10 cấu hình × 5 seed = 50 lần chạy)
+## 2. Bảng kịch bản (11 cấu hình × 5 seed = 55 lần chạy)
 
 ✓ = giữ, ✗ = bỏ. Ô **in đậm** là yếu tố khác với M.
 
-| # | Mã | Course | Object | User | Self-loop | Feature | Layer HGNN | MLP | Câu hỏi trả lời |
-|---|---|---|---|---|---|---|---|---|---|
-| 1 | **M** | ✓ | ✓ | ✓ | ✓ | full | 2 | ✓ | Mô hình chính |
-| 2 | A1 | **✗** | ✓ | ✓ | ✓ | full | 2 | ✓ | Course đóng góp bao nhiêu |
-| 3 | A2 | ✓ | **✗** | ✓ | ✓ | full | 2 | ✓ | Object đóng góp bao nhiêu |
-| 4 | A3 | ✓ | ✓ | **✗** | ✓ | full | 2 | ✓ | User đóng góp bao nhiêu |
-| 5 | A4 | ✓ | ✓ | ✓ | **✗** | full | 2 | ✓ | Self-loop đóng góp bao nhiêu |
-| 6 | F1 | ✓ | ✓ | ✓ | ✓ | **feature** | 2 | ✓ | Chỉ có feature hành vi |
-| 7 | F2 | ✓ | ✓ | ✓ | ✓ | **feature+user** | 2 | ✓ | Hành vi + người học |
-| 8 | F3 | ✓ | ✓ | ✓ | ✓ | **feature+course** | 2 | ✓ | Hành vi + khóa học |
-| 9 | L1 | ✓ | ✓ | ✓ | ✓ | full | **1** | ✓ | HGNN 1 layer so với 2 layer |
-| 10 | B1 | ✓ | ✓ | ✓ | ✓ | full | 2 | **✗** | Bỏ nhánh MLP: chỉ còn HGNN |
+| # | Mã | Course | Object | User | Self-loop | Feature | Layer HGNN | MLP | Học W | Câu hỏi trả lời |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | **M** | ✓ | ✓ | ✓ | ✓ | full | 2 | ✓ | ✓ | Mô hình chính |
+| 2 | A1 | **✗** | ✓ | ✓ | ✓ | full | 2 | ✓ | ✓ | Course đóng góp bao nhiêu |
+| 3 | A2 | ✓ | **✗** | ✓ | ✓ | full | 2 | ✓ | ✓ | Object đóng góp bao nhiêu |
+| 4 | A3 | ✓ | ✓ | **✗** | ✓ | full | 2 | ✓ | ✓ | User đóng góp bao nhiêu |
+| 5 | A4 | ✓ | ✓ | ✓ | **✗** | full | 2 | ✓ | ✓ | Self-loop đóng góp bao nhiêu |
+| 6 | F1 | ✓ | ✓ | ✓ | ✓ | **feature** | 2 | ✓ | ✓ | Chỉ có feature hành vi |
+| 7 | F2 | ✓ | ✓ | ✓ | ✓ | **feature+user** | 2 | ✓ | ✓ | Hành vi + người học |
+| 8 | F3 | ✓ | ✓ | ✓ | ✓ | **feature+course** | 2 | ✓ | ✓ | Hành vi + khóa học |
+| 9 | L1 | ✓ | ✓ | ✓ | ✓ | full | **1** | ✓ | ✓ | HGNN 1 layer so với 2 layer |
+| 10 | B1 | ✓ | ✓ | ✓ | ✓ | full | 2 | **✗** | ✓ | Bỏ nhánh MLP: chỉ còn HGNN |
+| 11 | W1 | ✓ | ✓ | ✓ | ✓ | full | 2 | ✓ | **✗** | Không học W: W = I cố định, như HGNN gốc |
 
 Ghi chú:
 - **A4** (bỏ self-loop):
@@ -58,6 +59,7 @@ Ghi chú:
 - **F1–F3:** nhóm feature được áp cho cả hai nhánh HGNN và MLP, vì hai nhánh đọc cùng một X.
 - **L1:** chỉ nhánh HGNN còn 1 layer `Z_g = ReLU(G·(X·Θ1 + b1))`; nhánh MLP giữ 2 layer.
 - **B1:** `logit = Z_g·u + b`, chỉ đọc nhánh HGNN.
+- **W1:** mọi hyperedge có `w_e = 1` trong suốt quá trình train (`G = Dv^-1/2·H·De^-1·Hᵀ·Dv^-1/2`, đúng như code gốc iMoonLab/HGNN). W1 có ít hơn M đúng 4 tham số (θ_course, θ_object, θ_user, θ_self_loop). Các cột `w_*` trong kết quả để trống.
 
 ## 3. Cách đọc kết quả
 
@@ -68,16 +70,17 @@ Ghi chú:
 | F1 → F2, F1 → F3, F1 → M | Đóng góp của feature người học, feature khóa học, và cả hai |
 | M − L1 | Lợi ích của bước nhảy thứ 2 |
 | M − B1 | Đóng góp của nhánh MLP |
+| M − W1 | Lợi ích của việc học trọng số W theo loại hyperedge, so với W = I |
 
 Chỉ coi một chênh lệch là thật khi nó lớn hơn khoảng **2 lần độ lệch chuẩn giữa các seed**. Theo các lần chạy trước, mức này vào khoảng 0.0005 AUC.
 
 ## 4. Tùy chọn (mặc định KHÔNG chạy)
 
-| Mã | Course | Object | User | Self-loop | Feature | Layer HGNN | MLP | Câu hỏi trả lời |
-|---|---|---|---|---|---|---|---|---|
-| X1 | ✗ | ✗ | ✗ | ✓ | full | 2 | ✓ | Đối chứng không có hàng xóm: G = I, nhánh HGNN thành MLP. Đo đóng góp của **toàn bộ** graph |
+| Mã | Course | Object | User | Self-loop | Feature | Layer HGNN | MLP | Học W | Câu hỏi trả lời |
+|---|---|---|---|---|---|---|---|---|---|
+| X1 | ✗ | ✗ | ✗ | ✓ | full | 2 | ✓ | ✓ | Đối chứng không có hàng xóm: G = I, nhánh HGNN thành MLP. Đo đóng góp của **toàn bộ** graph |
 
-Nếu em muốn chạy thì đánh dấu ở mục 7. Khi đó tổng là 11 cấu hình, 55 lần chạy.
+Chạy bằng `--scenario X1`. X1 không thuộc `all`.
 
 ## 5. Chạy toàn bộ
 
@@ -87,13 +90,13 @@ bash scripts/run_tmux.sh --scenario all --seeds 1 11 111 1111 11111     # trên 
 python src/10_summary.py                                                # bảng mean ± std
 ```
 
-- `all` gồm 10 kịch bản ở mục 2, chạy theo đúng thứ tự trong bảng. Mỗi kịch bản chạy hết 5 seed rồi mới sang kịch bản tiếp theo.
+- `all` gồm 11 kịch bản ở mục 2, chạy theo đúng thứ tự trong bảng. Mỗi kịch bản chạy hết 5 seed rồi mới sang kịch bản tiếp theo.
 - Mỗi lần chạy xong ghi ngay 1 dòng vào `outputs/results.csv`. Nếu bị dừng giữa chừng, các dòng đã ghi vẫn còn.
 - Chạy một phần: `--scenario M A4 B1`. Chạy thử nhanh: `--scenario all --seeds 1 --epochs 10 --eval-limit 2000`.
 - Bảng tổng hợp (`summary.csv`, `ket_qua.xlsx`) có mỗi kịch bản một dòng theo thứ tự ở mục 2, với các cột: mã, các cột ✓/✗, mean ± std của val/test, `best_epoch`, tỉ lệ w, và **Δ test AUC so với M**.
-- Thời gian ước tính trên CPU local, trường hợp xấu nhất đủ 1000 epoch: khoảng 70 phút một lần chạy, tức khoảng 58 giờ cho 50 lần. Early stopping và GPU sẽ rút ngắn đáng kể (GPU thầy chưa đo).
+- Thời gian ước tính trên CPU local, trường hợp xấu nhất đủ 1000 epoch: khoảng 70 phút một lần chạy, tức khoảng 64 giờ cho 55 lần. Early stopping và GPU sẽ rút ngắn đáng kể (GPU thầy chưa đo).
 
-## 6. Phần code cần thêm khi em duyệt (chưa làm)
+## 6. Phần code (đã làm; W1 thêm `learn_w` vào `SCENARIOS`, `HGNNEncoder` và `DropoutModel`)
 
 | File | Thêm |
 |---|---|
@@ -109,9 +112,10 @@ Kiểm tra sau khi code:
 - Lặp lại 2 phép thử nhất quán (node train qua công thức đánh giá trùng forward đầy đủ; vòng lặp theo định nghĩa trên 50 target) cho các trường hợp đặc biệt **A4, L1, B1**.
 - Chạy thử nhanh `--scenario all --seeds 1 --epochs 10 --eval-limit 2000`: `results.csv` phải có đủ 10 dòng.
 
-## 7. Điểm em cần xác nhận
+## 7. Đã chốt
 
-- [ ] 10 kịch bản ở mục 2, mỗi kịch bản chỉ đổi một yếu tố so với M.
-- [ ] A4 = giữ Course, Object, User; bỏ self-loop; giữ MLP.
-- [ ] B1 = bỏ MLP trên M.
-- [ ] Chạy thêm tùy chọn X1 (chỉ self-loop): có / không.
+- 11 kịch bản ở mục 2 (`--scenario all`), mỗi kịch bản chỉ đổi một yếu tố so với M.
+- A4 = giữ Course, Object, User; bỏ self-loop; giữ MLP.
+- B1 = bỏ MLP trên M.
+- W1 = không học W (W = I) trên M.
+- X1 chỉ chạy khi gọi tên.
