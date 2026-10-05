@@ -1,6 +1,6 @@
 # 5. Load the graph data a training run needs, then cut it down to one scenario.
 #
-#    Loading (once per run, all hyperedge families, all 90 columns of X):
+#    Loading (once per run, all hyperedge families, all 89 columns of X):
 #    - train: features X, labels and H0 from 4_hypergraph.py;
 #    - validation/test: for every target t, the H0 hyperedges t joins. Targets are
 #      never added to H0 and never linked to each other; they only read from train nodes.
@@ -30,7 +30,7 @@ SELF_LOOP = hypergraph_module.SELF_LOOP
 
 # Train split.
 # Input:  output_dir with train/X.npy and hypergraph.npz.
-# Output: dict features [N, 90], labels [N],
+# Output: dict features [N, 89], labels [N],
 #         graph {num_nodes N, node_ids, edge_ids, edge_family}: H0 without self-loops.
 def load_train_graph(output_dir=config.PROCESSED):
     output_dir = Path(output_dir)
@@ -56,7 +56,7 @@ def load_train_graph(output_dir=config.PROCESSED):
 #   Self-loop {t}: handled in 6_hgnn.py when the scenario keeps self-loops.
 # Input:  output_dir, split name ("validation" or "test"), limit (0 = all targets,
 #         else the first `limit` targets; only for quick checks).
-# Output: dict features [T, 90], labels [T],
+# Output: dict features [T, 89], labels [T],
 #         h0_ptr [T + 1], h0_edges: the H0 hyperedges of target t are
 #                                   h0_edges[h0_ptr[t]:h0_ptr[t + 1]]
 #         single_user [T]: train node u of the hyperedge {t, u}, or -1

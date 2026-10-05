@@ -1,7 +1,4 @@
-# 4. Build the train hypergraph H0 once (python src/4_hypergraph.py). Nodes are the
-#    train enrollments; hyperedges are Course, Object and User. Self-loops are not
-#    stored: 5_graph_data.py adds one per node when it loads the graph.
-#    Only train.csv is read: no validation/test enrollment and no label is used here.
+# 4. Build the train hypergraph H0 once (python src/4_hypergraph.py)
 # Tham khảo từ project/bài báo:
 # - HGNN, AAAI 2019 (Feng et al.): https://doi.org/10.1609/aaai.v33i01.33013558
 #   Code: https://github.com/iMoonLab/HGNN
@@ -73,7 +70,7 @@ def object_hyperedges(objects):
     return [(OBJECT, key, members[key]) for key in sorted(members)]
 
 
-# User hyperedges (rule "any"): e_U(l) = {v : user(v) = l}, one per learner, with all
+# User hyperedges: e_U(l) = {v : user(v) = l}, one per learner, with all
 # of the learner's train enrollments whatever their course start.
 # Input:  train node rows.
 # Output: list of (USER, "user|<user_id>", member node ids).
