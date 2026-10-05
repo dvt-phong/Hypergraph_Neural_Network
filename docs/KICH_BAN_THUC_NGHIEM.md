@@ -17,21 +17,23 @@ Mỗi kịch bản chỉ đổi **đúng một yếu tố** so với M.
 | Yếu tố | Giá trị của M |
 |---|---|
 | Hyperedge | Course ✓, Object ✓, User ("any") ✓, self-loop ✓ |
-| Feature | `full`: hành vi + người học + khóa học (90 cột) |
+| Feature | `full`: hành vi + người học + khóa học (89 cột) |
 | Nhánh HGNN | 2 layer |
 | Nhánh MLP | có, 2 layer, cấu trúc không đổi |
 | Train | tối đa 1000 epoch, early stopping theo val AUC (mỗi 5 epoch, patience 40) |
 | Đánh giá | val và test ở ngưỡng 0.5 |
 | Seed | 1, 11, 111, 1111, 11111 |
 
-Các nhóm feature:
+Các nhóm feature (từ 2026-10-05: hành vi như MST-GCN gồm 35 ngày để thô + tổng sự kiện, số object, 22 action chuẩn hóa; age theo CFIN; bỏ các cột `_other`):
 
 | Mã | Cột của X | Số cột |
 |---|---|---|
-| `feature` | hành vi: 35 ngày + 23 action | 58 |
-| `feature+user` | hành vi + giới tính (4) + học vấn (9) | 71 |
-| `feature+course` | hành vi + lĩnh vực khóa học (19) | 77 |
-| `full` | hành vi + người học + khóa học | 90 |
+| `feature` | hành vi: 35 ngày + tổng sự kiện + số object + 22 action (như MST-GCN) | 59 |
+| `feature+user` | hành vi + giới tính (3) + học vấn (8) + tuổi (1) | 71 |
+| `feature+course` | hành vi + lĩnh vực khóa học (18) | 77 |
+| `full` | hành vi + người học + khóa học | 89 |
+
+Mỗi khối one-hot có một cột `missing` (thiếu là một mức riêng). Tuổi thiếu hoặc ngoài 10–70 được gán 0 rồi chuẩn hóa, như CFIN.
 
 ## 2. Bảng kịch bản (11 cấu hình × 5 seed = 55 lần chạy)
 

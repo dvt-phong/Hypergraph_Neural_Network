@@ -1,7 +1,4 @@
-# 2. Split XuetangX into train / validation / test event files (days 0–34 of each
-#    course): the official train enrollments are shuffled (seed 1) and split 80/20
-#    into train / validation; the official test split is kept as is. Enrollments
-#    with no event in days 0–34 are kept with zero behavior.
+# 2. Split XuetangX into train / validation / test event files
 # Tham khảo từ project/bài báo:
 # - SIG-Net, ACM SAC 2024: https://doi.org/10.1145/3605098.3636002
 #   Code: https://github.com/Noverse0/SIG-Net
@@ -105,7 +102,7 @@ def stream_events(
     enrollment_metadata = {}
     columns = (
         "node_id", "enroll_id", "user_id", "course_id", "label",
-        "gender", "education", "course_start", "course_end",
+        "gender", "education", "birth", "course_start", "course_end",
         "category", "action", "object_id", "course_day",
     )
 
@@ -157,6 +154,7 @@ def stream_events(
                     labels[enrollment_id],
                     user["gender"],
                     user["education"],
+                    user["birth"],
                     course["start"],
                     course["end"],
                     course["category"],
@@ -190,6 +188,7 @@ def stream_events(
                 labels[enrollment_id],
                 user["gender"],
                 user["education"],
+                user["birth"],
                 course["start"],
                 course["end"],
                 course["category"],

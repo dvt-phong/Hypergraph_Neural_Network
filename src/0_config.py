@@ -29,6 +29,9 @@ SPLITS = ("train", "validation", "test")
 SPLIT_SEED = 1
 TRAIN_RATIO = 0.80
 OBSERVATION_DAYS = 35
+# Every action type of the raw logs (42,110,402 events, 22 types), as MST-GCN, which counts
+# each action that appears in the logs (pd.crosstab in xuetangx_graph_builder.py).
+# CFIN keeps 21 of them: it leaves out close_forum (5 events in total).
 ACTION_GROUPS = {
     "video": (
         "seek_video", "play_video", "pause_video", "stop_video", "load_video"
@@ -43,7 +46,7 @@ ACTION_GROUPS = {
     ),
     "web_page": (
         "click_info", "click_courseware", "click_about", "click_forum",
-        "click_progress", "close_courseware", "close_info",
+        "click_progress", "close_courseware",
     ),
 }
 ACTIONS = tuple(action for actions in ACTION_GROUPS.values() for action in actions)
@@ -63,22 +66,37 @@ CATEGORIES = (
 )
 MISSING_VALUES = ("", "na", "n/a", "none", "null", "no data", "-")
 
-# X = [behavior (35 days + 23 actions) | user (gender, education) | course (category)]
-# Age is left out: birth is missing for 71.5% of the enrollments.
+# Age as in CFIN (Feng et al., AAAI 2019; code wzfhaha/dropout_prediction, preprocess.py):
+# a = year(course start) − birth year; a = 0 when birth is missing or a is outside
+# [AGE_MIN, AGE_MAX]. CFIN uses the fixed year 2018; the course start year is used here.
+AGE_MIN = 10
+AGE_MAX = 70
+AGE_MISSING = 0
+
+# X = [behavior | user (gender, education, age) | course (category)], where behavior follows the
+# enrollment features of MST-GCN (xuetangx_graph_builder.py):
+#   35 daily event counts (raw) | total events, distinct objects, 22 action counts (standardized)
 DAY_FEATURE_COUNT = OBSERVATION_DAYS
-ACTION_FEATURE_START = DAY_FEATURE_COUNT
+TOTAL_EVENTS_INDEX = DAY_FEATURE_COUNT                 # events in days 0–34
+OBJECT_COUNT_INDEX = TOTAL_EVENTS_INDEX + 1            # distinct objects used in days 0–34
+ACTION_FEATURE_START = OBJECT_COUNT_INDEX + 1
 ACTION_FEATURE_COUNT = len(ACTIONS)
 BEHAVIOR_FEATURE_COUNT = ACTION_FEATURE_START + ACTION_FEATURE_COUNT
+SCALED_BEHAVIOR_START = TOTAL_EVENTS_INDEX             # columns from here on are standardized
 
-# Each one-hot block ends with a "missing" and an "other" column.
+# Column positions inside the user block and inside the course block (*_START, AGE_FEATURE_INDEX);
+# the user block starts at X column USER_FEATURE_START, the course block at COURSE_FEATURE_START.
+# Each one-hot block ends with a "missing" column (missing = its own level, as CFIN's code 0).
+# There is no "other" column: a value outside the vocabulary stops 3_features.py.
 GENDER_FEATURE_START = 0
-GENDER_FEATURE_COUNT = len(GENDERS) + 2
+GENDER_FEATURE_COUNT = len(GENDERS) + 1
 EDUCATION_FEATURE_START = GENDER_FEATURE_START + GENDER_FEATURE_COUNT
-EDUCATION_FEATURE_COUNT = len(EDUCATIONS) + 2
-USER_FEATURE_COUNT = EDUCATION_FEATURE_START + EDUCATION_FEATURE_COUNT
+EDUCATION_FEATURE_COUNT = len(EDUCATIONS) + 1
+AGE_FEATURE_INDEX = EDUCATION_FEATURE_START + EDUCATION_FEATURE_COUNT
+USER_FEATURE_COUNT = AGE_FEATURE_INDEX + 1
 
 CATEGORY_FEATURE_START = 0
-CATEGORY_FEATURE_COUNT = len(CATEGORIES) + 2
+CATEGORY_FEATURE_COUNT = len(CATEGORIES) + 1
 COURSE_FEATURE_COUNT = CATEGORY_FEATURE_COUNT
 
 USER_FEATURE_START = BEHAVIOR_FEATURE_COUNT
@@ -101,7 +119,7 @@ EDGE_FAMILIES = ("course", "object", "user", "self_loop")
 # Every scenario changes ONE factor of the main model M:
 #   families     hyperedge families the graph keeps ("self_loop" is one of them)
 #   features     columns of X (3_features.feature_columns):
-#                "feature" = behavior, "feature+user", "feature+course", "full" = all 90
+#                "feature" = behavior, "feature+user", "feature+course", "full" = all 89
 #   hgnn_layers  1 or 2 HGNN layers in the graph branch (the MLP branch is always 2 layers)
 #   use_mlp      keep the MLP branch next to the HGNN branch
 #   learn_w      learn one weight per hyperedge family (W); False = W = I fixed, as in the
@@ -137,7 +155,7 @@ THRESHOLD = 0.5  # p >= 0.5 -> predicted dropout
 TRAIN = {
     "hidden_dim": 128,          # as in HGNN (Feng et al., 2019)
     "dropout": 0.5,             # as in HGNN (Feng et al., 2019)
-    "learning_rate": 1e-3,
+    "learning_rate": 1e-3,      # as in DP-SCL
     "weight_decay": 5e-4,       # L2 on every weight except the family weights
     "family_weight_lr": 0.05,   # own lr for the family weights W, no weight decay
     "epochs": 1000,             # maximum number of epochs

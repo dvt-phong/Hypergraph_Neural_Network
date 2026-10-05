@@ -19,7 +19,7 @@ Sơ đồ: [docs/assets/hypergraph-neural-network-v4.png](docs/assets/hypergraph
 | 0 | `src/0_config.py` | Đường dẫn, seed, bố cục cột X, loại hyperedge, siêu tham số train |
 | 1 | `src/1_download.py` | Tải 3 file raw |
 | 2 | `src/2_preprocess.py` | Chia train/validation/test, giữ sự kiện ngày 0–34, ghi 3 CSV |
-| 3 | `src/3_features.py` | Ma trận đặc trưng X (90 cột) của mỗi split, fit trên train |
+| 3 | `src/3_features.py` | Ma trận đặc trưng X (89 cột: hành vi 59 như MST-GCN = 35 ngày thô + tổng sự kiện, số object, 22 action chuẩn hóa; người học 12 gồm age theo CFIN; khóa học 18) của mỗi split, fit trên train |
 | 4 | `src/4_hypergraph.py` | Dựng hypergraph train H0 (Course, Object, User) → `hypergraph.npz`, chạy 1 lần |
 | 5 | `src/5_graph_data.py` | Đọc H0 cho train; tìm hyperedge của từng target val/test |
 | 6 | `src/6_hgnn.py` | Nhánh graph: lan truyền HGNN, 2 lớp, cách tính cho target mới |
@@ -63,7 +63,7 @@ Mỗi kịch bản chỉ đổi một yếu tố so với mô hình chính M (ch
 | A2 | ✓ | **✗** | ✓ | ✓ | full | 2 | ✓ | ✓ |
 | A3 | ✓ | ✓ | **✗** | ✓ | full | 2 | ✓ | ✓ |
 | A4 | ✓ | ✓ | ✓ | **✗** | full | 2 | ✓ | ✓ |
-| F1 | ✓ | ✓ | ✓ | ✓ | **feature** (58) | 2 | ✓ | ✓ |
+| F1 | ✓ | ✓ | ✓ | ✓ | **feature** (59) | 2 | ✓ | ✓ |
 | F2 | ✓ | ✓ | ✓ | ✓ | **feature+user** (71) | 2 | ✓ | ✓ |
 | F3 | ✓ | ✓ | ✓ | ✓ | **feature+course** (77) | 2 | ✓ | ✓ |
 | L1 | ✓ | ✓ | ✓ | ✓ | full | **1** | ✓ | ✓ |
