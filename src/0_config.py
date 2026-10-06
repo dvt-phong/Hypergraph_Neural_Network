@@ -1,5 +1,4 @@
-# 0. Settings shared by every step: paths, seeds, feature layout, hyperedge families,
-#    training hyperparameters.
+# 0. Setting hyperparameter and config paramater
 
 from pathlib import Path
 
@@ -128,6 +127,7 @@ EDGE_FAMILIES = ("course", "object", "user", "self_loop")
 #   learn_w      learn one weight per hyperedge family (W); False = W = I fixed, as in the
 #                original HGNN code
 #   description  one line for the results table
+# Build one scenario dict; arguments left out keep the value of the main model M.
 def scenario(description, *, families=EDGE_FAMILIES, features="full", hgnn_layers=2, use_mlp=True,
              learn_w=True):
     return {"description": description, "families": tuple(families), "features": features,
@@ -140,17 +140,17 @@ SCENARIOS = {
     "A2": scenario("M bỏ Object", families=("course", "user", "self_loop")),
     "A3": scenario("M bỏ User", families=("course", "object", "self_loop")),
     "A4": scenario("M bỏ self-loop", families=("course", "object", "user")),
+    "W1": scenario("M không học W (W = I cố định, như HGNN gốc)", learn_w=False),
     "F1": scenario("M chỉ dùng feature hành vi", features="feature"),
     "F2": scenario("M dùng feature hành vi + người học", features="feature+user"),
     "F3": scenario("M dùng feature hành vi + khóa học", features="feature+course"),
     "L1": scenario("M với HGNN 1 layer", hgnn_layers=1),
-    "B1": scenario("M bỏ nhánh MLP (chỉ còn HGNN)", use_mlp=False),
-    "W1": scenario("M không học W (W = I cố định, như HGNN gốc)", learn_w=False),
+    "H":  scenario("M bỏ nhánh MLP, chỉ còn hypergraph", use_mlp=False),
     # Optional, not part of "all": no neighbours at all (G = I, the HGNN branch becomes an MLP).
     "X1": scenario("Tùy chọn: chỉ self-loop, không có hàng xóm", families=("self_loop",)),
 }
 # What `--scenario all` runs, in this order (X1 is left out on purpose).
-SCENARIOS_ALL = ("M", "A1", "A2", "A3", "A4", "F1", "F2", "F3", "L1", "B1", "W1")
+SCENARIOS_ALL = ("M", "A1", "A2", "A3", "A4", "W1", "F1", "F2", "F3", "L1", "H")
 
 
 # Used by 9_train.py.

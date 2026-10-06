@@ -17,6 +17,7 @@ WEIGHTS = ("w_course", "w_object", "w_user", "w_self_loop")
 COMPONENTS = ("course", "object", "user", "self_loop")
 
 
+# Read results.csv and write summary.csv and ket_qua.xlsx (one row per scenario, mean ± std).
 def summarize():
     runs = pd.read_csv(config.RESULTS_CSV)
     runs = runs.drop_duplicates(["scenario", "seed"], keep="last")
@@ -42,7 +43,8 @@ def summarize():
                     "learn_w": "✓" if bool(group["learn_w"].iloc[-1]) else "✗",
                     "seeds": " ".join(str(seed) for seed in group["seed"]), "n": len(group)})
         for name in METRICS:
-            mean, std = group[name].mean(), group[name].std(ddof=1)               # std = √(Σ(x − mean)²/(n − 1))
+            # mean = (1/n)·Σ x,  std = √(Σ(x − mean)²/(n − 1))  over the n seeds
+            mean, std = group[name].mean(), group[name].std(ddof=1)
             row[name] = f"{mean:.4f} ± {0.0 if pd.isna(std) else std:.4f}"
         row["test_auc_mean"] = group["test_auc"].mean()
         row["best_epoch"] = round(group["best_epoch"].mean())

@@ -36,9 +36,8 @@ INITIAL_FAMILY_LOGIT = math.log(math.e - 1)
 
 
 # Turn a graph from 5_graph_data.apply_scenario into sparse incidence matrices.
-# Input:  graph dict (num_nodes, node_ids, edge_ids, edge_family, self_loop), device.
-# Output: dict H [N, E] (hyperedge -> node), H_T [E, N] (node -> hyperedge),
-#         edge_size [E] = δ(e), edge_family [E], self_loop (are self-loops in the graph?).
+# Shapes: H [N, E] (hyperedge -> node), H_T [E, N] (node -> hyperedge), edge_size [E] = δ(e),
+#         edge_family [E]; self_loop says whether the graph has self-loops.
 def prepare_graph(graph, device):
     node_ids = torch.as_tensor(graph["node_ids"], dtype=torch.int64, device=device)
     edge_ids = torch.as_tensor(graph["edge_ids"], dtype=torch.int64, device=device)
@@ -56,9 +55,10 @@ def prepare_graph(graph, device):
     }
 
 
+# Graph branch: Z_g from X and the hypergraph (formulas at the top of this file).
 class HGNNEncoder(nn.Module):
-    # Input:  input_dim (columns of X), hidden_dim, dropout rate, layers (1 or 2),
-    #         learn_w (True: θ_f is trained; False: θ_f stays fixed so W = I).
+    # Parameters Θ1, b1 (and Θ2, b2 with 2 layers) and one logit θ_f per hyperedge family;
+    # learn_w=False keeps θ_f fixed, so W = I.
     def __init__(self, input_dim, hidden_dim, dropout, layers=2, learn_w=True):
         super().__init__()
         if layers not in (1, 2):
@@ -72,14 +72,14 @@ class HGNNEncoder(nn.Module):
         else:
             self.register_buffer("family_logits", logits)                    # fixed: softplus(θ) = 1, so W = I
 
-    # Output: [families], w_f = softplus(θ_f) > 0.
+    # Weight of every hyperedge family: w_f = softplus(θ_f) > 0.
     def family_weights(self):
         return F.softplus(self.family_logits)
 
-    # One propagation G·x, written node by node.
-    # Input:  x [N, D], graph from prepare_graph, w [E] = w_e of every hyperedge.
-    # Output: [N, D].
+    # One propagation x' = G·x, written node by node.
+    # Shapes: x [N, D], w [E] = w_e of every hyperedge -> [N, D].
     def propagate(self, x, graph, w):
+        # x'_v = d(v)^-1/2 · Σ_e h(v,e) · (w_e/δ(e)) · Σ_{u∈e} d(u)^-1/2 · x_u
         node_degree = torch.sparse.mm(graph["H"], w[:, None])          # d(v) = Σ_e h(v,e)·w_e
         node_scale = node_degree.clamp_min(1e-6).rsqrt()                 # d(v)^-1/2
         edge_x = torch.sparse.mm(graph["H_T"], x * node_scale)           # Σ_{u∈e} d(u)^-1/2·x_u
@@ -87,8 +87,7 @@ class HGNNEncoder(nn.Module):
         return torch.sparse.mm(graph["H"], edge_x) * node_scale          # x'_v = d(v)^-1/2·Σ_e h(v,e)·m_e
 
     # Training: the HGNN layers on the whole train hypergraph (full batch).
-    # Input:  x [N, D], graph from prepare_graph.
-    # Output: Z_g [N, hidden].
+    # Shapes: x [N, D] -> Z_g [N, hidden].
     def forward(self, x, graph):
         w = self.family_weights()[graph["edge_family"]]                   # w_e = w_f(e)
         z = F.relu(self.propagate(self.layer1(x), graph, w))             # Z1 = ReLU(G·(X·Θ1 + b1))
@@ -99,8 +98,7 @@ class HGNNEncoder(nn.Module):
 
     # Evaluation, step A: the train-node quantities a new target reads, computed once
     # per evaluation on H0 (call under model.eval() and torch.no_grad()).
-    # Input:  x [N, D] train features, graph from prepare_graph.
-    # Output: dict family_w [families], edge_w [E], edge_size [E], self_loop,
+    # Shapes: x [N, D] train features -> family_w [families], edge_w [E], edge_size [E], self_loop,
     #         send1 [N, hidden]: what each train node sends at layer 1,
     #         S1 [E, hidden]: what each H0 hyperedge collects at layer 1,
     #         send2 / S2: the same at layer 2 (2 layers only).
@@ -124,11 +122,8 @@ class HGNNEncoder(nn.Module):
     # hyperedges E(t); the train nodes keep their H0 states (step A). Each H0 hyperedge
     # e ∈ E(t) then has δ(e) + 1 members; {t, u} (single_user) has 2; the self-loop {t},
     # when the scenario keeps self-loops, has 1.
-    # Input:  x [B, D] target features,
-    #         rows [K], edges [K]: target t = rows[k] joins H0 hyperedge edges[k],
-    #         single_user [B]: train node u of the hyperedge {t, u}, or -1,
-    #         cache from cache_train_states.
-    # Output: z_g [B, hidden].
+    # Shapes: x [B, D] target features, rows [K] and edges [K] (target rows[k] joins H0 hyperedge
+    #         edges[k]), single_user [B] (train node u of the hyperedge {t, u}, or -1) -> z_g [B, hidden].
     def forward_targets(self, x, rows, edges, single_user, cache):
         w_user = cache["family_w"][USER]
         w_self = cache["family_w"][SELF_LOOP] if cache["self_loop"] else 0.0   # no self-loop: no {t} term
@@ -137,11 +132,14 @@ class HGNNEncoder(nn.Module):
         has_single = single_user >= 0
         single_nodes = single_user[has_single]
 
+        # d(t) = Σ_{e∈E(t)∩H0} w_e + w_user·[t has {t,u}] + w_self
         degree = torch.zeros(len(x), device=x.device).index_add_(0, rows, w)   # Σ_{e∈H0} w_e
         degree = degree + w_user * has_single + w_self                    # d(t) = Σ_{e∈E(t)} w_e
         node_scale = degree.clamp_min(1e-6).rsqrt()[:, None]              # d(t)^-1/2
 
-        # One layer for the targets; own = x_t·Θ + b, S / send from step A.
+        # One layer for the targets; own = x_t·Θ + b, S / send from step A:
+        #   z_t = ReLU( d(t)^-1/2 · [ Σ_{e∈E(t)∩H0} (w_e/(δ(e)+1))·(S_e + o_t)
+        #                            + (w_user/2)·(send_u + o_t) + w_self·o_t ] ),  o_t = d(t)^-1/2·own
         def layer(own, S, send):
             own = own * node_scale                                        # d(t)^-1/2·(x_t·Θ + b)
             total = torch.zeros_like(own).index_add_(                     # Σ_{e∈H0} (w_e/(δ(e)+1))·(S_e + own)

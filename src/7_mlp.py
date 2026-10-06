@@ -8,9 +8,10 @@
 from torch import nn
 
 
+# MLP branch: z_s from the node's own features.
 class MLPEncoder(nn.Module):
-    # z_s = ReLU( Dropout(ReLU(x·A1 + c1))·A2 + c2 )
-    # Input:  input_dim (columns of X), hidden_dim, dropout rate.
+    # Two layers A1, c1 and A2, c2:
+    #   z_s = ReLU( Dropout(ReLU(x·A1 + c1))·A2 + c2 )
     def __init__(self, input_dim, hidden_dim, dropout):
         super().__init__()
         self.layers = nn.Sequential(
@@ -21,7 +22,7 @@ class MLPEncoder(nn.Module):
             nn.ReLU(),
         )
 
-    # Input:  x [B, D].
-    # Output: z_s [B, hidden].
+    # Representation from the node's own features.
+    # Shapes: x [B, D] -> z_s [B, hidden].
     def forward(self, x):
         return self.layers(x)
