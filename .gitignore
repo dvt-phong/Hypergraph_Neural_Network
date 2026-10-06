@@ -16,9 +16,8 @@ dist/
 /third_party/*/
 /baseline/*/
 !/baseline/CFIN/
-/baseline/CFIN/cache/
 /baseline/CFIN/dropout_prediction/
-/baseline/CFIN/*.log
-/baseline/CFIN/results.csv
+/baseline/CFIN/.tools/
+/baseline/CFIN/.python/
 /result/*
 /docs/ket_qua/*

@@ -1,0 +1,130 @@
+diff --git a/feat_extract.py b/feat_extract.py
+index 1e3c6e9..62f0de1 100644
+--- a/feat_extract.py
++++ b/feat_extract.py
+@@ -1,36 +1,51 @@
+ import pandas as pd
+ 
+-train = pd.read_csv('prediction_log/train_log.csv')
+-test = pd.read_csv('prediction_log/test_log.csv')
++# Changed from the original only to fit in memory: the original loads both logs (42M rows) at once
++# and runs groupby().sum() on the whole log once per action. Here the logs are read in chunks and
++# the per-enrollment counts of the chunks are added up. The output files are the same.
++
++LOG_COLUMNS = ['enroll_id', 'username', 'course_id', 'session_id', 'action']
++CHUNK_ROWS = 5000000
++
+ train_truth = pd.read_csv('prediction_log/train_truth.csv', index_col='enroll_id')
+ test_truth = pd.read_csv('prediction_log/test_truth.csv', index_col='enroll_id')
+ all_truth = pd.concat([train_truth, test_truth])
+-all_log = pd.concat([train, test])
+ 
+-train_enroll = list(set(list(train['enroll_id'])))
+-
+-test_enroll = list(set(list(test['enroll_id'])))
+ video_action = ['seek_video','play_video','pause_video','stop_video','load_video']
+ problem_action = ['problem_get','problem_check','problem_save','reset_problem','problem_check_correct', 'problem_check_incorrect']
+ forum_action = ['create_thread','create_comment','delete_thread','delete_comment']
+ click_action = ['click_info','click_courseware','click_about','click_forum','click_progress']
+ close_action = ['close_courseware']
+ 
+-all_num = all_log.groupby('enroll_id').count()[['action']]
+-all_num.columns = ['all#count']
+-session_enroll = all_log[['session_id']].drop_duplicates()
+-session_num = all_log.groupby('enroll_id').count()
+-all_num['session#count'] = session_num['session_id']
+-for a in video_action + problem_action + forum_action + click_action + close_action:
+-    action_ = (all_log['action'] == a).astype(int)
+-    all_log[a+'#num'] = action_
+-    action_num = all_log.groupby('enroll_id').sum()[[a+'#num']]
+-    all_num = pd.merge(all_num, action_num, left_index=True, right_index=True)
++
++# Counts of one log file. enroll_ids keeps the order of first appearance, so set(enroll_ids)
++# iterates like the original set(list(log['enroll_id'])).
++def count_log(path):
++    counts, infos, enroll_ids = [], [], []
++    for chunk in pd.read_csv(path, usecols=LOG_COLUMNS, chunksize=CHUNK_ROWS):
++        group = chunk.groupby('enroll_id')
++        part = pd.DataFrame({'all#count': group['action'].count(),          # rows with an action
++                             'session#count': group['session_id'].count()})  # rows with a session id
++        for a in video_action + problem_action + forum_action + click_action + close_action:
++            part[a+'#num'] = (chunk['action'] == a).astype(int).groupby(chunk['enroll_id']).sum()
++        counts.append(part)
++        infos.append(chunk[['username','course_id','enroll_id']].drop_duplicates())
++        enroll_ids.extend(pd.unique(chunk['enroll_id']).tolist())
++        print(path, len(enroll_ids), flush=True)
++    return counts, infos, enroll_ids
++
++
++train_counts, train_infos, train_ids = count_log('prediction_log/train_log.csv')
++test_counts, test_infos, test_ids = count_log('prediction_log/test_log.csv')
++train_enroll = list(set(train_ids))
++test_enroll = list(set(test_ids))
++
++all_num = pd.concat(train_counts + test_counts).groupby(level=0).sum()   # an enrollment may span chunks
++all_num.index.name = 'enroll_id'
+ all_num = pd.merge(all_num, all_truth, left_index=True, right_index=True)
+-enroll_info = all_log[['username','course_id','enroll_id']].drop_duplicates()
++enroll_info = pd.concat(train_infos + test_infos).drop_duplicates()
+ enroll_info.index = enroll_info['enroll_id']
+ del enroll_info['enroll_id']
+ all_num = pd.merge(all_num, enroll_info, left_index=True, right_index=True)
+ all_num.loc[test_enroll].to_csv('test_features.csv')
+ all_num.loc[train_enroll].to_csv('train_features.csv')
+-
+diff --git a/main.py b/main.py
+index 4369652..6637d69 100644
+--- a/main.py
++++ b/main.py
+@@ -7,7 +7,7 @@ import tensorflow as tf
+ import pickle as pkl
+ from model import CFIN
+ 
+-os.environ['CUDA_VISIBLE_DEVICES'] = '2,4'
++os.environ.setdefault('CUDA_VISIBLE_DEVICES', '2,4')   # original forces '2,4'; an outside value now wins
+ act_feat_basic = pkl.load(open('act_feats.pkl','rb'))
+ user_cat_feat = ['gender', 'cluster_label']
+ user_num_feat = ['age','user_enroll_num']
+@@ -161,5 +161,5 @@ params = {
+     "random_seed": 12345
+ }
+ 
+-y_train_dfm, y_test_dfm = model_run(dfTrain_u, dfTest_u, dfTrain_c, dfTest_c, dfTrain_a, dfTest_a,params, act_feat)
++model_run(dfTrain_u, dfTest_u, dfTrain_c, dfTest_c, dfTrain_a, dfTest_a,params, act_feat)   # original unpacked two values; model_run returns None
+ 
+diff --git a/model.py b/model.py
+index 01e8a27..0b61ef3 100644
+--- a/model.py
++++ b/model.py
+@@ -327,7 +327,7 @@ class CFIN():
+                     ((not self.greater_is_better) and train_result < best_train_score):
+                     break
+         """
+-        save_path = self.saver.save(sess, "my_model/CFIN")
++        save_path = self.saver.save(self.sess, "my_model/CFIN")   # original: sess (undefined name)
+         print("Save to path: ", save_path)
+         return save_path
+         
+diff --git a/preprocess.py b/preprocess.py
+index 8e979a9..92352bf 100644
+--- a/preprocess.py
++++ b/preprocess.py
+@@ -57,7 +57,7 @@ all_feat = pd.merge(all_feat, course_enroll_num, left_on='course_id', right_inde
+ 
+ 
+ #extract user cluster
+-user_cluster_id = pkl.load(open('cluster/user_dict','r'))
++user_cluster_id = pkl.load(open('cluster/user_dict','rb'), encoding='latin1')   # Python 3: Python 2 pickle, binary mode
+ cluster_label = np.load('cluster/label_5_10time.npy')
+ all_feat['cluster_label'] = [cluster_label[user_cluster_id[u]] for u in all_feat['username']]
+ 
+@@ -82,6 +82,9 @@ act_feats = [c for c in train_feat.columns if 'count' in c or 'time' in c or 'nu
+ pkl.dump(act_feats, open('act_feats.pkl','wb'))
+ 
+ num_feats = act_feats + ['age','course_enroll_num','user_enroll_num']
++# Changed from the original: the 23 activity counts go through log(1 + c) before the z-score,
++# x = (log(1 + c) − μ) / σ; age and the two enroll numbers keep the original z-score.
++all_feat[act_feats] = np.log1p(all_feat[act_feats])
+ scaler= StandardScaler()
+ newX = scaler.fit_transform(all_feat[num_feats])
+ print(newX.shape)
