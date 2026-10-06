@@ -75,14 +75,17 @@ AGE_MISSING = 0
 
 # X = [behavior | user (gender, education, age) | course (category)], where behavior follows the
 # enrollment features of MST-GCN (xuetangx_graph_builder.py):
-#   35 daily event counts (raw) | total events, distinct objects, 22 action counts (standardized)
+#   35 daily event counts | total events, distinct objects, 22 action counts
+# Scaling with train-only statistics:
+#   X[:, 0:59]  = behavior counts, x = (log(1 + c) − μ_train) / σ_train (Kloft et al., 2014)
+#   X[:, 70]    = age, z-score
+# Every other position stays 0/1 (one-hot context).
 DAY_FEATURE_COUNT = OBSERVATION_DAYS
 TOTAL_EVENTS_INDEX = DAY_FEATURE_COUNT                 # events in days 0–34
 OBJECT_COUNT_INDEX = TOTAL_EVENTS_INDEX + 1            # distinct objects used in days 0–34
 ACTION_FEATURE_START = OBJECT_COUNT_INDEX + 1
 ACTION_FEATURE_COUNT = len(ACTIONS)
 BEHAVIOR_FEATURE_COUNT = ACTION_FEATURE_START + ACTION_FEATURE_COUNT
-SCALED_BEHAVIOR_START = TOTAL_EVENTS_INDEX             # columns from here on are standardized
 
 # Column positions inside the user block and inside the course block (*_START, AGE_FEATURE_INDEX);
 # the user block starts at X column USER_FEATURE_START, the course block at COURSE_FEATURE_START.
@@ -92,7 +95,7 @@ GENDER_FEATURE_START = 0
 GENDER_FEATURE_COUNT = len(GENDERS) + 1
 EDUCATION_FEATURE_START = GENDER_FEATURE_START + GENDER_FEATURE_COUNT
 EDUCATION_FEATURE_COUNT = len(EDUCATIONS) + 1
-AGE_FEATURE_INDEX = EDUCATION_FEATURE_START + EDUCATION_FEATURE_COUNT
+AGE_FEATURE_INDEX = EDUCATION_FEATURE_START + EDUCATION_FEATURE_COUNT  # user[:, 11] -> final X[:, 70], z-score
 USER_FEATURE_COUNT = AGE_FEATURE_INDEX + 1
 
 CATEGORY_FEATURE_START = 0

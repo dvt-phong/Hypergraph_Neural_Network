@@ -220,8 +220,10 @@ def build_split_features(data_path):
     return behavior_features, user_context, course_context
 
 
-# Run step 3: raw daily counts, standardized total / objects / action counts (MST-GCN),
-# standardized age, one-hot context, save X per split.
+# Run step 3 and save X per split. Scaled positions in the final 89-column X are:
+#   X[:, 0:59]  = 35 daily counts, total_events, distinct_objects, 22 action counts: log1p + z-score
+#   X[:, 70]    = age: z-score
+# X[:, 59:70] (except 70) and X[:, 71:89] stay one-hot.
 # Input:  output_dir with the split CSVs.
 # Output: dict split -> path of X.npy (also writes feature_names.csv).
 def build_features(output_dir=config.PROCESSED):
@@ -240,17 +242,18 @@ def build_features(output_dir=config.PROCESSED):
             "course": course,
         }
 
-    # Behavior scaled as in MST-GCN (xuetangx_graph_builder.py, enrollment features): the 35
-    # daily counts stay raw; total events, distinct objects and the action counts are
-    # standardized (StandardScaler). μ and σ come from train only; MST-GCN fits them on train + test.
-    scaled_start = config.SCALED_BEHAVIOR_START
-    train_counts = feature_data["train"]["behavior"][:, scaled_start:].astype(np.float64)
-    count_mean = np.mean(train_counts, axis=0)                           # μ_train of c, per column
-    count_std = np.std(train_counts, axis=0)                             # σ_train of c, per column
-    count_std[count_std == 0] = 1.0
+    # SCALING REGION 1 -- final X[:, 0:59] (all behavior columns).
+    # Counts are non-negative and heavily skewed (most are 0), so as Kloft et al. (2014) they are
+    # log-transformed, then standardized per column with train-only statistics:
+    #   x = (log(1 + c) - μ_train) / σ_train
+    train_counts = np.log1p(feature_data["train"]["behavior"].astype(np.float64))   # log(1 + c)
+    count_mean = np.mean(train_counts, axis=0)                           # μ_train of log(1 + c), per column
+    count_std = np.std(train_counts, axis=0)                             # σ_train of log(1 + c), per column
+    count_std[count_std == 0] = 1.0                                     # constant column -> z = 0
 
-    # Age is standardized like CFIN (StandardScaler), but with train statistics only;
-    # μ and σ include the a = 0 rows, so "unknown" stays one value below every real age.
+    # SCALING REGION 2 -- final X[:, 70] (user-local column 11).
+    # Age uses z = (a - μ_train) / σ_train, like CFIN's StandardScaler but fitted on train
+    # only. The statistics include a = 0 rows, so every unknown age maps to the same value.
     train_age = feature_data["train"]["user"][:, config.AGE_FEATURE_INDEX].astype(np.float64)
     age_mean = float(np.mean(train_age))                                  # μ_train of a
     age_std = float(np.std(train_age))                                    # σ_train of a
@@ -261,14 +264,11 @@ def build_features(output_dir=config.PROCESSED):
     # Same train statistics for every split.
     for split_name in config.SPLITS:
         split_data = feature_data[split_name]
-        behavior = split_data["behavior"].astype(np.float64)
-        scaled_behavior = behavior.copy()                                 # days: x = c (raw count)
-        scaled_behavior[:, scaled_start:] = (
-            (behavior[:, scaled_start:] - count_mean) / count_std         # total, objects, actions: x = (c − μ_train) / σ_train
-        )
+        behavior = np.log1p(split_data["behavior"].astype(np.float64))   # log(1 + c)
+        scaled_behavior = (behavior - count_mean) / count_std             # final X[:, 0:59]: z-score
         user_features = split_data["user"].copy()
         user_features[:, config.AGE_FEATURE_INDEX] = (
-            (user_features[:, config.AGE_FEATURE_INDEX] - age_mean) / age_std   # x = (a − μ_train) / σ_train
+            (user_features[:, config.AGE_FEATURE_INDEX] - age_mean) / age_std   # final X[:, 70]: z-score
         )
 
         node_features = np.concatenate(

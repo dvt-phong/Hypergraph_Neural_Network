@@ -78,7 +78,7 @@ Mỗi kịch bản chỉ đổi một yếu tố so với mô hình chính M (ch
 | Dữ liệu | XuetangX (CFIN, Feng et al., 2019); node = enrollment; đặc trưng = 35 ngày đầu của khóa |
 | Chia | train chính thức → 80% train / 20% validation (xáo với seed 1); test chính thức giữ nguyên (67,699) |
 | Tỉ lệ dropout | train 0.758, validation 0.760, test 0.758 (dropout là lớp đa số; AUPRC ngẫu nhiên ≈ 0.758) |
-| Đặc trưng (90 cột) | hành vi: số sự kiện mỗi ngày (35) và mỗi action (23), `x = (log(1 + c) − μ_train)/σ_train`; người học: one-hot giới tính (4) và học vấn (9); khóa học: one-hot lĩnh vực (19). Mỗi one-hot có thêm cột "missing" và "other", nên không phải điền giá trị. Không dùng tuổi (71.5% thiếu năm sinh) |
+| Đặc trưng (89 cột) | hành vi (cột 0–58): 35 số đếm theo ngày, tổng sự kiện, số object và 22 action, `x = (log(1 + c) − μ_train)/σ_train`; người học: gender/education one-hot và age dùng z-score ở cột 70; khóa học: category one-hot. Mọi μ, σ chỉ tính trên train; one-hot có mức `missing`, không có `other` |
 | Graph | H0 chỉ gồm enrollment train; target val/test tham gia các hyperedge của nó và chỉ đọc từ node train |
 | Train | full-batch, BCE, Adam, tối đa 1000 epoch, early stopping theo val AUC (mỗi 5 epoch, patience 40); trọng số tốt nhất giữ trong RAM |
 | Đánh giá | val và test một lần với trọng số tốt nhất, ngưỡng 0.5 |
