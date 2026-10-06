@@ -44,7 +44,7 @@ bản có HSL và các baseline rời nằm ở tag `full-hsl`.
 .\.venv\Scripts\python.exe src/10_summary.py
 ```
 
-Chạy một phần: `--scenario M A4 B1`. Chạy thử nhanh: `--scenario all --seeds 1 --epochs 10 --eval-limit 2000`.
+Chạy một phần: `--scenario M A4 H`. Chạy thử nhanh: `--scenario all --seeds 1 --epochs 10 --eval-limit 2000`.
 Trên server: `bash scripts/run_tmux.sh --scenario all --seeds 1 11 111 1111 11111`.
 
 Siêu tham số nằm trong `TRAIN`, kịch bản nằm trong `SCENARIOS` của `src/0_config.py`. Dòng lệnh
@@ -63,12 +63,12 @@ Mỗi kịch bản chỉ đổi một yếu tố so với mô hình chính M (ch
 | A2 | ✓ | **✗** | ✓ | ✓ | full | 2 | ✓ | ✓ |
 | A3 | ✓ | ✓ | **✗** | ✓ | full | 2 | ✓ | ✓ |
 | A4 | ✓ | ✓ | ✓ | **✗** | full | 2 | ✓ | ✓ |
+| W1 | ✓ | ✓ | ✓ | ✓ | full | 2 | ✓ | **✗** (W = I cố định) |
 | F1 | ✓ | ✓ | ✓ | ✓ | **feature** (59) | 2 | ✓ | ✓ |
 | F2 | ✓ | ✓ | ✓ | ✓ | **feature+user** (71) | 2 | ✓ | ✓ |
 | F3 | ✓ | ✓ | ✓ | ✓ | **feature+course** (77) | 2 | ✓ | ✓ |
 | L1 | ✓ | ✓ | ✓ | ✓ | full | **1** | ✓ | ✓ |
-| B1 | ✓ | ✓ | ✓ | ✓ | full | 2 | **✗** | ✓ |
-| W1 | ✓ | ✓ | ✓ | ✓ | full | 2 | ✓ | **✗** (W = I cố định) |
+| H | ✓ | ✓ | ✓ | ✓ | full | 2 | **✗** | ✓ |
 | X1 (tùy chọn) | ✗ | ✗ | ✗ | ✓ | full | 2 | ✓ | ✓ |
 
 ## Giao thức

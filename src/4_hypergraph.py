@@ -1,10 +1,7 @@
-# 4. Build the train hypergraph H0 once (python src/4_hypergraph.py)
-# Tham khảo từ project/bài báo:
-# - HGNN, AAAI 2019 (Feng et al.): https://doi.org/10.1609/aaai.v33i01.33013558
-#   Code: https://github.com/iMoonLab/HGNN
-# - SIG-Net, ACM SAC 2024 / MST-GCN, Scientific Reports 2026: enrollments of the
-#   same learner are linked whatever the course start (User "any")
-#   Code: https://github.com/Noverse0/SIG-Net, https://github.com/wudongze9/MST-GCN
+# 4. Build the train hypergraph H0
+# - HGNN https://github.com/iMoonLab/HGNN
+# - MST-GCN https://github.com/wudongze9/MST-GCN
+# - SIG-Net https://github.com/Noverse0/SIG-Net
 
 import argparse
 import time
@@ -29,10 +26,9 @@ def log(message):
     print(f"[{time.strftime('%H:%M:%S')}][hypergraph] {message}", flush=True)
 
 
-# Read a split CSV (one row per event) in one pass.
-# Input:  path of train.csv, validation.csv or test.csv.
-# Output: nodes   list, nodes[node_id] = first row of that node (user, course, label, ...)
-#         objects dict node_id -> set of object keys "course|family|object_id" the node used
+# Read a train / validation / test CSV
+# nodes[node_id] = first row of that node,
+# objects[node_id] = set of object keys "course|family|object_id" the node used.
 def read_split(path):
     nodes = {}
     objects = defaultdict(set)
@@ -40,7 +36,7 @@ def read_split(path):
         node_id = int(row["node_id"])
         if node_id not in nodes:
             nodes[node_id] = row
-        family = config.OBJECT_ACTIONS.get(row["action"])    # video / assignment / forum; web pages have none
+        family = config.OBJECT_ACTIONS.get(row["action"])    # video / assignment / forum
         object_id = row["object_id"].strip()
         if family and object_id.lower() not in config.MISSING_VALUES:
             objects[node_id].add(f"{row['course_id']}|{family}|{object_id}")
@@ -49,9 +45,8 @@ def read_split(path):
     return [nodes[node_id] for node_id in range(len(nodes))], objects
 
 
-# Course hyperedges: e_C(c) = {v : course(v) = c}, one per course.
-# Input:  train node rows.
-# Output: list of (COURSE, course_id, member node ids).
+# Course hyperedges, one per course, as (COURSE, course_id, members):
+# e_C(c) = {v : course(v) = c}
 def course_hyperedges(nodes):
     members = defaultdict(list)
     for node_id, node in enumerate(nodes):
@@ -59,9 +54,8 @@ def course_hyperedges(nodes):
     return [(COURSE, course_id, members[course_id]) for course_id in sorted(members)]
 
 
-# Object hyperedges: e_O(o) = {v : v used object o in days 0–34}, one per object.
-# Input:  dict node_id -> object keys (from read_split).
-# Output: list of (OBJECT, "course|family|object_id", member node ids).
+# Object hyperedges, one per object, as (OBJECT, "course|family|object_id", members):
+# e_O(o) = {v : v used object o in days 0–34}
 def object_hyperedges(objects):
     members = defaultdict(list)
     for node_id in sorted(objects):
@@ -70,10 +64,9 @@ def object_hyperedges(objects):
     return [(OBJECT, key, members[key]) for key in sorted(members)]
 
 
-# User hyperedges: e_U(l) = {v : user(v) = l}, one per learner, with all
-# of the learner's train enrollments whatever their course start.
-# Input:  train node rows.
-# Output: list of (USER, "user|<user_id>", member node ids).
+# User hyperedges, one per learner, as (USER, "user|<user_id>", members), with all of the
+# learner's train enrollments whatever their course start:
+# e_U(l) = {v : user(v) = l}
 def user_hyperedges(nodes):
     members = defaultdict(list)
     for node_id, node in enumerate(nodes):
@@ -81,9 +74,7 @@ def user_hyperedges(nodes):
     return [(USER, f"user|{user_id}", members[user_id]) for user_id in sorted(members)]
 
 
-# Run step 4: build H0 and save it.
-# Input:  output_dir with train.csv.
-# Output: none (writes output_dir/hypergraph.npz):
+# Run step 4: build the train hypergraph H0 -> hypergraph.npz:
 #   node_ids, edge_ids  [M]  one entry per membership (v, e), sorted by e, so the members
 #                            of e are node_ids[start[e]:start[e + 1]]
 #   edge_family [E]          COURSE / OBJECT / USER
@@ -100,6 +91,7 @@ def build_hypergraph(output_dir=config.PROCESSED):
     # Keep |e| ≥ 2: a one-member hyperedge carries nothing beyond the node's self-loop.
     hyperedges = [edge for edge in hyperedges if len(edge[2]) >= 2]
 
+    # Sparse incidence matrix H0 as a membership list: h(v,e) = 1 for every (node_ids[k], edge_ids[k]).
     node_ids = np.concatenate([np.asarray(members, dtype=np.int64) for _, _, members in hyperedges])
     edge_ids = np.repeat(np.arange(len(hyperedges), dtype=np.int64),
                          [len(members) for _, _, members in hyperedges])

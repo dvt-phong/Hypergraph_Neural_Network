@@ -28,10 +28,8 @@ SELF_LOOP = hypergraph_module.SELF_LOOP
 # Loading (all families, all columns)
 # ---------------------------------------------------------------------------
 
-# Train split.
-# Input:  output_dir with train/X.npy and hypergraph.npz.
-# Output: dict features [N, 89], labels [N],
-#         graph {num_nodes N, node_ids, edge_ids, edge_family}: H0 without self-loops.
+# Load the train split: features [N, 89], labels [N] and graph = H0 without self-loops
+# (num_nodes, node_ids, edge_ids, edge_family).
 def load_train_graph(output_dir=config.PROCESSED):
     output_dir = Path(output_dir)
     with np.load(output_dir / HYPERGRAPH_FILE) as bundle:
@@ -44,7 +42,8 @@ def load_train_graph(output_dir=config.PROCESSED):
     return {"features": features, "labels": labels, "graph": graph}
 
 
-# Validation/test targets and the hyperedges each target t joins:
+# Load the validation or test targets and the hyperedges each target t joins
+# (limit > 0: only the first `limit` targets, for quick checks):
 #   Course  the H0 hyperedge of its course (every course has train enrollments)
 #   Object  the H0 hyperedge of every object t used in days 0–34, when that object is in
 #           H0 (≥ 2 train members). Objects with a single train member are left out, as
@@ -54,12 +53,9 @@ def load_train_graph(output_dir=config.PROCESSED):
 #           exactly 1              -> a new hyperedge {t, u}; u is stored in single_user
 #           none                   -> no User hyperedge
 #   Self-loop {t}: handled in 6_hgnn.py when the scenario keeps self-loops.
-# Input:  output_dir, split name ("validation" or "test"), limit (0 = all targets,
-#         else the first `limit` targets; only for quick checks).
-# Output: dict features [T, 89], labels [T],
-#         h0_ptr [T + 1], h0_edges: the H0 hyperedges of target t are
-#                                   h0_edges[h0_ptr[t]:h0_ptr[t + 1]]
-#         single_user [T]: train node u of the hyperedge {t, u}, or -1
+# Returned arrays: features [T, 89], labels [T],
+#   h0_ptr [T + 1], h0_edges: the H0 hyperedges of target t are h0_edges[h0_ptr[t]:h0_ptr[t + 1]]
+#   single_user [T]: train node u of the hyperedge {t, u}, or -1
 def load_targets(output_dir=config.PROCESSED, *, split_name, limit=0):
     output_dir = Path(output_dir)
     with np.load(output_dir / HYPERGRAPH_FILE) as bundle:
@@ -103,9 +99,8 @@ def load_targets(output_dir=config.PROCESSED, *, split_name, limit=0):
 # One scenario: keep some hyperedge families and some X columns
 # ---------------------------------------------------------------------------
 
-# Add one self-loop hyperedge e_S(v) = {v} per node, after the existing hyperedges.
-# Input:  graph dict (num_nodes, node_ids, edge_ids, edge_family).
-# Output: new graph dict with E + N hyperedges.
+# Add one self-loop hyperedge per node after the existing E hyperedges (E + N in total):
+#   e_S(v) = {v},  id(e_S(v)) = E + v
 def add_self_loops(graph):
     nodes = np.arange(graph["num_nodes"], dtype=np.int64)
     first_self_loop = len(graph["edge_family"])
@@ -118,9 +113,7 @@ def add_self_loops(graph):
     }
 
 
-# Cut the loaded data down to one scenario (config.SCENARIOS).
-# Input:  data {"train", "validation", "test"} from the loaders above, scenario dict.
-# Output: new data dict of the same shape:
+# Cut the loaded data down to one scenario (config.SCENARIOS); the result has the same shape:
 #   train.graph  only the kept H0 hyperedges, renumbered 0..E'-1, plus one self-loop per
 #                node when "self_loop" is kept; graph["self_loop"] says which
 #   features     only the scenario's X columns (train and targets)

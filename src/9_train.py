@@ -4,7 +4,7 @@
 #    threshold 0.5, and append one row to outputs/results.csv. No other file is saved.
 #
 #   python src/9_train.py --scenario all --seeds 1 11 111 1111 11111     all 11 scenarios × 5 seeds
-#   python src/9_train.py --scenario M A4 B1                             some scenarios
+#   python src/9_train.py --scenario M A4 H                              some scenarios
 #   python src/9_train.py --scenario all --seeds 1 --epochs 10 --eval-limit 2000   quick check
 # Tham khảo từ project/bài báo:
 # - HGNN, AAAI 2019 (Feng et al.): hidden size, dropout, optimizer settings
@@ -52,21 +52,20 @@ def set_seed(seed):
     torch.cuda.manual_seed_all(seed)
 
 
-# Input:  "auto", "cpu" or "cuda".
-# Output: torch.device ("auto" = cuda when available).
+# Torch device from "auto", "cpu" or "cuda" ("auto" = cuda when available).
 def resolve_device(name):
     if name == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(name)
 
 
-# Metrics of the dropout class (label 1) at threshold 0.5.
-# Input:  labels [n] (0/1), probabilities [n].
-# Output: dict auc, auprc, accuracy, precision, recall, f1.
+# Metrics of the dropout class (label 1) at threshold 0.5: auc, auprc, accuracy, precision,
+# recall, f1.
 def metrics(labels, probabilities):
     predicted = probabilities >= config.THRESHOLD                       # ŷ = 1[p ≥ 0.5]
-    precision, recall, f1, _ = precision_recall_fscore_support(         # P = TP/(TP+FP), R = TP/(TP+FN),
-        labels, predicted, labels=[1], zero_division=0)                  # F1 = 2PR/(P+R)
+    # P = TP/(TP + FP),  R = TP/(TP + FN),  F1 = 2·P·R/(P + R)
+    precision, recall, f1, _ = precision_recall_fscore_support(
+        labels, predicted, labels=[1], zero_division=0)
     return {
         "auc": float(roc_auc_score(labels, probabilities)),             # AUC = P(p_dropout > p_non-dropout)
         "auprc": float(average_precision_score(labels, probabilities)), # AUPRC = Σ_n (R_n − R_{n−1})·P_n
@@ -78,9 +77,7 @@ def metrics(labels, probabilities):
 
 
 # Dropout probabilities of validation/test targets (steps A and B of 6_hgnn.py).
-# Input:  model, train features x and graph (tensors), targets from apply_scenario,
-#         device, batch size.
-# Output: probabilities [T] (NumPy).
+# Shapes: x [N, D] train features, T targets from apply_scenario -> p [T] (NumPy).
 @torch.no_grad()
 def predict(model, x, graph, targets, device, batch_size):
     was_training = model.training
@@ -115,10 +112,7 @@ def append_result(row):
 
 
 # Train one scenario with one seed, early stopping on validation AUC, then score
-# validation and test with the best weights.
-# Input:  scenario code (e.g. "A4"), seed, settings (config.TRAIN with overrides),
-#         data of the scenario (from apply_scenario), device.
-# Output: none (one row appended to results.csv).
+# validation and test with the best weights and append one row to results.csv.
 def train_one_seed(code, seed, settings, data, device):
     started_at = time.perf_counter()
     scenario = config.SCENARIOS[code]
@@ -132,7 +126,8 @@ def train_one_seed(code, seed, settings, data, device):
                          hgnn_layers=scenario["hgnn_layers"], use_mlp=scenario["use_mlp"],
                          learn_w=scenario["learn_w"]).to(device)
     family_logits = model.hgnn.family_logits
-    groups = [{"params": [p for p in model.parameters() if p is not family_logits]}]   # Θ, A, u: lr, L2
+    # Adam with L2 (weight_decay λ): g = ∇L + λ·θ, then θ ← θ − lr·m̂/(√v̂ + ε)
+    groups =[{"params": [p for p in model.parameters() if p is not family_logits]}]   # Θ, A, u: lr, L2
     if scenario["learn_w"]:                                                          # W: own lr, no L2
         groups.append({"params": [family_logits], "lr": settings["family_weight_lr"], "weight_decay": 0.0})
     optimizer = torch.optim.Adam(groups, lr=settings["learning_rate"], weight_decay=settings["weight_decay"])
@@ -196,7 +191,7 @@ def train_one_seed(code, seed, settings, data, device):
     })
 
 
-# --scenario all -> config.SCENARIOS_ALL; otherwise the given codes, checked.
+# Scenario codes to run: --scenario all -> config.SCENARIOS_ALL; otherwise the given codes, checked.
 def scenario_codes(values):
     codes = list(config.SCENARIOS_ALL) if values == ["all"] else values
     unknown = [code for code in codes if code not in config.SCENARIOS]

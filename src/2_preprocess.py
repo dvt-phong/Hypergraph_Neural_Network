@@ -1,13 +1,7 @@
-# 2. Split XuetangX into train / validation / test event files
-# Tham khảo từ project/bài báo:
-# - SIG-Net, ACM SAC 2024: https://doi.org/10.1145/3605098.3636002
-#   Code: https://github.com/Noverse0/SIG-Net
-# - MST-GCN, Scientific Reports 2026:
-#   https://doi.org/10.1038/s41598-026-40502-w
-#   Code: https://github.com/wudongze9/MST-GCN
-# - CA-TFHN, ICONIP 2023: https://doi.org/10.1007/978-981-99-8184-7_31
-#   Code: https://github.com/codeds27/CA-TFHN
-
+# 2. Split XuetangX into train / validation / test files
+# - MST-GCN https://github.com/wudongze9/MST-GCN
+# - CA-TFHN https://github.com/codeds27/CA-TFHN
+# - CFIN https://github.com/wzfhaha/dropout_prediction
 
 import argparse
 import codecs
@@ -21,17 +15,13 @@ from pathlib import Path
 config_constant = import_module("0_config")
 
 
-# Read a UTF-8 CSV file row by row.
-# Input:  path of the CSV file.
-# Output: yields one dict per row.
+# Read a UTF-8 CSV file row by row, one dict per row.
 def read_csv(path):
     with open(path, newline="", encoding="utf-8") as source:
         yield from csv.DictReader(source)
 
 
-# Write a UTF-8 CSV file.
-# Input:  path, column names, data rows.
-# Output: none (file written).
+# Write a UTF-8 CSV file from column names and rows.
 def write_csv(path, columns, rows):
     with open(path, "w", newline="", encoding="utf-8") as output:
         writer = csv.writer(output)
@@ -39,9 +29,7 @@ def write_csv(path, columns, rows):
         writer.writerows(rows)
 
 
-# Read one row per node from a split CSV (which has one row per event).
-# Input:  path of train.csv, validation.csv or test.csv.
-# Output: list of dicts, list[node_id] = first row of that node.
+# Read one row per node from a split CSV (one row per event): list[node_id] = first row of that node.
 def load_nodes(path):
     nodes = {}
     for row in read_csv(path):
@@ -51,9 +39,7 @@ def load_nodes(path):
     return [nodes[node_id] for node_id in sorted(nodes)]
 
 
-# Read selected CSV files inside prediction_data.tar.gz in one pass.
-# Input:  path of the archive, file names to read.
-# Output: yields (file name, row dict).
+# Read selected CSV files inside prediction_data.tar.gz
 def read_prediction_data(prediction_data_path, selected_names):
     with tarfile.open(prediction_data_path, "r|gz") as prediction_data:
         for member in prediction_data:
@@ -68,9 +54,7 @@ def read_prediction_data(prediction_data_path, selected_names):
                     yield name, row
 
 
-# Randomly split the official train enrollments into train and validation.
-# Input:  enrollment ids.
-# Output: dict enrollment id -> "train" or "validation".
+# Split enrollments into enrollment id -> "train" (80%) or "validation" (20%).
 def split_train_enrollments(enrollment_ids):
     shuffled_ids = list(enrollment_ids)
     random.Random(config_constant.SPLIT_SEED).shuffle(shuffled_ids)            # random order, seed 1
@@ -85,10 +69,7 @@ def split_train_enrollments(enrollment_ids):
     return split_by_enrollment
 
 
-# Write the events of days 0–34 of every labeled enrollment to its split CSV.
-# Input:  archive path, output directory, user / course / label tables, split of
-#         every enrollment.
-# Output: none (train.csv, validation.csv, test.csv written).
+# Write the events and labeled of enrollment to train.csv, validation.csv or test.csv.
 def stream_events(
     prediction_data_path,
     output_dir,
@@ -163,8 +144,7 @@ def stream_events(
                     course_day,
                 ))
 
-        # Keep enrollments with no event in days 0–34 as one row with an empty
-        # action, so they get zero behavior counts but stay in the data.
+        # Keep enrollments with no event -> 0 in event count
         empty_behavior_count = 0
         for enrollment_id in sorted(split_by_enrollment):
             split_name = split_by_enrollment[enrollment_id]
@@ -208,9 +188,7 @@ def stream_events(
     )
 
 
-# Run step 2 (skipped when the three split CSVs already exist).
-# Input:  raw_dir with the downloaded files, output_dir.
-# Output: none (split CSVs written to output_dir).
+# Run step 2: raw files -> three split CSVs (skipped when they already exist).
 def preprocess(raw_dir=config_constant.RAW, output_dir=config_constant.PROCESSED):
     raw_dir = Path(raw_dir)
     output_dir = Path(output_dir)
