@@ -10,8 +10,6 @@ from torch import nn
 from torch.nn import functional as F
 
 config = import_module("0_config")
-USER = config.EDGE_FAMILIES.index("user")
-SELF_LOOP = config.EDGE_FAMILIES.index("self_loop")
 
 
 INITIAL_FAMILY_LOGIT = math.log(math.e - 1)
@@ -32,7 +30,6 @@ def prepare_graph(graph, device):
                                        (num_edges, num_nodes), check_invariants=True).coalesce(),
         "edge_size": torch.bincount(edge_ids, minlength=num_edges).float(),   # δ(e) = |e|
         "edge_family": edge_family,
-        "self_loop": bool(graph["self_loop"]),
     }
 
 
@@ -77,65 +74,3 @@ class HGNNEncoder(nn.Module):
         z = F.dropout(z, self.dropout, self.training)                    # only while training
         h = self.layer2(z)                                               # Z1·Θ2 + b2
         return F.relu(self.propagate(h, graph, w))                       # Z_g = ReLU(G·(Z1·Θ2 + b2))
-
-    def cache_train_states(self, x, graph):
-        family_w = self.family_weights()
-        w = family_w[graph["edge_family"]]                                # w_e
-        node_degree = torch.sparse.mm(graph["H"], w.unsqueeze(1))        # d(u) = Σ_e h(u,e)·w_e, [N, 1]
-        node_scale = node_degree.clamp_min(1e-6).rsqrt()                 # d(u)^-1/2
-        edge_scale = (w / graph["edge_size"]).unsqueeze(1)               # w_e/δ(e), [E] -> [E, 1]
-
-        send1 = self.layer1(x) * node_scale                              # d(u)^-1/2·(x_u·Θ1 + b1)
-        S1 = torch.sparse.mm(graph["H_T"], send1)                        # S1_e = Σ_{u∈e} d(u)^-1/2·(x_u·Θ1 + b1)
-        cache = {
-            "family_w": family_w,
-            "edge_w": w,
-            "edge_size": graph["edge_size"],
-            "self_loop": graph["self_loop"],
-            "send1": send1,
-            "S1": S1,
-        }
-        if self.layer2 is not None:
-            node_sum = torch.sparse.mm(graph["H"], S1 * edge_scale)      # Σ_e h(v,e)·(w_e/δ(e))·S1_e
-            z1 = F.relu(node_sum * node_scale)                           # Z1 = ReLU(G·(X·Θ1 + b1))
-            cache["send2"] = self.layer2(z1) * node_scale                # d(u)^-1/2·(Z1_u·Θ2 + b2)
-            cache["S2"] = torch.sparse.mm(graph["H_T"], cache["send2"])  # S2_e = Σ_{u∈e} d(u)^-1/2·(Z1_u·Θ2 + b2)
-        return cache
-
-    def forward_targets(self, x, rows, edges, single_user, cache):
-        w_user = cache["family_w"][USER]
-        if cache["self_loop"]:
-            w_self = cache["family_w"][SELF_LOOP]
-        else:
-            w_self = 0.0                                                  # no self-loop: no {t} term
-        w = cache["edge_w"][edges]                                        # w_e, e ∈ E(t) ∩ H0
-        edge_scale = (w / (cache["edge_size"][edges] + 1)).unsqueeze(1)   # w_e/(δ(e) + 1), [K] -> [K, 1]
-        has_single = single_user >= 0
-        single_nodes = single_user[has_single]
-
-        # d(t) = Σ_{e∈E(t)∩H0} w_e + w_user·[t has {t,u}] + w_self
-        degree = torch.zeros(len(x), device=x.device)
-        degree.index_add_(0, rows, w)                                     # Σ_{e∈H0} w_e
-        degree = degree + w_user * has_single + w_self                    # d(t) = Σ_{e∈E(t)} w_e
-        node_scale = degree.clamp_min(1e-6).rsqrt().unsqueeze(1)          # d(t)^-1/2, [B] -> [B, 1]
-
-        # Each layer, with own = x_t·Θ + b and S, send of the train nodes from step A:
-        #   z_t = ReLU( d(t)^-1/2 · [ Σ_{e∈E(t)∩H0} (w_e/(δ(e)+1))·(S_e + o_t)
-        #                            + (w_user/2)·(send_u + o_t) + w_self·o_t ] ),  o_t = d(t)^-1/2·own
-        # Layer 1
-        own = self.layer1(x) * node_scale                                 # d(t)^-1/2·(x_t·Θ1 + b1)
-        total = torch.zeros_like(own)
-        total.index_add_(0, rows, edge_scale * (cache["S1"][edges] + own[rows]))   # Σ_{e∈H0} (w_e/(δ(e)+1))·(S1_e + own)
-        total[has_single] += (w_user / 2) * (cache["send1"][single_nodes] + own[has_single])   # {t,u}: (w_user/2)·(send_u + own)
-        total = total + w_self * own                                      # {t}: (w_self/1)·own  (0 without self-loops)
-        z = F.relu(total * node_scale)                                    # z1_t
-        if self.layer2 is None:
-            return z                                                      # 1 layer: z_g = z1_t
-
-        # Layer 2: the same with Θ2, b2, S2, send2
-        own = self.layer2(z) * node_scale                                 # d(t)^-1/2·(z1_t·Θ2 + b2)
-        total = torch.zeros_like(own)
-        total.index_add_(0, rows, edge_scale * (cache["S2"][edges] + own[rows]))   # Σ_{e∈H0} (w_e/(δ(e)+1))·(S2_e + own)
-        total[has_single] += (w_user / 2) * (cache["send2"][single_nodes] + own[has_single])   # {t,u}: (w_user/2)·(send_u + own)
-        total = total + w_self * own                                      # {t}: (w_self/1)·own  (0 without self-loops)
-        return F.relu(total * node_scale)                                 # z_g of t

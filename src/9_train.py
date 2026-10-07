@@ -69,31 +69,17 @@ def metrics(labels, probabilities):
     }
 
 
-# Dropout probabilities of validation/test targets (steps A and B of 6_hgnn.py).
-# Shapes: x [N, D] train features, T targets from apply_scenario -> p [T] (NumPy).
-def predict(model, x, graph, targets, device, batch_size):
+# Dropout probabilities of the nodes in index: one forward over the whole H in eval mode,
+# then read the chosen nodes (HGNN+ / DHG infer).
+# Shapes: x [N, D], index [T] -> p [T] (NumPy).
+def predict(model, x, graph, index):
     was_training = model.training
     model.eval()                                                         # no dropout
-    ptr = targets["h0_ptr"]
-    target_count = len(targets["labels"])
-    probabilities = []
     with torch.no_grad():                                                # no gradients while scoring
-        cache = model.cache_train_states(x, graph)                       # step A, once
-        for start in range(0, target_count, batch_size):
-            stop = min(start + batch_size, target_count)
-            # Entries ptr[start] .. ptr[stop]-1 belong to targets start .. stop-1;
-            # rows = target of each entry, counted from 0 inside the batch.
-            rows = targets["h0_rows"][ptr[start]:ptr[stop]] - start
-            edges = targets["h0_edges"][ptr[start]:ptr[stop]]
-            rows = torch.as_tensor(rows, device=device)
-            edges = torch.as_tensor(edges, device=device)
-            single_user = torch.as_tensor(targets["single_user"][start:stop], device=device)
-            features = torch.as_tensor(targets["features"][start:stop], device=device)
-            logits = model.forward_targets(features, rows, edges, single_user, cache)   # step B
-            batch_probabilities = torch.sigmoid(logits)                  # p = σ(logit)
-            probabilities.append(batch_probabilities.cpu().numpy())
+        logits = model(x, graph)                                         # every node of H
+        probabilities = torch.sigmoid(logits[index])                     # p = σ(logit) of the chosen nodes
     model.train(was_training)
-    return np.concatenate(probabilities)
+    return probabilities.cpu().numpy()
 
 
 # Append one row to outputs/results.csv (header written when the file is new).
@@ -122,10 +108,15 @@ def train_one_seed(code, seed, settings, data, device):
     started_at = time.perf_counter()
     scenario = config.SCENARIOS[code]
     set_seed(seed)
-    x = torch.as_tensor(data["train"]["features"], device=device)
-    labels = torch.as_tensor(data["train"]["labels"], device=device)
-    graph = prepare_graph(data["train"]["graph"], device)
-    validation_labels = data["validation"]["labels"]
+    x = torch.as_tensor(data["features"], device=device)                     # X of every node of H
+    graph = prepare_graph(data["graph"], device)
+    index = {}
+    split_labels = {}
+    for split in ("train", "validation", "test"):
+        index[split] = torch.as_tensor(data[f"{split}_index"], device=device)
+        split_labels[split] = data["labels"][data[f"{split}_index"]]       # NumPy, read by metrics
+    # Only the train labels go to the device: the loss sees no validation or test label.
+    train_labels = torch.as_tensor(split_labels["train"], device=device)
 
     model = DropoutModel(x.shape[1], settings["hidden_dim"], settings["dropout"],
                          hgnn_layers=scenario["hgnn_layers"], use_mlp=scenario["use_mlp"],
@@ -149,24 +140,25 @@ def train_one_seed(code, seed, settings, data, device):
     stale = 0          # validations in a row without a better AUC
     epoch = 0
     for epoch in range(1, settings["epochs"] + 1):
-        # One full-batch training step on H0.
+        # One full-batch training step: forward over the whole H, loss on the train nodes only.
         model.train()
         optimizer.zero_grad()
-        logits = model(x, graph)
-        loss = F.binary_cross_entropy_with_logits(logits, labels)       # L = −(1/N)·Σ [y·log p + (1−y)·log(1−p)]
+        logits = model(x, graph)                                         # every node of H
+        train_logits = logits[index["train"]]
+        # L = −(1/|V_train|)·Σ_{v∈V_train} [y·log p + (1−y)·log(1−p)]
+        loss = F.binary_cross_entropy_with_logits(train_logits, train_labels)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)          # ‖g‖ ≤ 5
         optimizer.step()
 
         if epoch % 50 == 0:
-            train_auc = roc_auc_score(data["train"]["labels"], logits.detach().cpu().numpy())
+            train_auc = roc_auc_score(split_labels["train"], train_logits.detach().cpu().numpy())
             log("train", f"{code} seed {seed} epoch {epoch}: loss={loss.item():.4f}, train_auc={train_auc:.4f}")
 
         # Early stopping: validation AUC every eval_every epochs, keep the best weights in memory.
         if epoch % settings["eval_every"] == 0:
-            validation_probabilities = predict(model, x, graph, data["validation"], device,
-                                               settings["eval_batch_size"])
-            validation_auc = roc_auc_score(validation_labels, validation_probabilities)
+            validation_probabilities = predict(model, x, graph, index["validation"])
+            validation_auc = roc_auc_score(split_labels["validation"], validation_probabilities)
             if validation_auc > best["auc"]:                             # best = argmax_epoch AUC_val
                 best = {"auc": validation_auc, "epoch": epoch,
                         "state": copy.deepcopy(model.state_dict())}      # kept in memory, no file
@@ -185,8 +177,8 @@ def train_one_seed(code, seed, settings, data, device):
         model.load_state_dict(best["state"])
     scores = {}
     for split in ("validation", "test"):
-        probabilities = predict(model, x, graph, data[split], device, settings["eval_batch_size"])
-        scores[split] = metrics(data[split]["labels"], probabilities)
+        probabilities = predict(model, x, graph, index[split])
+        scores[split] = metrics(split_labels[split], probabilities)
         parts = []
         for name in scores[split]:
             parts.append(f"{name}={scores[split][name]:.4f}")
@@ -242,8 +234,6 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=config.TRAIN["epochs"])
     parser.add_argument("--eval-every", type=int, default=config.TRAIN["eval_every"])
     parser.add_argument("--patience", type=int, default=config.TRAIN["patience"])
-    parser.add_argument("--eval-limit", type=int, default=0,
-                        help="score only the first N validation/test targets (quick check; 0 = all)")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--output-dir", default=config.PROCESSED)
     arguments = parser.parse_args()
@@ -257,11 +247,12 @@ if __name__ == "__main__":
     log("setup", f"device={device}, scenarios={codes}, seeds={arguments.seeds}, settings={settings}")
 
     # Read the data once (all families, all columns); every scenario takes its part of it.
-    loaded = {}
-    loaded["train"] = graph_data.load_train_graph(arguments.output_dir)
-    for split in ("validation", "test"):
-        loaded[split] = graph_data.load_targets(split, arguments.output_dir, arguments.eval_limit)
-        log("setup", f"{split}: {len(loaded[split]['labels']):,} targets")
+    loaded = graph_data.load_graph(arguments.output_dir)
+    split_counts = []
+    for split_id in range(len(config.SPLITS)):
+        count = int(np.sum(loaded["split"] == split_id))
+        split_counts.append(f"{config.SPLITS[split_id]}={count:,}")
+    log("setup", f"H over {loaded['graph']['num_nodes']:,} nodes: " + ", ".join(split_counts))
 
     # Scenario by scenario; every seed of a scenario before the next one.
     for code in codes:

@@ -97,6 +97,7 @@ python src/10_summary.py                                                # bảng
 - **M đã có 5 seed** trên server (0.8759 ± 0.0001, commit 11db9ec). Chỉ chạy 10 kịch bản còn lại:
   `--scenario A1 A2 A3 A4 W1 F1 F2 F3 L1 H` (khoảng 4.7 phút mỗi lần → khoảng 4 giờ cho 50 lần).
 - Mỗi lần chạy xong ghi ngay 1 dòng vào `outputs/results.csv`. Nếu bị dừng giữa chừng, các dòng đã ghi vẫn còn.
-- Chạy thử nhanh: `--scenario all --seeds 1 --epochs 10 --eval-limit 2000`.
+- Chạy thử nhanh: `--scenario all --seeds 1 --epochs 10`.
+- Từ 2026-10-07 giao thức là transductive (docs/PLAN_TRANSDUCTIVE_v2.md): một hypergraph trên mọi enrollment train + val + test, loss chỉ trên nút train, chọn theo val AUC, test chấm một lần. Mọi số ở trên (kể cả M = 0.8759) thuộc giao thức cũ, phải chạy lại.
 - Bảng tổng hợp (`summary.csv`, `ket_qua.xlsx`) có mỗi kịch bản một dòng theo thứ tự ở mục 2, với các cột: mã, các cột ✓/✗, mean ± std của val/test, `best_epoch`, tỉ lệ w, và **Δ test AUC so với M**.
 - Các dòng `B1` cũ trong `results.csv` (nếu có) không còn mã trong `SCENARIOS`, nên được xếp cuối bảng tổng hợp; chúng thuộc X cũ, không dùng.

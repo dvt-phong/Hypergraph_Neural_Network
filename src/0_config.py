@@ -170,5 +170,4 @@ TRAIN = {
     "epochs": 1000,             # maximum number of epochs
     "eval_every": 5,            # validation AUC every N epochs
     "patience": 40,             # stop after N validations without a better AUC
-    "eval_batch_size": 4096,    # validation/test targets per batch
 }
