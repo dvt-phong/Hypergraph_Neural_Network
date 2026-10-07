@@ -3,7 +3,7 @@
 # training keeps going after the SSH connection is closed. Arguments go to 9_train.py.
 #
 #   bash scripts/run_tmux.sh --scenario all --seeds 1 11 111 1111 11111
-#   bash scripts/run_tmux.sh --scenario all --seeds 1 --epochs 10 --eval-limit 2000
+#   bash scripts/run_tmux.sh --scenario all --seeds 1 --epochs 10
 #   PYTHON=/path/to/python bash scripts/run_tmux.sh ...   (default: .venv, else python3)
 #
 # Then:

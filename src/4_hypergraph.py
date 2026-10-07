@@ -1,4 +1,4 @@
-# 4. Build the train hypergraph H0
+# 4. Build one hypergraph H over every enrollment of train, validation and test (transductive)
 # - HGNN https://github.com/iMoonLab/HGNN
 # - MST-GCN https://github.com/wudongze9/MST-GCN
 # - SIG-Net https://github.com/Noverse0/SIG-Net
@@ -81,7 +81,7 @@ def object_hyperedges(objects):
 
 
 # User hyperedges, one per learner, as (USER, "user|<user_id>", members), with all of the
-# learner's train enrollments whatever their course start:
+# learner's enrollments in every split whatever their course start:
 # e_U(l) = {v : user(v) = l}
 def user_hyperedges(nodes):
     members = {}
@@ -96,18 +96,28 @@ def user_hyperedges(nodes):
     return hyperedges
 
 
-# Run step 4: build the train hypergraph H0 -> hypergraph.npz:
+# Run step 4: build the hypergraph H over all splits -> hypergraph.npz:
 #   node_ids, edge_ids  [M]  one entry per membership (v, e), sorted by e, so the members
 #                            of e are node_ids[start[e]:start[e + 1]]
 #   edge_family [E]          COURSE / OBJECT / USER
-#   edge_keys   [E]          course_id, "course|family|object_id" or "user|<user_id>"
-#   train_labels [N]         dropout label of every train node (used for the loss only)
-#   train_users  [N]         user id of every train node (User hyperedges of targets)
+#   labels      [N]          dropout label of every node (9_train uses the train ones only)
+#   split       [N]          0 = train, 1 = validation, 2 = test (index of config.SPLITS)
+# Global node id = offset of the split + node id inside the split, in the order train, validation, test.
 def build_hypergraph(output_dir=config.PROCESSED):
     started_at = time.perf_counter()
     output_dir = Path(output_dir)
-    log("reading train.csv")
-    nodes, objects = read_split(output_dir / "train.csv")
+    nodes = []
+    objects = {}
+    split = []
+    for split_id in range(len(config.SPLITS)):
+        split_name = config.SPLITS[split_id]
+        log(f"reading {split_name}.csv")
+        split_nodes, split_objects = read_split(output_dir / f"{split_name}.csv")
+        offset = len(nodes)
+        for local_id in split_objects:
+            objects[offset + local_id] = split_objects[local_id]       # global id = offset + local id
+        nodes.extend(split_nodes)
+        split.extend([split_id] * len(split_nodes))
 
     all_hyperedges = course_hyperedges(nodes) + object_hyperedges(objects) + user_hyperedges(nodes)
     # Keep |e| ≥ 2: a one-member hyperedge carries nothing beyond the node's self-loop.
@@ -116,45 +126,44 @@ def build_hypergraph(output_dir=config.PROCESSED):
         if len(members) >= 2:
             hyperedges.append((family, key, members))
 
-    # Sparse incidence matrix H0 as a membership list: h(v,e) = 1 for every (node_ids[k], edge_ids[k]).
+    # Sparse incidence matrix H as a membership list: h(v,e) = 1 for every (node_ids[k], edge_ids[k]).
     node_ids = []
     edge_ids = []
     edge_family = []
-    edge_keys = []
     for edge_id in range(len(hyperedges)):
         family, key, members = hyperedges[edge_id]
         edge_family.append(family)
-        edge_keys.append(key)
         for node_id in members:
             node_ids.append(node_id)
             edge_ids.append(edge_id)
 
-    train_labels = []
-    train_users = []
+    labels = []
     for node in nodes:
-        train_labels.append(int(node["label"]))
-        train_users.append(int(node["user_id"]))
+        labels.append(int(node["label"]))
 
     np.savez_compressed(
         output_dir / HYPERGRAPH_FILE,
         node_ids=np.asarray(node_ids, dtype=np.int64),
         edge_ids=np.asarray(edge_ids, dtype=np.int64),
         edge_family=np.asarray(edge_family, dtype=np.int64),
-        edge_keys=np.asarray(edge_keys),
-        train_labels=np.asarray(train_labels, dtype=np.float32),
-        train_users=np.asarray(train_users, dtype=np.int64),
+        labels=np.asarray(labels, dtype=np.float32),
+        split=np.asarray(split, dtype=np.int64),
     )
 
-    # Number of hyperedges of each family, for the log.
+    # Number of nodes of each split and hyperedges of each family, for the log.
+    split_counts = {}
+    for split_id in range(len(config.SPLITS)):
+        split_counts[config.SPLITS[split_id]] = split.count(split_id)
     counts = {"course": 0, "object": 0, "user": 0}
     for family, key, members in hyperedges:
         counts[config.EDGE_FAMILIES[family]] += 1
-    log(f"saved {output_dir / HYPERGRAPH_FILE}: train nodes={len(nodes):,}, hyperedges={counts}, "
+    log(f"saved {output_dir / HYPERGRAPH_FILE}: nodes={len(nodes):,} {split_counts}, hyperedges={counts}, "
         f"memberships={len(node_ids):,}, elapsed={time.perf_counter() - started_at:.0f}s")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Build the train hypergraph H0 (Course, Object, User).")
+    parser = argparse.ArgumentParser(description="Build one hypergraph H (Course, Object, User) over "
+                                                 "train, validation and test.")
     parser.add_argument("--output-dir", type=Path, default=config.PROCESSED)
     arguments = parser.parse_args()
     build_hypergraph(arguments.output_dir)

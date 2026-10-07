@@ -32,23 +32,13 @@ class DropoutModel(nn.Module):
         z_self = self.mlp(x)
         return torch.cat([z_graph, z_self], dim=1)
 
-    # Training: logits of every train node on H0.
+    # Logits of every node (train + validation + test) on H.
     # Shapes: x [N, D] -> logits [N].
     def forward(self, x, graph):
         z_graph = self.hgnn(x, graph)
         z = self.join(z_graph, x)
-        logits = self.classifier(z)                                     # logit = z·u + b, [N, 1]
+        logits = self.classifier(z)                                     # logit = [z_g ‖ z_s]·u + b, [N, 1]
         return logits.squeeze(-1)                                       # [N]
-
-    # Evaluation, step A (see 6_hgnn.py): call once per evaluation, in eval mode.
-    def cache_train_states(self, x, graph):
-        return self.hgnn.cache_train_states(x, graph)
-
-    def forward_targets(self, x, rows, edges, single_user, cache):
-        z_graph = self.hgnn.forward_targets(x, rows, edges, single_user, cache)
-        z = self.join(z_graph, x)
-        logits = self.classifier(z)                                     # logit = [z_g ‖ z_s]·u + b, [B, 1]
-        return logits.squeeze(-1)                                       # [B]
 
     # Learned family weights for the results table
     def weight_summary(self, families):

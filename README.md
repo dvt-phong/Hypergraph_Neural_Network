@@ -20,9 +20,9 @@ Sơ đồ: [docs/assets/hypergraph-neural-network-v4.png](docs/assets/hypergraph
 | 1 | `src/1_download.py` | Tải 3 file raw |
 | 2 | `src/2_preprocess.py` | Chia train/validation/test, giữ sự kiện ngày 0–34, ghi 3 CSV |
 | 3 | `src/3_features.py` | Ma trận đặc trưng X (89 cột: hành vi 59 như MST-GCN = 35 ngày thô + tổng sự kiện, số object, 22 action chuẩn hóa; người học 12 gồm age theo CFIN; khóa học 18) của mỗi split, fit trên train |
-| 4 | `src/4_hypergraph.py` | Dựng hypergraph train H0 (Course, Object, User) → `hypergraph.npz`, chạy 1 lần |
-| 5 | `src/5_graph_data.py` | Đọc H0 cho train; tìm hyperedge của từng target val/test |
-| 6 | `src/6_hgnn.py` | Nhánh graph: lan truyền HGNN, 2 lớp, cách tính cho target mới |
+| 4 | `src/4_hypergraph.py` | Dựng một hypergraph H (Course, Object, User) trên mọi enrollment train + val + test → `hypergraph.npz`, chạy 1 lần |
+| 5 | `src/5_graph_data.py` | Đọc H, ghép X của 3 split, áp kịch bản, trả chỉ số train / val / test |
+| 6 | `src/6_hgnn.py` | Nhánh graph: lan truyền HGNN, 2 lớp |
 | 7 | `src/7_mlp.py` | Nhánh MLP |
 | 8 | `src/8_model.py` | Ghép 2 nhánh: `logit = [z_g ‖ z_s]·u + b` |
 | 9 | `src/9_train.py` | Chạy các kịch bản: train, early stopping theo val AUC, chấm val/test ở 0.5, ghi `outputs/results.csv` |
@@ -44,12 +44,11 @@ bản có HSL và các baseline rời nằm ở tag `full-hsl`.
 .\.venv\Scripts\python.exe src/10_summary.py
 ```
 
-Chạy một phần: `--scenario M A4 H`. Chạy thử nhanh: `--scenario all --seeds 1 --epochs 10 --eval-limit 2000`.
+Chạy một phần: `--scenario M A4 H`. Chạy thử nhanh: `--scenario all --seeds 1 --epochs 10`.
 Trên server: `bash scripts/run_tmux.sh --scenario all --seeds 1 11 111 1111 11111`.
 
 Siêu tham số nằm trong `TRAIN`, kịch bản nằm trong `SCENARIOS` của `src/0_config.py`. Dòng lệnh
-chỉ đổi được `--scenario`, `--seeds`, `--epochs`, `--eval-every`, `--patience`, `--eval-limit`
-(chỉ để thử), `--device`.
+chỉ đổi được `--scenario`, `--seeds`, `--epochs`, `--eval-every`, `--patience`, `--device`.
 
 ## Kịch bản
 
@@ -79,9 +78,9 @@ Mỗi kịch bản chỉ đổi một yếu tố so với mô hình chính M (ch
 | Chia | train chính thức → 80% train / 20% validation (xáo với seed 1); test chính thức giữ nguyên (67,699) |
 | Tỉ lệ dropout | train 0.758, validation 0.760, test 0.758 (dropout là lớp đa số; AUPRC ngẫu nhiên ≈ 0.758) |
 | Đặc trưng (89 cột) | hành vi (cột 0–58): 35 số đếm theo ngày, tổng sự kiện, số object và 22 action, `x = (log(1 + c) − μ_train)/σ_train`; người học: gender/education one-hot và age dùng z-score ở cột 70; khóa học: category one-hot. Mọi μ, σ chỉ tính trên train; one-hot có mức `missing`, không có `other` |
-| Graph | H0 chỉ gồm enrollment train; target val/test tham gia các hyperedge của nó và chỉ đọc từ node train |
-| Train | full-batch, BCE, Adam, tối đa 1000 epoch, early stopping theo val AUC (mỗi 5 epoch, patience 40); trọng số tốt nhất giữ trong RAM |
-| Đánh giá | val và test một lần với trọng số tốt nhất, ngưỡng 0.5 |
+| Graph (transductive, như HGNN gốc, SIG-Net, MST-GCN) | một hypergraph H trên mọi enrollment train + val + test |
+| Train | full-batch: forward trên toàn H, BCE chỉ trên nút train; Adam, tối đa 1000 epoch, early stopping theo val AUC (mỗi 5 epoch, patience 40); trọng số tốt nhất giữ trong RAM |
+| Đánh giá | nạp trọng số tốt nhất, một forward trên H ở chế độ eval, đọc xác suất ở nút val và test (như HGNN+ / DHG), ngưỡng 0.5 |
 | Lặp | 5 seed (1, 11, 111, 1111, 11111), báo cáo mean ± std |
 
 So với các bài tham khảo (đọc từ code gốc): SIG-Net và MST-GCN không có validation, lấy
@@ -89,16 +88,16 @@ epoch cuối, ngưỡng 0.5; CA-TFHN in kết quả test mỗi epoch.
 
 ## Hyperedge
 
-| Loại | Định nghĩa | Số trong H0 | % node train có |
+| Loại | Định nghĩa | Số trong H | % node có |
 |---|---|---|---|
 | Course | `e_C(c) = {v : course(v) = c}` | 247 | 100% |
-| Object | `e_O(o) = {v : v dùng video/bài tập/forum o trong ngày 0–34}` | 21,747 | 88.4% |
-| User ("any", như SIG-Net, MST-GCN) | `e_U(l) = {v : user(v) = l}`: mọi enrollment train của người học | 32,797 | 75.9% |
-| Self-loop | `{v}` | N | 100% |
+| Object | `e_O(o) = {v : v dùng video/bài tập/forum o trong ngày 0–34}` | 22,421 | 88.4% |
+| User ("any", như SIG-Net, MST-GCN) | `e_U(l) = {v : user(v) = l}`: mọi enrollment của người học ở cả 3 split | 64,672 | 94.5% |
+| Self-loop | `{v}` | N = 225,642 | 100% |
 
-Hyperedge có ít hơn 2 thành viên bị bỏ (self-loop đã bao). Với target t (val/test): Course,
-các Object có trong H0, User = {t} ∪ mọi enrollment train của người học đó, self-loop {t}.
-Không có node val/test nào trong H0, không dùng nhãn của node khác, các target không nối với nhau.
+H gồm 225,642 node (train 126,354, val 31,589, test 67,699) và 3,222,033 membership (chưa kể
+self-loop). Hyperedge có ít hơn 2 thành viên bị bỏ (self-loop đã bao). Hyperedge chỉ dựa trên
+khóa học, object và người học.
 
 ## Công thức
 
@@ -111,21 +110,11 @@ Z1    = ReLU( G · (X·Θ1 + b1) )
 Z_g   = ReLU( G · (Dropout(Z1)·Θ2 + b2) )                     (HGNN_embedding)
 Z_s   = ReLU( Dropout(ReLU(X·A1 + c1))·A2 + c2 )              (MLP)
 logit = [Z_g ‖ Z_s]·u + b,   p = σ(logit)
-L     = −(1/N)·Σ [y·log p + (1 − y)·log(1 − p)]
+L     = −(1/|V_train|)·Σ_{v∈V_train} [y·log p + (1 − y)·log(1 − p)]
 ```
 
-Target t của val/test: các node train giữ trạng thái đã tính trên H0, t được thêm vào các
-hyperedge E(t) của nó (nên mỗi hyperedge H0 có δ(e) + 1 thành viên). Với
-`S1_e = Σ_{u∈e} d(u)^-1/2·(x_u·Θ1 + b1)` và `S2_e = Σ_{u∈e} d(u)^-1/2·(Z1_u·Θ2 + b2)`:
-
-```
-d(t)  = Σ_{e∈E(t)} w_e
-z1_t  = ReLU( d(t)^-1/2 · Σ_{e∈E(t)} w_e/(δ(e)+1) · ( S1_e + d(t)^-1/2·(x_t·Θ1 + b1) ) )
-z_g,t = ReLU( d(t)^-1/2 · Σ_{e∈E(t)} w_e/(δ(e)+1) · ( S2_e + d(t)^-1/2·(z1_t·Θ2 + b2) ) )
-```
-
-Cho một node train đi qua công thức này (không cộng 1, không cộng số hạng của chính nó) thì
-ra đúng forward trên H0.
+G tính trên toàn H (N = mọi enrollment train + val + test). Tổng trong L chỉ chạy trên nút
+train; xác suất của nút val/test đọc từ cùng một forward ở chế độ eval.
 
 ## Kết quả
 
