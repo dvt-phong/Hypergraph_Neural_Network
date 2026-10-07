@@ -16,9 +16,12 @@ config_constant = import_module("0_config")
 
 
 # Read a UTF-8 CSV file row by row, one dict per row.
+# yield gives one row at a time, so a large file is never loaded into memory at once.
 def read_csv(path):
     with open(path, newline="", encoding="utf-8") as source:
-        yield from csv.DictReader(source)
+        reader = csv.DictReader(source)
+        for row in reader:
+            yield row
 
 
 # Write a UTF-8 CSV file from column names and rows.
@@ -29,16 +32,6 @@ def write_csv(path, columns, rows):
         writer.writerows(rows)
 
 
-# Read one row per node from a split CSV (one row per event): list[node_id] = first row of that node.
-def load_nodes(path):
-    nodes = {}
-    for row in read_csv(path):
-        node_id = int(row["node_id"])
-        if node_id not in nodes:
-            nodes[node_id] = row
-    return [nodes[node_id] for node_id in sorted(nodes)]
-
-
 # Read selected CSV files inside prediction_data.tar.gz
 def read_prediction_data(prediction_data_path, selected_names):
     with tarfile.open(prediction_data_path, "r|gz") as prediction_data:
@@ -47,9 +40,8 @@ def read_prediction_data(prediction_data_path, selected_names):
             if not member.isfile() or name not in selected_names:
                 continue
 
-            binary = prediction_data.extractfile(member)
-            with binary:
-                text = codecs.getreader("utf-8")(binary)
+            with prediction_data.extractfile(member) as binary:
+                text = codecs.getreader("utf-8")(binary)                 # bytes -> text
                 for row in csv.DictReader(text):
                     yield name, row
 
@@ -78,7 +70,10 @@ def stream_events(
     labels,
     split_by_enrollment,
 ):
-    node_ids = {split_name: {} for split_name in config_constant.SPLITS}
+    # node_ids[split][enrollment id] = node id 0, 1, 2, ... inside that split
+    node_ids = {}
+    for split_name in config_constant.SPLITS:
+        node_ids[split_name] = {}
     # (user, course) of every enrollment, also those with no event in days 0–34.
     enrollment_metadata = {}
     columns = (
@@ -87,77 +82,36 @@ def stream_events(
         "category", "action", "object_id", "course_day",
     )
 
-    with (
-        open(output_dir / "train.csv", "w", newline="", encoding="utf-8")
-        as train_target,
-        open(output_dir / "validation.csv", "w", newline="", encoding="utf-8")
-        as validation_target,
-        open(output_dir / "test.csv", "w", newline="", encoding="utf-8")
-        as test_target,
-    ):
-        writers = {
-            "train": csv.writer(train_target),
-            "validation": csv.writer(validation_target),
-            "test": csv.writer(test_target),
-        }
-        for writer in writers.values():
-            writer.writerow(columns)
+    # One output file and one CSV writer per split; the files are closed at the end.
+    files = {}
+    writers = {}
+    for split_name in config_constant.SPLITS:
+        files[split_name] = open(output_dir / f"{split_name}.csv", "w", newline="", encoding="utf-8")
+        writers[split_name] = csv.writer(files[split_name])
+        writers[split_name].writerow(columns)
 
-        for _, row in read_prediction_data(prediction_data_path, config_constant.LOG_FILES):
-            enrollment_id = int(row["enroll_id"])
-            user_id = int(row["username"])
-            course_id = row["course_id"]
-            if enrollment_id not in split_by_enrollment:
-                continue
-            if enrollment_id not in enrollment_metadata:
-                enrollment_metadata[enrollment_id] = (user_id, course_id)
+    for _, row in read_prediction_data(prediction_data_path, config_constant.LOG_FILES):
+        enrollment_id = int(row["enroll_id"])
+        user_id = int(row["username"])
+        course_id = row["course_id"]
+        if enrollment_id not in split_by_enrollment:
+            continue
+        if enrollment_id not in enrollment_metadata:
+            enrollment_metadata[enrollment_id] = (user_id, course_id)
 
-            action = row["action"]
-            if action not in config_constant.ACTIONS:
-                continue
+        action = row["action"]
+        if action not in config_constant.ACTIONS:
+            continue
 
-            event_date = date.fromisoformat(row["time"][:10])
-            course_start = date.fromisoformat(courses[course_id]["start"][:10])
-            course_day = (event_date - course_start).days                       # d = date(event) − date(course start)
-            if 0 <= course_day < config_constant.OBSERVATION_DAYS:              # keep 0 ≤ d < 35
-                split_name = split_by_enrollment[enrollment_id]
-                split_node_ids = node_ids[split_name]
-                if enrollment_id not in split_node_ids:
-                    split_node_ids[enrollment_id] = len(split_node_ids)
-
-                user = users[user_id]
-                course = courses[course_id]
-                writers[split_name].writerow((
-                    split_node_ids[enrollment_id],
-                    enrollment_id,
-                    user_id,
-                    course_id,
-                    labels[enrollment_id],
-                    user["gender"],
-                    user["education"],
-                    user["birth"],
-                    course["start"],
-                    course["end"],
-                    course["category"],
-                    action,
-                    row["object"].strip(),
-                    course_day,
-                ))
-
-        # Keep enrollments with no event -> 0 in event count
-        empty_behavior_count = 0
-        for enrollment_id in sorted(split_by_enrollment):
+        event_date = date.fromisoformat(row["time"][:10])
+        course_start = date.fromisoformat(courses[course_id]["start"][:10])
+        course_day = (event_date - course_start).days                       # d = date(event) − date(course start)
+        if 0 <= course_day < config_constant.OBSERVATION_DAYS:              # keep 0 ≤ d < 35
             split_name = split_by_enrollment[enrollment_id]
             split_node_ids = node_ids[split_name]
-            if enrollment_id in split_node_ids:
-                continue
-            if enrollment_id not in enrollment_metadata:
-                raise ValueError(
-                    f"Enrollment {enrollment_id} has a label but no raw log row"
-                )
+            if enrollment_id not in split_node_ids:
+                split_node_ids[enrollment_id] = len(split_node_ids)
 
-            user_id, course_id = enrollment_metadata[enrollment_id]
-            split_node_ids[enrollment_id] = len(split_node_ids)
             user = users[user_id]
             course = courses[course_id]
             writers[split_name].writerow((
@@ -172,13 +126,51 @@ def stream_events(
                 course["start"],
                 course["end"],
                 course["category"],
-                "",
-                "",
-                "",
+                action,
+                row["object"].strip(),
+                course_day,
             ))
-            empty_behavior_count += 1
 
-    written_node_count = sum(len(nodes) for nodes in node_ids.values())
+    # Keep enrollments with no event -> 0 in event count
+    empty_behavior_count = 0
+    for enrollment_id in sorted(split_by_enrollment):
+        split_name = split_by_enrollment[enrollment_id]
+        split_node_ids = node_ids[split_name]
+        if enrollment_id in split_node_ids:
+            continue
+        if enrollment_id not in enrollment_metadata:
+            raise ValueError(
+                f"Enrollment {enrollment_id} has a label but no raw log row"
+            )
+
+        user_id, course_id = enrollment_metadata[enrollment_id]
+        split_node_ids[enrollment_id] = len(split_node_ids)
+        user = users[user_id]
+        course = courses[course_id]
+        writers[split_name].writerow((
+            split_node_ids[enrollment_id],
+            enrollment_id,
+            user_id,
+            course_id,
+            labels[enrollment_id],
+            user["gender"],
+            user["education"],
+            user["birth"],
+            course["start"],
+            course["end"],
+            course["category"],
+            "",
+            "",
+            "",
+        ))
+        empty_behavior_count += 1
+
+    for split_name in config_constant.SPLITS:
+        files[split_name].close()
+
+    written_node_count = 0
+    for split_name in config_constant.SPLITS:
+        written_node_count += len(node_ids[split_name])
     if written_node_count != len(split_by_enrollment):
         raise RuntimeError("Not every labeled enrollment was written")
     print(
@@ -196,8 +188,11 @@ def preprocess(raw_dir=config_constant.RAW, output_dir=config_constant.PROCESSED
     user_path = raw_dir / "user_info.csv"
     course_path = raw_dir / "course_info.csv"
 
-    output_paths = [output_dir / f"{split_name}.csv" for split_name in config_constant.SPLITS]
-    if all(path.is_file() for path in output_paths):
+    all_exist = True
+    for split_name in config_constant.SPLITS:
+        if not (output_dir / f"{split_name}.csv").is_file():
+            all_exist = False
+    if all_exist:
         print(f"Skipped existing outputs in {output_dir}", flush=True)
         return
 

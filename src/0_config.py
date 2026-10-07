@@ -48,7 +48,12 @@ ACTION_GROUPS = {
         "click_progress", "close_courseware",
     ),
 }
-ACTIONS = tuple(action for actions in ACTION_GROUPS.values() for action in actions)
+# All 22 actions in one tuple, group by group.
+action_list = []
+for group_name in ACTION_GROUPS:
+    for action in ACTION_GROUPS[group_name]:
+        action_list.append(action)
+ACTIONS = tuple(action_list)
 TRUTH_FILES = ("train_truth.csv", "test_truth.csv")
 LOG_FILES = ("train_log.csv", "test_log.csv")
 
@@ -108,11 +113,12 @@ TOTAL_FEATURE_COUNT = COURSE_FEATURE_START + COURSE_FEATURE_COUNT
 
 # Used by 4_hypergraph.py and 6_hgnn.py.
 # Actions on an object (video, problem, forum post) -> object family; web pages have no object.
-OBJECT_ACTIONS = {
-    action: family
-    for family, actions in ACTION_GROUPS.items() if family != "web_page"
-    for action in actions
-}
+OBJECT_ACTIONS = {}
+for group_name in ACTION_GROUPS:
+    if group_name == "web_page":
+        continue
+    for action in ACTION_GROUPS[group_name]:
+        OBJECT_ACTIONS[action] = group_name
 # Hyperedge families. Every node also gets one self-loop hyperedge when the graph is loaded.
 EDGE_FAMILIES = ("course", "object", "user", "self_loop")
 
@@ -128,7 +134,7 @@ EDGE_FAMILIES = ("course", "object", "user", "self_loop")
 #                original HGNN code
 #   description  one line for the results table
 # Build one scenario dict; arguments left out keep the value of the main model M.
-def scenario(description, *, families=EDGE_FAMILIES, features="full", hgnn_layers=2, use_mlp=True,
+def scenario(description, families=EDGE_FAMILIES, features="full", hgnn_layers=2, use_mlp=True,
              learn_w=True):
     return {"description": description, "families": tuple(families), "features": features,
             "hgnn_layers": hgnn_layers, "use_mlp": use_mlp, "learn_w": learn_w}

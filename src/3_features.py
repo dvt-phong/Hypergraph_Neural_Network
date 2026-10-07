@@ -90,7 +90,7 @@ def set_one_hot(feature_matrix, row_index, value, vocabulary, feature_start):
     elif value in vocabulary:
         value_index = vocabulary.index(value)
     else:
-        raise ValueError(f"{value!r} is not in the vocabulary {vocabulary}; add it to 0_config.py")
+        raise ValueError(f"'{value}' is not in the vocabulary {vocabulary}; add it to 0_config.py")
     feature_matrix[row_index, feature_start + value_index] = 1.0
 
 

@@ -1,8 +1,4 @@
-# 10. Summarize outputs/results.csv: one row per scenario with mean ± std over its seeds,
-#     in the order of config.SCENARIOS, plus Δ test AUC against the main model M.
-#     When a (scenario, seed) pair was run more than once, only its latest row counts.
-#
-#   python src/10_summary.py   -> outputs/summary.csv, outputs/ket_qua.xlsx
+# 10. Summarize outputs/summary.csv, outputs/ket_qua.xlsx
 
 import sys
 from importlib import import_module
@@ -21,42 +17,74 @@ COMPONENTS = ("course", "object", "user", "self_loop")
 def summarize():
     runs = pd.read_csv(config.RESULTS_CSV)
     runs = runs.drop_duplicates(["scenario", "seed"], keep="last")
-    order = {code: index for index, code in enumerate(config.SCENARIOS)}          # table order
-    runs = runs.sort_values(["scenario", "seed"], key=lambda column: column.map(order)
-                            if column.name == "scenario" else column)
+    # Table order: the order of config.SCENARIOS, then by seed.
+    order = {}
+    index = 0
+    for code in config.SCENARIOS:
+        order[code] = index
+        index += 1
+    runs["order"] = runs["scenario"].map(order)
+    runs = runs.sort_values(["order", "seed"])
+    runs = runs.drop(columns="order")
     # Only the ratios of the family weights matter: G is unchanged when every w is scaled.
     # Families a scenario does not use are empty and left out of the sum.
-    weights = runs[list(WEIGHTS)].apply(pd.to_numeric, errors="coerce")
+    weights = pd.DataFrame(index=runs.index)
+    for name in WEIGHTS:
+        weights[name] = pd.to_numeric(runs[name], errors="coerce")                # "" -> NaN
     for name in WEIGHTS:
         runs[f"{name}_share"] = weights[name] / weights.sum(axis=1)                # w_f / Σ_f w_f
 
     rows = []
     for code, group in runs.groupby("scenario", sort=False):
-        scenario = config.SCENARIOS.get(code, {})
+        if code in config.SCENARIOS:
+            description = config.SCENARIOS[code]["description"]
+        else:
+            description = ""                                                       # scenario no longer in config
         families = str(group["families"].iloc[-1]).split("+")
-        row = {"scenario": code, "description": scenario.get("description", "")}
+        row = {}
+        row["scenario"] = code
+        row["description"] = description
         for name in COMPONENTS:                                                    # ✓ / ✗ columns
-            row[name] = "✓" if name in families else "✗"
-        row.update({"features": group["features"].iloc[-1],
-                    "hgnn_layers": group["hgnn_layers"].iloc[-1],
-                    "mlp": "✓" if bool(group["use_mlp"].iloc[-1]) else "✗",
-                    "learn_w": "✓" if bool(group["learn_w"].iloc[-1]) else "✗",
-                    "seeds": " ".join(str(seed) for seed in group["seed"]), "n": len(group)})
+            if name in families:
+                row[name] = "✓"
+            else:
+                row[name] = "✗"
+        row["features"] = group["features"].iloc[-1]
+        row["hgnn_layers"] = group["hgnn_layers"].iloc[-1]
+        if bool(group["use_mlp"].iloc[-1]):
+            row["mlp"] = "✓"
+        else:
+            row["mlp"] = "✗"
+        if bool(group["learn_w"].iloc[-1]):
+            row["learn_w"] = "✓"
+        else:
+            row["learn_w"] = "✗"
+        seed_texts = []
+        for seed in group["seed"]:
+            seed_texts.append(str(seed))
+        row["seeds"] = " ".join(seed_texts)
+        row["n"] = len(group)
         for name in METRICS:
             # mean = (1/n)·Σ x,  std = √(Σ(x − mean)²/(n − 1))  over the n seeds
-            mean, std = group[name].mean(), group[name].std(ddof=1)
-            row[name] = f"{mean:.4f} ± {0.0 if pd.isna(std) else std:.4f}"
+            mean = group[name].mean()
+            std = group[name].std(ddof=1)
+            if pd.isna(std):
+                std = 0.0                                                          # one seed: no std
+            row[name] = f"{mean:.4f} ± {std:.4f}"
         row["test_auc_mean"] = group["test_auc"].mean()
         row["best_epoch"] = round(group["best_epoch"].mean())
         for name in WEIGHTS:
             share = group[f"{name}_share"].mean()
-            row[f"{name}_share"] = "" if pd.isna(share) else round(share, 4)
+            if pd.isna(share):
+                row[f"{name}_share"] = ""
+            else:
+                row[f"{name}_share"] = round(share, 4)
         row["minutes"] = round(group["minutes"].mean(), 1)
         rows.append(row)
     summary = pd.DataFrame(rows)
 
     # Δ test AUC = mean test AUC of the scenario − mean test AUC of M.
-    if "M" in set(summary["scenario"]):
+    if "M" in summary["scenario"].tolist():
         reference = summary.loc[summary["scenario"] == "M", "test_auc_mean"].iloc[0]
         summary.insert(summary.columns.get_loc("test_auc") + 1, "delta_test_auc_vs_M",
                        (summary["test_auc_mean"] - reference).round(4))

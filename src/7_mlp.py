@@ -1,12 +1,7 @@
-# 7. MLP branch: the node's own features only, no propagation over the hypergraph.
-#    Same depth and hidden size as the HGNN branch: it is the HGNN encoder without G.
-# Tham khảo từ project/bài báo:
-# - UniGNN / UniGCNII, IJCAI 2021 (Huang & Yang): keeping the node's own signal
-#   next to the propagated one (initial residual / skip)
-#   Code: https://github.com/OneForward/UniGNN
+# 7. MLP branch
+# - UniGNN / UniGCNII https://github.com/OneForward/UniGNN
 
 from torch import nn
-
 
 # MLP branch: z_s from the node's own features.
 class MLPEncoder(nn.Module):
