@@ -1,9 +1,4 @@
-# 8. Dropout prediction model: the HGNN branch (6_hgnn.py) and, when the scenario keeps
-#    it, the MLP branch (7_mlp.py), read by one linear classifier (as HGNN_classifier of
-#    the original code, with the MLP output added):
-#      with MLP:     logit = [z_g ‖ z_s]·u + b
-#      without MLP:  logit = z_g·u + b            (scenario H)
-#      p = σ(logit) = P(dropout)
+# 8. Dropout prediction model
 
 from importlib import import_module
 
@@ -19,39 +14,51 @@ MLPEncoder = import_module("7_mlp").MLPEncoder
 # Full model: HGNN branch, optional MLP branch, linear classifier.
 class DropoutModel(nn.Module):
     # Both branches and the classifier u, b; use_mlp=False drops the MLP branch (scenario H).
-    def __init__(self, input_dim, hidden_dim, dropout, *, hgnn_layers=2, use_mlp=True, learn_w=True):
+    def __init__(self, input_dim, hidden_dim, dropout, hgnn_layers=2, use_mlp=True, learn_w=True):
         super().__init__()
         self.hgnn = HGNNEncoder(input_dim, hidden_dim, dropout, hgnn_layers, learn_w)   # graph branch
-        self.mlp = MLPEncoder(input_dim, hidden_dim, dropout) if use_mlp else None  # own-feature branch
-        self.classifier = nn.Linear(hidden_dim * (2 if use_mlp else 1), 1)          # u, b
+        if use_mlp:
+            self.mlp = MLPEncoder(input_dim, hidden_dim, dropout)                   # own-feature branch
+            classifier_dim = 2 * hidden_dim                                          # [z_g ‖ z_s]
+        else:
+            self.mlp = None
+            classifier_dim = hidden_dim                                              # z_g
+        self.classifier = nn.Linear(classifier_dim, 1)                              # u, b
 
     # [z_g ‖ z_s] with the MLP branch, z_g alone without it.
     def join(self, z_graph, x):
         if self.mlp is None:
             return z_graph
-        return torch.cat([z_graph, self.mlp(x)], dim=1)
+        z_self = self.mlp(x)
+        return torch.cat([z_graph, z_self], dim=1)
 
     # Training: logits of every train node on H0.
     # Shapes: x [N, D] -> logits [N].
     def forward(self, x, graph):
-        return self.classifier(self.join(self.hgnn(x, graph), x)).squeeze(-1)   # logit = z·u + b
+        z_graph = self.hgnn(x, graph)
+        z = self.join(z_graph, x)
+        logits = self.classifier(z)                                     # logit = z·u + b, [N, 1]
+        return logits.squeeze(-1)                                       # [N]
 
     # Evaluation, step A (see 6_hgnn.py): call once per evaluation, in eval mode.
     def cache_train_states(self, x, graph):
         return self.hgnn.cache_train_states(x, graph)
 
-    # Evaluation, step B: logits of a batch of validation/test targets.
-    # Shapes: as HGNNEncoder.forward_targets -> logits [B].
     def forward_targets(self, x, rows, edges, single_user, cache):
         z_graph = self.hgnn.forward_targets(x, rows, edges, single_user, cache)
-        return self.classifier(self.join(z_graph, x)).squeeze(-1)       # logit = [z_g ‖ z_s]·u + b
+        z = self.join(z_graph, x)
+        logits = self.classifier(z)                                     # logit = [z_g ‖ z_s]·u + b, [B, 1]
+        return logits.squeeze(-1)                                       # [B]
 
-    # Learned family weights for the results table; reported as "" when W is not learned
-    # (scenario W1) or when the scenario does not use the family (it stays at its start value):
-    # w_course, w_object, w_user, w_self_loop.
-    @torch.no_grad()
+    # Learned family weights for the results table
     def weight_summary(self, families):
-        learned = isinstance(self.hgnn.family_logits, nn.Parameter)
-        weights = F.softplus(self.hgnn.family_logits).tolist()     # w_f = softplus(θ_f)
-        return {f"w_{name}": (weight if learned and name in families else "")
-                for name, weight in zip(config.EDGE_FAMILIES, weights)}
+        with torch.no_grad():
+            weights = F.softplus(self.hgnn.family_logits).tolist()  # w_f = softplus(θ_f)
+        summary = {}
+        for index in range(len(config.EDGE_FAMILIES)):
+            name = config.EDGE_FAMILIES[index]
+            if self.hgnn.learn_w and name in families:
+                summary[f"w_{name}"] = weights[index]
+            else:
+                summary[f"w_{name}"] = ""                           # W not learned, or family not used
+        return summary

@@ -1,14 +1,5 @@
-# 9. Run the experiment scenarios (config.SCENARIOS, docs/KICH_BAN_THUC_NGHIEM.md).
-#    For every scenario and every seed: train on the train hypergraph H0 with early
-#    stopping on validation AUC, score validation and test once with the best weights at
-#    threshold 0.5, and append one row to outputs/results.csv. No other file is saved.
-#
-#   python src/9_train.py --scenario all --seeds 1 11 111 1111 11111     all 11 scenarios × 5 seeds
-#   python src/9_train.py --scenario M A4 H                              some scenarios
-#   python src/9_train.py --scenario all --seeds 1 --epochs 10 --eval-limit 2000   quick check
-# Tham khảo từ project/bài báo:
-# - HGNN, AAAI 2019 (Feng et al.): hidden size, dropout, optimizer settings
-#   Code: https://github.com/iMoonLab/HGNN
+# 9. Run the experiment scenarios 
+# - HGNN https://github.com/iMoonLab/HGNN
 
 import argparse
 import copy
@@ -55,7 +46,9 @@ def set_seed(seed):
 # Torch device from "auto", "cpu" or "cuda" ("auto" = cuda when available).
 def resolve_device(name):
     if name == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        return torch.device("cpu")
     return torch.device(name)
 
 
@@ -78,22 +71,27 @@ def metrics(labels, probabilities):
 
 # Dropout probabilities of validation/test targets (steps A and B of 6_hgnn.py).
 # Shapes: x [N, D] train features, T targets from apply_scenario -> p [T] (NumPy).
-@torch.no_grad()
 def predict(model, x, graph, targets, device, batch_size):
     was_training = model.training
     model.eval()                                                         # no dropout
-    cache = model.cache_train_states(x, graph)                           # step A, once
     ptr = targets["h0_ptr"]
+    target_count = len(targets["labels"])
     probabilities = []
-    for start in range(0, len(targets["labels"]), batch_size):
-        stop = min(start + batch_size, len(targets["labels"]))
-        counts = np.diff(ptr[start:stop + 1])                            # |E(t) ∩ H0| per target
-        rows = torch.as_tensor(np.repeat(np.arange(stop - start), counts), device=device)
-        edges = torch.as_tensor(targets["h0_edges"][ptr[start]:ptr[stop]], device=device)
-        single_user = torch.as_tensor(targets["single_user"][start:stop], device=device)
-        features = torch.as_tensor(targets["features"][start:stop], device=device)
-        logits = model.forward_targets(features, rows, edges, single_user, cache)   # step B
-        probabilities.append(torch.sigmoid(logits).cpu().numpy())        # p = σ(logit)
+    with torch.no_grad():                                                # no gradients while scoring
+        cache = model.cache_train_states(x, graph)                       # step A, once
+        for start in range(0, target_count, batch_size):
+            stop = min(start + batch_size, target_count)
+            # Entries ptr[start] .. ptr[stop]-1 belong to targets start .. stop-1;
+            # rows = target of each entry, counted from 0 inside the batch.
+            rows = targets["h0_rows"][ptr[start]:ptr[stop]] - start
+            edges = targets["h0_edges"][ptr[start]:ptr[stop]]
+            rows = torch.as_tensor(rows, device=device)
+            edges = torch.as_tensor(edges, device=device)
+            single_user = torch.as_tensor(targets["single_user"][start:stop], device=device)
+            features = torch.as_tensor(targets["features"][start:stop], device=device)
+            logits = model.forward_targets(features, rows, edges, single_user, cache)   # step B
+            batch_probabilities = torch.sigmoid(logits)                  # p = σ(logit)
+            probabilities.append(batch_probabilities.cpu().numpy())
     model.train(was_training)
     return np.concatenate(probabilities)
 
@@ -106,8 +104,15 @@ def append_result(row):
         writer = csv.DictWriter(output, fieldnames=RESULT_COLUMNS)
         if is_new:
             writer.writeheader()
-        writer.writerow({name: f"{value:.6f}" if isinstance(value, float) else value
-                         for name, value in row.items()})
+        # Floats are written with 6 decimals, everything else as it is.
+        text_row = {}
+        for name in row:
+            value = row[name]
+            if isinstance(value, float):
+                text_row[name] = f"{value:.6f}"
+            else:
+                text_row[name] = value
+        writer.writerow(text_row)
     log("result", f"appended to {config.RESULTS_CSV}")
 
 
@@ -124,10 +129,18 @@ def train_one_seed(code, seed, settings, data, device):
 
     model = DropoutModel(x.shape[1], settings["hidden_dim"], settings["dropout"],
                          hgnn_layers=scenario["hgnn_layers"], use_mlp=scenario["use_mlp"],
-                         learn_w=scenario["learn_w"]).to(device)
+                         learn_w=scenario["learn_w"])
+    model = model.to(device)
     family_logits = model.hgnn.family_logits
+
+    # Every weight except the family weights W: Θ, A, u.
+    other_parameters = []
+    for parameter in model.parameters():
+        if parameter is not family_logits:
+            other_parameters.append(parameter)
+
     # Adam with L2 (weight_decay λ): g = ∇L + λ·θ, then θ ← θ − lr·m̂/(√v̂ + ε)
-    groups =[{"params": [p for p in model.parameters() if p is not family_logits]}]   # Θ, A, u: lr, L2
+    groups = [{"params": other_parameters}]                                          # Θ, A, u: lr, L2
     if scenario["learn_w"]:                                                          # W: own lr, no L2
         groups.append({"params": [family_logits], "lr": settings["family_weight_lr"], "weight_decay": 0.0})
     optimizer = torch.optim.Adam(groups, lr=settings["learning_rate"], weight_decay=settings["weight_decay"])
@@ -151,8 +164,9 @@ def train_one_seed(code, seed, settings, data, device):
 
         # Early stopping: validation AUC every eval_every epochs, keep the best weights in memory.
         if epoch % settings["eval_every"] == 0:
-            validation_auc = roc_auc_score(validation_labels, predict(
-                model, x, graph, data["validation"], device, settings["eval_batch_size"]))
+            validation_probabilities = predict(model, x, graph, data["validation"], device,
+                                               settings["eval_batch_size"])
+            validation_auc = roc_auc_score(validation_labels, validation_probabilities)
             if validation_auc > best["auc"]:                             # best = argmax_epoch AUC_val
                 best = {"auc": validation_auc, "epoch": epoch,
                         "state": copy.deepcopy(model.state_dict())}      # kept in memory, no file
@@ -173,28 +187,46 @@ def train_one_seed(code, seed, settings, data, device):
     for split in ("validation", "test"):
         probabilities = predict(model, x, graph, data[split], device, settings["eval_batch_size"])
         scores[split] = metrics(data[split]["labels"], probabilities)
-        log(split, f"{code} seed {seed}: " + ", ".join(f"{name}={value:.4f}"
-                                                       for name, value in scores[split].items()))
+        parts = []
+        for name in scores[split]:
+            parts.append(f"{name}={scores[split][name]:.4f}")
+        log(split, f"{code} seed {seed}: " + ", ".join(parts))
 
-    append_result({
-        "time": time.strftime("%Y-%m-%d %H:%M:%S"), "scenario": code, "seed": seed,
-        "families": "+".join(scenario["families"]), "features": scenario["features"],
-        "hgnn_layers": scenario["hgnn_layers"], "use_mlp": scenario["use_mlp"],
-        "learn_w": scenario["learn_w"],
-        **{name: settings[name] for name in ("epochs", "eval_every", "patience", "hidden_dim",
-                                             "dropout", "learning_rate", "weight_decay")},
-        "best_epoch": best["epoch"], "epochs_run": epoch,
-        **{f"val_{name}": scores["validation"][name] for name in ("auc", "auprc", "f1")},
-        **{f"test_{name}": value for name, value in scores["test"].items()},
-        **model.weight_summary(scenario["families"]),
-        "minutes": (time.perf_counter() - started_at) / 60,
-    })
+    # One row of results.csv.
+    row = {}
+    row["time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    row["scenario"] = code
+    row["seed"] = seed
+    row["families"] = "+".join(scenario["families"])
+    row["features"] = scenario["features"]
+    row["hgnn_layers"] = scenario["hgnn_layers"]
+    row["use_mlp"] = scenario["use_mlp"]
+    row["learn_w"] = scenario["learn_w"]
+    for name in ("epochs", "eval_every", "patience", "hidden_dim", "dropout", "learning_rate", "weight_decay"):
+        row[name] = settings[name]
+    row["best_epoch"] = best["epoch"]
+    row["epochs_run"] = epoch
+    for name in ("auc", "auprc", "f1"):
+        row[f"val_{name}"] = scores["validation"][name]
+    for name in scores["test"]:
+        row[f"test_{name}"] = scores["test"][name]
+    weights = model.weight_summary(scenario["families"])
+    for name in weights:
+        row[name] = weights[name]
+    row["minutes"] = (time.perf_counter() - started_at) / 60
+    append_result(row)
 
 
 # Scenario codes to run: --scenario all -> config.SCENARIOS_ALL; otherwise the given codes, checked.
 def scenario_codes(values):
-    codes = list(config.SCENARIOS_ALL) if values == ["all"] else values
-    unknown = [code for code in codes if code not in config.SCENARIOS]
+    if values == ["all"]:
+        codes = list(config.SCENARIOS_ALL)
+    else:
+        codes = values
+    unknown = []
+    for code in codes:
+        if code not in config.SCENARIOS:
+            unknown.append(code)
     if unknown:
         raise SystemExit(f"unknown scenarios {unknown}; choose from {list(config.SCENARIOS)} or 'all'")
     return codes
@@ -203,8 +235,9 @@ def scenario_codes(values):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run the experiment scenarios: train with early stopping "
                                                  "on validation AUC, then score validation and test at 0.5.")
+    all_codes = " ".join(config.SCENARIOS_ALL)
     parser.add_argument("--scenario", nargs="+", default=["M"],
-                        help=f"'all' ({' '.join(config.SCENARIOS_ALL)}) or codes from {list(config.SCENARIOS)}")
+                        help=f"'all' ({all_codes}) or codes from {list(config.SCENARIOS)}")
     parser.add_argument("--seeds", type=int, nargs="+", default=list(config.SEEDS))
     parser.add_argument("--epochs", type=int, default=config.TRAIN["epochs"])
     parser.add_argument("--eval-every", type=int, default=config.TRAIN["eval_every"])
@@ -216,22 +249,25 @@ if __name__ == "__main__":
     arguments = parser.parse_args()
 
     codes = scenario_codes(arguments.scenario)
-    settings = {**config.TRAIN, "epochs": arguments.epochs,
-                "eval_every": arguments.eval_every, "patience": arguments.patience}
+    settings = dict(config.TRAIN)
+    settings["epochs"] = arguments.epochs
+    settings["eval_every"] = arguments.eval_every
+    settings["patience"] = arguments.patience
     device = resolve_device(arguments.device)
     log("setup", f"device={device}, scenarios={codes}, seeds={arguments.seeds}, settings={settings}")
 
     # Read the data once (all families, all columns); every scenario takes its part of it.
-    loaded = {"train": graph_data.load_train_graph(arguments.output_dir)}
+    loaded = {}
+    loaded["train"] = graph_data.load_train_graph(arguments.output_dir)
     for split in ("validation", "test"):
-        loaded[split] = graph_data.load_targets(arguments.output_dir, split_name=split,
-                                                limit=arguments.eval_limit)
+        loaded[split] = graph_data.load_targets(split, arguments.output_dir, arguments.eval_limit)
         log("setup", f"{split}: {len(loaded[split]['labels']):,} targets")
 
     # Scenario by scenario; every seed of a scenario before the next one.
     for code in codes:
         scenario = config.SCENARIOS[code]   # the Vietnamese description is not logged (Windows console)
-        log("scenario", f"{code}: families={'+'.join(scenario['families'])}, features={scenario['features']}, "
+        families_text = "+".join(scenario["families"])
+        log("scenario", f"{code}: families={families_text}, features={scenario['features']}, "
                         f"hgnn_layers={scenario['hgnn_layers']}, use_mlp={scenario['use_mlp']}, "
                         f"learn_w={scenario['learn_w']}")
         data = graph_data.apply_scenario(loaded, config.SCENARIOS[code])
