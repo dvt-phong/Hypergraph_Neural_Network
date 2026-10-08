@@ -15,8 +15,7 @@ from pathlib import Path
 config_constant = import_module("0_config")
 
 
-# Read a UTF-8 CSV file row by row, one dict per row.
-# yield gives one row at a time, so a large file is never loaded into memory at once.
+# Read a UTF-8 CSV file row by row, one dict per row
 def read_csv(path):
     with open(path, newline="", encoding="utf-8") as source:
         reader = csv.DictReader(source)
@@ -24,7 +23,7 @@ def read_csv(path):
             yield row
 
 
-# Write a UTF-8 CSV file from column names and rows.
+# Write a UTF-8 CSV file from column names and rows
 def write_csv(path, columns, rows):
     with open(path, "w", newline="", encoding="utf-8") as output:
         writer = csv.writer(output)
@@ -62,15 +61,7 @@ def split_train_enrollments(enrollment_ids):
 
 
 # Write the events and labeled of enrollment to train.csv, validation.csv or test.csv.
-def stream_events(
-    prediction_data_path,
-    output_dir,
-    users,
-    courses,
-    labels,
-    split_by_enrollment,
-):
-    # node_ids[split][enrollment id] = node id 0, 1, 2, ... inside that split
+def stream_events(prediction_data_path, output_dir, users, courses, labels, split_by_enrollment):
     node_ids = {}
     for split_name in config_constant.SPLITS:
         node_ids[split_name] = {}
@@ -180,7 +171,7 @@ def stream_events(
     )
 
 
-# Run step 2: raw files -> three split CSVs (skipped when they already exist).
+# Run step 2: raw files -> three split CSVs (skipped when they already exist)
 def preprocess(raw_dir=config_constant.RAW, output_dir=config_constant.PROCESSED):
     raw_dir = Path(raw_dir)
     output_dir = Path(output_dir)

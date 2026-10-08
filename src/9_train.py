@@ -24,7 +24,7 @@ RESULT_COLUMNS = (
     "epochs", "eval_every", "patience", "hidden_dim", "dropout", "learning_rate", "weight_decay",
     "best_epoch", "epochs_run",
     "val_auc", "val_auprc", "val_f1",
-    "test_auc", "test_auprc", "test_accuracy", "test_precision", "test_recall", "test_f1",
+    "auc", "auprc", "accuracy", "precision", "recall", "f1",
     "w_course", "w_object", "w_user", "w_self_loop",
     "minutes",
 )
@@ -56,7 +56,9 @@ def resolve_device(name):
 # recall, f1.
 def metrics(labels, probabilities):
     predicted = probabilities >= config.THRESHOLD                       # ŷ = 1[p ≥ 0.5]
-    # P = TP/(TP + FP),  R = TP/(TP + FN),  F1 = 2·P·R/(P + R)
+    # PRECISION = TP/(TP + FP)
+    # RRCALL = TP/(TP + FN)
+    # F1 = 2·P·R/(P + R)
     precision, recall, f1, _ = precision_recall_fscore_support(
         labels, predicted, labels=[1], zero_division=0)
     return {
@@ -69,9 +71,7 @@ def metrics(labels, probabilities):
     }
 
 
-# Dropout probabilities of the nodes in index: one forward over the whole H in eval mode,
-# then read the chosen nodes (HGNN+ / DHG infer).
-# Shapes: x [N, D], index [T] -> p [T] (NumPy).
+# Dropout probabilities
 def predict(model, x, graph, index):
     was_training = model.training
     model.eval()                                                         # no dropout
@@ -102,8 +102,7 @@ def append_result(row):
     log("result", f"appended to {config.RESULTS_CSV}")
 
 
-# Train one scenario with one seed, early stopping on validation AUC, then score
-# validation and test with the best weights and append one row to results.csv.
+# Train
 def train_one_seed(code, seed, settings, data, device):
     started_at = time.perf_counter()
     scenario = config.SCENARIOS[code]
