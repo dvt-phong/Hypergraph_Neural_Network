@@ -16,9 +16,9 @@ read_csv = preprocess_module.read_csv
 write_csv = preprocess_module.write_csv
 
 
-# Column indices of X for one feature set ("feature", "feature+user", "feature+course", "full").
+# ("feature", "feature+user", "feature+course", "full")
 # [0, 59) behavior | [59, 71) user | [71, 89) course
-# Uses it for experiment
+# Use it for experiment
 def feature_columns(name):
     behavior = np.arange(0, config.BEHAVIOR_FEATURE_COUNT)                       # 35 days + total + objects + 22 actions
     user = np.arange(config.USER_FEATURE_START, config.COURSE_FEATURE_START)     # gender + education + age

@@ -17,7 +17,7 @@ COMPONENTS = ("course", "object", "user", "self_loop")
 def summarize():
     runs = pd.read_csv(config.RESULTS_CSV)
     runs = runs.drop_duplicates(["scenario", "seed"], keep="last")
-    # Table order: the order of config.SCENARIOS, then by seed.
+
     order = {}
     index = 0
     for code in config.SCENARIOS:
@@ -26,8 +26,7 @@ def summarize():
     runs["order"] = runs["scenario"].map(order)
     runs = runs.sort_values(["order", "seed"])
     runs = runs.drop(columns="order")
-    # Only the ratios of the family weights matter: G is unchanged when every w is scaled.
-    # Families a scenario does not use are empty and left out of the sum.
+    
     weights = pd.DataFrame(index=runs.index)
     for name in WEIGHTS:
         weights[name] = pd.to_numeric(runs[name], errors="coerce")                # "" -> NaN

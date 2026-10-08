@@ -28,9 +28,6 @@ SPLITS = ("train", "validation", "test")
 SPLIT_SEED = 1
 TRAIN_RATIO = 0.80
 OBSERVATION_DAYS = 35
-# Every action type of the raw logs (42,110,402 events, 22 types), as MST-GCN, which counts
-# each action that appears in the logs (pd.crosstab in xuetangx_graph_builder.py).
-# CFIN keeps 21 of them: it leaves out close_forum (5 events in total).
 ACTION_GROUPS = {
     "video": (
         "seek_video", "play_video", "pause_video", "stop_video", "load_video"
@@ -58,7 +55,7 @@ TRUTH_FILES = ("train_truth.csv", "test_truth.csv")
 LOG_FILES = ("train_log.csv", "test_log.csv")
 
 
-# Used by 3_features.py: vocabularies and the column layout of X.
+# Used by 3_features.py
 GENDERS = ("female", "male")
 EDUCATIONS = (
     "Associate", "Bachelor's", "Doctorate", "High", "Master's", "Middle", "Primary"
@@ -69,21 +66,12 @@ CATEGORIES = (
     "literature", "math", "medicine", "philosophy", "physics", "social science",
 )
 MISSING_VALUES = ("", "na", "n/a", "none", "null", "no data", "-")
-
-# Age as in CFIN (Feng et al., AAAI 2019; code wzfhaha/dropout_prediction, preprocess.py):
-# a = year(course start) − birth year; a = 0 when birth is missing or a is outside
-# [AGE_MIN, AGE_MAX]. CFIN uses the fixed year 2018; the course start year is used here.
 AGE_MIN = 10
 AGE_MAX = 70
 AGE_MISSING = 0
 
-# X = [behavior | user (gender, education, age) | course (category)], where behavior follows the
-# enrollment features of MST-GCN (xuetangx_graph_builder.py):
-#   35 daily event counts | total events, distinct objects, 22 action counts
-# Scaling with train-only statistics:
-#   X[:, 0:59]  = behavior counts, x = (log(1 + c) − μ_train) / σ_train (Kloft et al., 2014)
-#   X[:, 70]    = age, z-score
-# Every other position stays 0/1 (one-hot context).
+# X = [behavior | user (gender, education, age) | course (category)]
+# 35 daily event counts | total events, distinct objects, 22 action counts
 DAY_FEATURE_COUNT = OBSERVATION_DAYS
 TOTAL_EVENTS_INDEX = DAY_FEATURE_COUNT                 # events in days 0–34
 OBJECT_COUNT_INDEX = TOTAL_EVENTS_INDEX + 1            # distinct objects used in days 0–34
@@ -91,10 +79,6 @@ ACTION_FEATURE_START = OBJECT_COUNT_INDEX + 1
 ACTION_FEATURE_COUNT = len(ACTIONS)
 BEHAVIOR_FEATURE_COUNT = ACTION_FEATURE_START + ACTION_FEATURE_COUNT
 
-# Column positions inside the user block and inside the course block (*_START, AGE_FEATURE_INDEX);
-# the user block starts at X column USER_FEATURE_START, the course block at COURSE_FEATURE_START.
-# Each one-hot block ends with a "missing" column (missing = its own level, as CFIN's code 0).
-# There is no "other" column: a value outside the vocabulary stops 3_features.py.
 GENDER_FEATURE_START = 0
 GENDER_FEATURE_COUNT = len(GENDERS) + 1
 EDUCATION_FEATURE_START = GENDER_FEATURE_START + GENDER_FEATURE_COUNT
@@ -112,7 +96,6 @@ TOTAL_FEATURE_COUNT = COURSE_FEATURE_START + COURSE_FEATURE_COUNT
 
 
 # Used by 4_hypergraph.py and 6_hgnn.py.
-# Actions on an object (video, problem, forum post) -> object family; web pages have no object.
 OBJECT_ACTIONS = {}
 for group_name in ACTION_GROUPS:
     if group_name == "web_page":
@@ -123,17 +106,7 @@ for group_name in ACTION_GROUPS:
 EDGE_FAMILIES = ("course", "object", "user", "self_loop")
 
 
-# Used by 9_train.py and 10_summary.py: the experiment scenarios (docs/KICH_BAN_THUC_NGHIEM.md).
-# Every scenario changes ONE factor of the main model M:
-#   families     hyperedge families the graph keeps ("self_loop" is one of them)
-#   features     columns of X (3_features.feature_columns):
-#                "feature" = behavior, "feature+user", "feature+course", "full" = all 89
-#   hgnn_layers  1 or 2 HGNN layers in the graph branch (the MLP branch is always 2 layers)
-#   use_mlp      keep the MLP branch next to the HGNN branch
-#   learn_w      learn one weight per hyperedge family (W); False = W = I fixed, as in the
-#                original HGNN code
-#   description  one line for the results table
-# Build one scenario dict; arguments left out keep the value of the main model M.
+# Used by 9_train.py and 10_summary.py
 def scenario(description, families=EDGE_FAMILIES, features="full", hgnn_layers=2, use_mlp=True,
              learn_w=True):
     return {"description": description, "families": tuple(families), "features": features,
@@ -155,19 +128,19 @@ SCENARIOS = {
     # Optional, not part of "all": no neighbours at all (G = I, the HGNN branch becomes an MLP).
     "X1": scenario("Tùy chọn: chỉ self-loop, không có hàng xóm", families=("self_loop",)),
 }
-# What `--scenario all` runs, in this order (X1 is left out on purpose).
+
 SCENARIOS_ALL = ("M", "A1", "A2", "A3", "A4", "W1", "F1", "F2", "F3", "L1", "H")
 
 
 # Used by 9_train.py.
 THRESHOLD = 0.5  # p >= 0.5 -> predicted dropout
 TRAIN = {
-    "hidden_dim": 128,          # as in HGNN (Feng et al., 2019)
-    "dropout": 0.5,             # as in HGNN (Feng et al., 2019)
-    "learning_rate": 1e-3,      # as in DP-SCL
-    "weight_decay": 5e-4,       # L2 on every weight except the family weights
-    "family_weight_lr": 0.05,   # own lr for the family weights W, no weight decay
-    "epochs": 1000,             # maximum number of epochs
-    "eval_every": 5,            # validation AUC every N epochs
-    "patience": 40,             # stop after N validations without a better AUC
+    "hidden_dim": 128,        
+    "dropout": 0.5,            
+    "learning_rate": 1e-3,     
+    "weight_decay": 5e-4,   
+    "family_weight_lr": 0.05,  
+    "epochs": 1000,         
+    "eval_every": 5,            
+    "patience": 40,           
 }

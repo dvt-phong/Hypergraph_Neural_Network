@@ -1,4 +1,4 @@
-# 4. Build one hypergraph H over every enrollment of train, validation and test (transductive)
+# 4. Build one hypergraph H
 # - HGNN https://github.com/iMoonLab/HGNN
 # - MST-GCN https://github.com/wudongze9/MST-GCN
 # - SIG-Net https://github.com/Noverse0/SIG-Net
@@ -20,14 +20,12 @@ USER = config.EDGE_FAMILIES.index("user")
 SELF_LOOP = config.EDGE_FAMILIES.index("self_loop")
 
 
-# Print a message with the time.
+# Print a message with the time
 def log(message):
     print(f"[{time.strftime('%H:%M:%S')}][hypergraph] {message}", flush=True)
 
 
 # Read a train / validation / test CSV
-# nodes[node_id] = first row of that node,
-# objects[node_id] = set of object keys "course|family|object_id" the node used.
 def read_split(path):
     nodes = {}
     objects = {}
@@ -50,8 +48,7 @@ def read_split(path):
     return node_list, objects
 
 
-# Course hyperedges, one per course, as (COURSE, course_id, members):
-# e_C(c) = {v : course(v) = c}
+# Course hyperedges
 def course_hyperedges(nodes):
     members = {}
     for node_id in range(len(nodes)):
@@ -65,8 +62,7 @@ def course_hyperedges(nodes):
     return hyperedges
 
 
-# Object hyperedges, one per object, as (OBJECT, "course|family|object_id", members):
-# e_O(o) = {v : v used object o in days 0–34}
+# Object hyperedges
 def object_hyperedges(objects):
     members = {}
     for node_id in sorted(objects):
@@ -80,9 +76,7 @@ def object_hyperedges(objects):
     return hyperedges
 
 
-# User hyperedges, one per learner, as (USER, "user|<user_id>", members), with all of the
-# learner's enrollments in every split whatever their course start:
-# e_U(l) = {v : user(v) = l}
+# User hyperedges
 def user_hyperedges(nodes):
     members = {}
     for node_id in range(len(nodes)):
@@ -96,13 +90,7 @@ def user_hyperedges(nodes):
     return hyperedges
 
 
-# Run step 4: build the hypergraph H over all splits -> hypergraph.npz:
-#   node_ids, edge_ids  [M]  one entry per membership (v, e), sorted by e, so the members
-#                            of e are node_ids[start[e]:start[e + 1]]
-#   edge_family [E]          COURSE / OBJECT / USER
-#   labels      [N]          dropout label of every node (9_train uses the train ones only)
-#   split       [N]          0 = train, 1 = validation, 2 = test (index of config.SPLITS)
-# Global node id = offset of the split + node id inside the split, in the order train, validation, test.
+# Run step 4: build the hypergraph
 def build_hypergraph(output_dir=config.PROCESSED):
     started_at = time.perf_counter()
     output_dir = Path(output_dir)
@@ -120,13 +108,13 @@ def build_hypergraph(output_dir=config.PROCESSED):
         split.extend([split_id] * len(split_nodes))
 
     all_hyperedges = course_hyperedges(nodes) + object_hyperedges(objects) + user_hyperedges(nodes)
-    # Keep |e| ≥ 2: a one-member hyperedge carries nothing beyond the node's self-loop.
+    # Keep |e| ≥ 2
     hyperedges = []
     for family, key, members in all_hyperedges:
         if len(members) >= 2:
             hyperedges.append((family, key, members))
 
-    # Sparse incidence matrix H as a membership list: h(v,e) = 1 for every (node_ids[k], edge_ids[k]).
+    # Sparse incidence matrix H 
     node_ids = []
     edge_ids = []
     edge_family = []

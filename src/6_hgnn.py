@@ -22,13 +22,13 @@ def prepare_graph(graph, device):
     edge_family = torch.as_tensor(graph["edge_family"], dtype=torch.int64, device=device)
     num_nodes = int(graph["num_nodes"])
     num_edges = len(edge_family)
-    ones = torch.ones(len(node_ids), device=device)                         # h(v,e) = 1 for every membership
+    ones = torch.ones(len(node_ids), device=device)                       
     return {
         "H": torch.sparse_coo_tensor(torch.stack([node_ids, edge_ids]), ones,
                                      (num_nodes, num_edges), check_invariants=True).coalesce(),
         "H_T": torch.sparse_coo_tensor(torch.stack([edge_ids, node_ids]), ones,
                                        (num_edges, num_nodes), check_invariants=True).coalesce(),
-        "edge_size": torch.bincount(edge_ids, minlength=num_edges).float(),   # δ(e) = |e|
+        "edge_size": torch.bincount(edge_ids, minlength=num_edges).float(),  
         "edge_family": edge_family,
     }
 

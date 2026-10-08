@@ -1,4 +1,4 @@
-# 5. Load the graph data (one hypergraph over train, validation and test)
+# 5. Load the graph data
 
 from importlib import import_module
 from pathlib import Path
@@ -12,8 +12,7 @@ HYPERGRAPH_FILE = hypergraph_module.HYPERGRAPH_FILE
 SELF_LOOP = hypergraph_module.SELF_LOOP
 
 
-# Load the hypergraph H, the labels, the split of every node and X of the three splits
-# stacked in the order of config.SPLITS (the node order of 4_hypergraph.py).
+# Load the hypergraph H
 def load_graph(output_dir=config.PROCESSED):
     output_dir = Path(output_dir)
     with np.load(output_dir / HYPERGRAPH_FILE) as bundle:
@@ -39,8 +38,8 @@ def load_graph(output_dir=config.PROCESSED):
 
 # Add one self-loop hyperedge
 def add_self_loops(graph):
-    nodes = np.arange(graph["num_nodes"], dtype=np.int64)          # 0, 1, ..., N-1
-    first_self_loop = len(graph["edge_family"])                    # self-loop of node v gets id E + v
+    nodes = np.arange(graph["num_nodes"], dtype=np.int64)          
+    first_self_loop = len(graph["edge_family"])                   
     self_loop_family = np.full(len(nodes), SELF_LOOP, dtype=np.int64)
 
     new_graph = dict(graph)
@@ -55,16 +54,14 @@ def apply_scenario(data, scenario):
     families = scenario["families"]
     columns = feature_columns(scenario["features"])
 
-    # Family ids of the kept hyperedge families (self-loops are added separately).
     kept_families = []
     for name in families:
         if name != "self_loop":
             kept_families.append(config.EDGE_FAMILIES.index(name))
 
     graph = data["graph"]
-    keep_edge = np.isin(graph["edge_family"], kept_families)                  # hyperedges of kept families
+    keep_edge = np.isin(graph["edge_family"], kept_families)               
 
-    # Renumber the kept hyperedges 0, 1, 2, ... (E' kept); a dropped hyperedge gets -1.
     new_edge_list = []
     next_id = 0
     for keep in keep_edge.tolist():
@@ -75,7 +72,7 @@ def apply_scenario(data, scenario):
             new_edge_list.append(-1)
     new_edge_id = np.asarray(new_edge_list, dtype=np.int64)
 
-    keep_membership = keep_edge[graph["edge_ids"]]                           # membership in a kept hyperedge?
+    keep_membership = keep_edge[graph["edge_ids"]]                          
     kept_node_ids = graph["node_ids"][keep_membership]
     kept_edge_ids = graph["edge_ids"][keep_membership]
     scenario_graph = {

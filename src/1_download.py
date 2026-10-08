@@ -7,9 +7,8 @@ from importlib import import_module
 from pathlib import Path
 config = import_module("0_config")
 
-# Download the raw files that are not in raw_dir yet.
-# Skipped if exits
-def download(raw_dir=config.RAW):
+# Download XuetangX dataset
+def download_xuetangx(raw_dir=config.RAW):
     raw_dir = Path(raw_dir)
     raw_dir.mkdir(parents=True, exist_ok=True)
 
@@ -23,8 +22,13 @@ def download(raw_dir=config.RAW):
         urllib.request.urlretrieve(download_url, destination_path)
 
 
+# Download OULAD dataset
+def download_oulad(raw_dir=config.RAW):
+    pass
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download the raw XuetangX dataset.")
     parser.add_argument("--raw-dir", type=Path, default=config.RAW)
     arguments = parser.parse_args()
-    download(arguments.raw_dir)
+    download_xuetangx(arguments.raw_dir)
