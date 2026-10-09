@@ -19,5 +19,8 @@ dist/
 /baseline/CFIN/dropout_prediction/
 /baseline/CFIN/.tools/
 /baseline/CFIN/.python/
+!/baseline/new_dataset/
+/baseline/new_dataset/*/
+!/baseline/new_dataset/OULAD/
 /result/*
 /docs/ket_qua/*
