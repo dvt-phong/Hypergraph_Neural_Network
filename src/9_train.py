@@ -24,7 +24,7 @@ RESULT_COLUMNS = (
     "epochs", "eval_every", "patience", "hidden_dim", "dropout", "learning_rate", "weight_decay",
     "best_epoch", "epochs_run",
     "val_auc", "val_auprc", "val_f1",
-    "auc", "auprc", "accuracy", "precision", "recall", "f1",
+    "test_auc", "test_auprc", "test_accuracy", "test_precision", "test_recall", "test_f1",
     "w_course", "w_object", "w_user", "w_self_loop",
     "minutes",
 )
