@@ -16,6 +16,7 @@ dist/
 /third_party/*/
 /baseline/*/
 !/baseline/CFIN/
+!/baseline/ML/
 /baseline/CFIN/dropout_prediction/
 /baseline/CFIN/.tools/
 /baseline/CFIN/.python/
