@@ -1,0 +1,447 @@
+diff --git a/src/main.py b/src/main.py
+index bc0b3e9..a7ba6b8 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -1,13 +1,19 @@
+ import argparse
++import os
+ from graph_builder import kddcup_graph, naver_graph
++from xuetangx_graph_builder import xuetangx_graph
+ from utils import get_logger
+-from trainer import train
++from trainer import train, train_xuetangx
+ 
+ def main(args):
+     logger = get_logger(name=f"{args.dataset}_{args.model}_{args.num_layers}_{args.batch_size}_{args.dropout}", path=f"{args.log_dir}/{args.dataset}_{args.model}_{args.num_layers}_{args.batch_size}_{args.dropout}.log")
+     logger.info('train args')
+     logger.info(args)
+ 
++    if args.dataset == 'xuetangx':   # added: XuetangX on one learner split (seed = split seed)
++        dataset = xuetangx_graph(args.raw_dir, os.path.join(args.split_dir, f"learner_s{args.seed}.csv"))
++        train_xuetangx(args, dataset, logger)
++        return
+     if args.dataset == 'kddcup':
+         dataset = kddcup_graph()
+     else:
+@@ -28,7 +34,14 @@ if __name__ == "__main__":
+     parser.add_argument("--log_dir", type=str, default='experiment_log/', help="log_dir")
+     parser.add_argument("--num_workers", type=int, default=4, help="num_workers")
+     parser.add_argument("--bi", type=bool, default=True, help="BiLSTM")
+-    
++    # added for --dataset xuetangx
++    parser.add_argument("--raw_dir", type=str, default='data/xuetangx', help="output of baseline/prepare_raw.py")
++    parser.add_argument("--split_dir", type=str, default='data/xuetangx/splits', help="learner_s<seed>.csv files")
++    parser.add_argument("--seed", type=int, default=1, help="learner split seed and random seed")
++    parser.add_argument("--out_dir", type=str, default='outputs', help="results.csv and predictions")
++    parser.add_argument("--patience", type=int, default=5, help="epochs without a better validation AUC")
++    parser.add_argument("--smoke", type=int, default=0, help="only the first N enrollments of every split")
++
+     args = parser.parse_args()
+     
+     main(args)    
+diff --git a/src/trainer.py b/src/trainer.py
+index e31c68a..ab4c4fb 100644
+--- a/src/trainer.py
++++ b/src/trainer.py
+@@ -6,9 +6,16 @@ import dgl
+ from torch.optim import Adam
+ from model import *
+ from utils import collate_data
+-from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score
++from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score, average_precision_score
+ from tqdm import tqdm
+ from torch.utils.data import DataLoader, SubsetRandomSampler
++import copy
++import csv
++import random
++import time
++
++RESULT_COLUMNS = ("time", "model", "seed", "best_epoch", "epochs_run",
++                  "val_auc", "val_auprc", "test_auc", "test_auprc", "minutes")
+     
+ def eval(model, test_dataloader, device):
+     # Evaluate AUC, ACC, F1, Prec, Recall
+@@ -129,4 +136,88 @@ def train(args, dataloader, logger):
+     f1_std = np.std(f1_list)*100
+     logger.info(f"**********The final testing AUC is {auc_mean:.2f}±{auc_std:.2f}********")
+     logger.info(f"**********The final testing F1 is {f1_mean:.2f}±{f1_std:.2f}********")
+-    logger.info("\n")
+\ No newline at end of file
++    logger.info("\n")
++
++
++# Added for XuetangX (docs/PLAN_BASELINE_v3.md): dropout probability and label of one loader, in order.
++def predict(model, dataloader, device):
++    model.eval()
++    probs, labels = [], []
++    with torch.no_grad():
++        for batch in dataloader:
++            preds = model(batch[0].to(device), batch[1].to(device), batch[2].to(device), False)
++            probs.extend(preds.cpu().tolist())
++            labels.extend(batch[3][:, 3].tolist())
++    return np.array(probs), np.array(labels)
++
++
++# Added for XuetangX: one run on one learner split (seed = split seed), the model and its
++# hyperparameters as in train(). Changed protocol: train / validation / test of the split, the epoch
++# is chosen on validation AUC (stop after args.patience epochs without a better one, at most
++# args.num_epochs), the best weights are restored and validation and test are scored once (train()
++# runs 5 times with seed 0 and scores test at the last epoch).
++def train_xuetangx(args, dataset, logger):
++    started_at = time.time()
++    dgl.random.seed(args.seed)
++    torch.manual_seed(args.seed)
++    np.random.seed(args.seed)
++    random.seed(args.seed)
++    device = torch.device("cuda:0" if args.gpu >= 0 and torch.cuda.is_available() else "cpu")
++
++    split_ids = {name: dataset.split.index[dataset.split == name].tolist() for name in ('train', 'validation', 'test')}
++    if args.smoke:
++        split_ids = {name: ids[:args.smoke] for name, ids in split_ids.items()}
++    logger.info("split " + ", ".join(f"{k}={len(v):,}" for k, v in split_ids.items()))
++    train_dataloader = DataLoader(dataset, collate_fn=collate_data, sampler=SubsetRandomSampler(split_ids['train']), batch_size=args.batch_size, num_workers=args.num_workers)
++    eval_dataloader = {name: DataLoader(dataset, collate_fn=collate_data, sampler=split_ids[name], batch_size=args.batch_size, num_workers=args.num_workers)
++                       for name in ('validation', 'test')}
++
++    g = dataset[0]
++    input_dim = g.ndata['feature'].shape[1]
++    model = Multi_RGCN(args.num_layers, input_dim, args.hidden_dim, args.bi, args.dropout, args.batch_size, device).to(device)
++    optimizer = Adam(model.parameters(), lr=args.lr)
++    mse_loss_fn = nn.BCELoss().to(device)
++
++    best_auc, best_epoch, best_state, stale, e = -1.0, 0, None, 0, 0
++    for e in range(1, args.num_epochs + 1):
++        model.train()
++        epoch_loss = 0.
++        for iter_idx, batch in tqdm(enumerate(train_dataloader, start=1), total=len(train_dataloader)):
++            preds = model(batch[0].to(device), batch[1].to(device), batch[2].to(device), True)
++            loss = mse_loss_fn(preds.to(device), batch[3][:, 3].to(device))
++            optimizer.zero_grad()
++            loss.backward()
++            optimizer.step()
++            epoch_loss += loss.item() * preds.shape[0]
++        prob, label = predict(model, eval_dataloader['validation'], device)
++        val_auc = roc_auc_score(label, prob)
++        if val_auc > best_auc:                                           # best = argmax_epoch AUC_val
++            best_auc, best_epoch, best_state, stale = val_auc, e, copy.deepcopy(model.state_dict()), 0
++        else:
++            stale += 1
++        logger.info(f"[seed {args.seed}] epoch {e}: loss {epoch_loss / len(split_ids['train']):.4f}, valid-auc {val_auc:.4f} (best {best_auc:.4f} at epoch {best_epoch})")
++        if stale >= args.patience:
++            break
++    model.load_state_dict(best_state)
++
++    os.makedirs(args.out_dir, exist_ok=True)
++    row = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "model": "SIG-Net", "seed": args.seed,
++           "best_epoch": best_epoch, "epochs_run": e}
++    for name, prefix in (('validation', 'val'), ('test', 'test')):
++        prob, label = predict(model, eval_dataloader[name], device)
++        row[prefix + "_auc"] = float(roc_auc_score(label, prob))                 # AUC = P(p_dropout > p_non-dropout)
++        row[prefix + "_auprc"] = float(average_precision_score(label, prob))     # AUPRC = Σ_n (R_n − R_{n−1})·P_n
++        with open(os.path.join(args.out_dir, f"seed{args.seed}_{name}.csv"), 'w', newline='', encoding='utf-8') as output:
++            writer = csv.writer(output)
++            writer.writerow(('split', 'enroll_id', 'label', 'prob'))
++            for enroll_id, y, p in zip(split_ids[name], label, prob):
++                writer.writerow((name, int(enroll_id), int(y), f"{p:.8f}"))
++        logger.info(f"[seed {args.seed}] {name}: auc={row[prefix + '_auc']:.4f}, auprc={row[prefix + '_auprc']:.4f}")
++    row["minutes"] = (time.time() - started_at) / 60
++    results_path = os.path.join(args.out_dir, 'results.csv')
++    is_new = not os.path.exists(results_path)
++    with open(results_path, 'a', newline='', encoding='utf-8') as output:
++        writer = csv.DictWriter(output, fieldnames=RESULT_COLUMNS)
++        if is_new:
++            writer.writeheader()
++        writer.writerow({k: (f"{v:.6f}" if isinstance(v, float) else v) for k, v in row.items()})
+\ No newline at end of file
+diff --git a/src/xuetangx_graph_builder.py b/src/xuetangx_graph_builder.py
+new file mode 100644
+index 0000000..b20c106
+--- /dev/null
++++ b/src/xuetangx_graph_builder.py
+@@ -0,0 +1,286 @@
++# XuetangX version of kddcup_graph (graph_builder.py), added for docs/PLAN_BASELINE_v3.md.
++#
++# The original code only has KDD Cup 2015 and NAVER. This file follows kddcup_graph.process step by
++# step on the XuetangX raw data of baseline/prepare_raw.py (log already filtered like the main model:
++# 22 actions, course days 0-34). Translation:
++#   - day         = date(event) − date(course start of course_info.csv)            (KDD: date.csv)
++#   - event       = action group: problem 0, video 1, forum 2, other 3            (KDD: event column)
++#   - 3 windows   = days 0-11, 12-23, 24-35 (12 days each, day 35 is always empty;  (KDD: 3 x 10 days)
++#                   the model shares its layers over the 3 graphs, so they need the same width)
++#   - course feat = distinct objects per event type in the log + enrollments       (KDD: object.csv modules)
++#   - rows without an object (every web_page action and close_forum in XuetangX) are dropped by the
++#     groupby on 'object', as in the original.
++# Changed on purpose (protocol, not translation):
++#   - the per-course z-score of the daily clicks is fitted on the train enrollments of the course
++#     (the original fits it on every enrollment);
++#   - student edges of the third graph are typed by the dropout label (8 dropout / 9 not) only when
++#     the source enrollment is in train; validation/test sources get type 10 ("unknown", the model has
++#     num_rels = 11). The original typed them with the labels of train AND test enrollments. With a
++#     learner split every other enrollment of a learner is in the same split as the learner.
++#   - kept as in the original: feature[day] = click_sum of the LAST (event, object) row of that day in
++#     groupby order (the loop overwrites, it does not add up the day), and the target's own edges are
++#     masked in __getitem__.
++#   - the per-enrollment loops (iterrows, truth_all filters) are rewritten with vectorized pandas;
++#     check_builder.py compares the result with a literal loop translation on a sample.
++
++import os
++import numpy as np
++import pandas as pd
++import torch
++from collections import defaultdict
++from sklearn.preprocessing import StandardScaler
++
++try:
++    import dgl
++    from dgl.data import DGLDataset
++except ImportError:   # building the arrays (check_builder.py) does not need DGL
++    dgl, DGLDataset = None, object
++
++ACTION_EVENT = {}
++for _a in ('problem_get', 'problem_check', 'problem_save', 'reset_problem', 'problem_check_correct', 'problem_check_incorrect'):
++    ACTION_EVENT[_a] = 0                                                             # problem
++for _a in ('seek_video', 'play_video', 'pause_video', 'stop_video', 'load_video'):
++    ACTION_EVENT[_a] = 1                                                             # video
++for _a in ('create_thread', 'create_comment', 'delete_thread', 'delete_comment', 'close_forum'):
++    ACTION_EVENT[_a] = 2                                                             # discussion
++for _a in ('click_info', 'click_courseware', 'click_about', 'click_forum', 'click_progress', 'close_courseware'):
++    ACTION_EVENT[_a] = 3                                                             # other
++WINDOW = 12
++ACTIVITY = [0, 1, 2, 3]
++COURSE_CATE_LIST = ['problem', 'video', 'discussion', 'other']
++
++
++# day = date(event) − date(course start) and event type of every log row.
++def add_days_and_event(log_all, course_info):
++    start = course_info.set_index('course_id')['start'].str[:10]
++    log_all['days'] = (pd.to_datetime(log_all['time'].str[:10]) - pd.to_datetime(log_all['course_id'].map(start))).dt.days
++    log_all['event'] = log_all['action'].map(ACTION_EVENT)
++    return log_all
++
++
++def xuetangx_load(path, chunk_rows=5000000):
++    """Log, truth (with username, course_id) and course start dates of baseline/prepare_raw.py.
++
++    Memory: only rows with an object are kept (every groupby of the original is on 'object', so the
++    other rows never reach the graph; check_builder.py verifies it), with days and event computed per
++    chunk and the time/action strings dropped.
++    """
++    course_info = pd.read_csv(os.path.join(path, 'course_info.csv'), usecols=['course_id', 'start'])
++    parts = []
++    for chunk in pd.read_csv(os.path.join(path, 'prediction_log', 'log.csv'),
++                             usecols=['enroll_id', 'course_id', 'action', 'object', 'time'], chunksize=chunk_rows):
++        chunk = add_days_and_event(chunk[chunk['object'].notna()].copy(), course_info)
++        parts.append(chunk[['enroll_id', 'course_id', 'object', 'days', 'event']])
++    log_all = pd.concat(parts, ignore_index=True)
++    truth_all = pd.read_csv(os.path.join(path, 'prediction_log', 'truth.csv'))
++    enrollments = pd.read_csv(os.path.join(path, 'prediction_log', 'enrollments.csv'))
++    truth_all = truth_all.merge(enrollments, on='enroll_id', how='left')
++    return log_all, truth_all, course_info
++
++
++def build_xuetangx_arrays(log_all, truth_all, course_info, split):
++    """Everything kddcup_graph.process computes, as numpy arrays; split = Series enroll_id -> split."""
++    log_all = log_all.rename(columns={'enroll_id': 'enrollment_id'})
++    truth_all = truth_all.rename(columns={'enroll_id': 'enrollment_id'}).sort_values('enrollment_id').reset_index(drop=True)
++
++    # days and event (xuetangx_load computes them already)
++    if 'days' not in log_all.columns:
++        log_all = add_days_and_event(log_all, course_info)
++
++    # click_sum = rows per (enrollment, event, day, object), the original's count() of 'time';
++    # rows with no object are dropped by groupby
++    all_clicksum = log_all.groupby(['enrollment_id', 'event', 'days', 'object']).size().reset_index(name='click_sum')
++
++    # 3 windows; clicksum = rows per (enrollment, object) inside the window
++    windows = [list(range(w * WINDOW, (w + 1) * WINDOW)) for w in range(3)]
++    activity_log_all = log_all[log_all['event'].isin(ACTIVITY)]
++    interactions = []
++    for days in windows:
++        window_log = activity_log_all[activity_log_all['days'].isin(days)]
++        window_log = pd.merge(window_log, window_log.groupby(['enrollment_id', 'object']).size().reset_index(name='clicksum'), how='left')
++        interactions.append(window_log[['enrollment_id', 'event', 'object', 'clicksum']].groupby(['enrollment_id', 'event', 'object', 'clicksum']).nunique().reset_index())
++
++    # node ids: enrollments, then objects, then courses
++    enroll_list = truth_all['enrollment_id'].tolist()
++    object_list = sorted(activity_log_all['object'].dropna().unique())
++    course_list = sorted(truth_all['course_id'].unique())
++    enroll_node_id = {e: i for i, e in enumerate(enroll_list)}
++    object_node_id = {o: len(enroll_list) + i for i, o in enumerate(object_list)}
++    course_node_id = {c: len(enroll_list) + len(object_list) + i for i, c in enumerate(course_list)}
++    num_node = len(enroll_list) + len(object_list) + len(course_list)
++
++    # enrollment features: feature[day] = click_sum of the last row of that day (as the original loop)
++    last = all_clicksum.groupby(['enrollment_id', 'days'], sort=False)['click_sum'].last().reset_index()
++    enroll_feature = np.zeros((len(enroll_list), 3 * WINDOW))
++    enroll_feature[last['enrollment_id'].map(enroll_node_id).to_numpy(), last['days'].to_numpy()] = last['click_sum'].to_numpy()
++    labels = np.zeros((len(enroll_list), 4))
++    for w in range(3):
++        labels[:, w] = (enroll_feature[:, w * WINDOW:(w + 1) * WINDOW].sum(axis=1) == 0)   # no click in window w
++    labels[:, 3] = truth_all['truth'].to_numpy()                                           # dropout label
++
++    # course features: distinct objects per event type + number of enrollments
++    object_info = activity_log_all[['course_id', 'object', 'event']].dropna().drop_duplicates().sort_values(['course_id', 'object', 'event']).reset_index(drop=True)
++    course_feature = np.zeros((len(course_list), len(COURSE_CATE_LIST) + 1))
++    counts = object_info.groupby(['course_id', 'event']).size()
++    for (course, event), count in counts.items():
++        course_feature[course_node_id[course] - course_node_id[course_list[0]], int(event)] = count
++    enroll_per_course = truth_all.groupby('course_id').size()
++    for course in course_list:
++        course_feature[course_node_id[course] - course_node_id[course_list[0]], -1] = enroll_per_course[course]
++
++    # z-score of the daily clicks per course, fitted on the train enrollments of the course
++    is_train = truth_all['enrollment_id'].map(split).eq('train').to_numpy()
++    node_feature = np.zeros_like(enroll_feature)
++    no_train_courses = 0
++    for course, rows in truth_all.groupby('course_id').indices.items():
++        train_rows = rows[is_train[rows]]
++        if len(train_rows) == 0:                                                     # keep raw counts
++            node_feature[rows] = enroll_feature[rows]
++            no_train_courses += 1
++            continue
++        scaler = StandardScaler().fit(enroll_feature[train_rows])
++        node_feature[rows] = scaler.transform(enroll_feature[rows])
++    course_feature = StandardScaler().fit_transform(course_feature)
++
++    # object-course edges (types 0-3), then enrollment-object edges per window (types 4-7)
++    base_src = object_info['object'].map(object_node_id).to_numpy()
++    base_dst = object_info['course_id'].map(course_node_id).to_numpy()
++    base_etype = object_info['event'].to_numpy().astype(int)
++    o_in_course = defaultdict(list)
++    for o, c in zip(base_src, base_dst):
++        o_in_course[c].append(o)
++    graphs = []
++    for interaction in interactions:
++        src = np.concatenate([base_src, interaction['enrollment_id'].map(enroll_node_id).to_numpy()])
++        dst = np.concatenate([base_dst, interaction['object'].map(object_node_id).to_numpy()])
++        etype = np.concatenate([base_etype, interaction['event'].to_numpy().astype(int) + 4])
++        graphs.append({'src': np.concatenate([src, dst]), 'dst': np.concatenate([dst, src]), 'etype': np.concatenate([etype, etype])})
++
++    # student edges: every ordered pair of enrollments of one learner, typed by the source enrollment
++    truth_all['node'] = truth_all['enrollment_id'].map(enroll_node_id)
++    e_with_student = {}
++    pair_src, pair_dst = [], []
++    for student, group in truth_all.groupby('username', sort=True):
++        nodes = group['node'].to_numpy()
++        e_with_student[student] = nodes.tolist()
++        n = len(nodes)
++        if n < 2:
++            continue
++        i, j = np.where(~np.eye(n, dtype=bool))                                     # row-major, src != dst
++        pair_src.append(nodes[i])
++        pair_dst.append(nodes[j])
++    pair_src = np.concatenate(pair_src)
++    pair_dst = np.concatenate(pair_dst)
++    third_type = np.where(labels[pair_src, 3] == 1, 8, 9)
++    third_type = np.where(is_train[pair_src], third_type, 10)                       # val/test source -> unknown
++    pair_types = [np.where(labels[pair_src, 1] == 1, 8, 9),                          # graph 1: no click in window 2
++                  np.where(labels[pair_src, 2] == 1, 8, 9),                          # graph 2: no click in window 3
++                  third_type]                                                        # graph 3: dropout label
++    student_eid = []
++    for g, graph in enumerate(graphs):
++        offset = len(graph['src'])
++        eid = defaultdict(list)
++        for k, s in enumerate(pair_src):
++            eid[int(s)].append(offset + k)
++        student_eid.append(eid)
++        graph['src'] = np.concatenate([graph['src'], pair_src])
++        graph['dst'] = np.concatenate([graph['dst'], pair_dst])
++        graph['etype'] = np.concatenate([graph['etype'], pair_types[g]])
++
++    # node features: [type one-hot 3 | window clicks 12 | course features 5]
++    zeros_course = np.zeros((len(enroll_list), len(COURSE_CATE_LIST) + 1))
++    obj_rows = np.hstack([np.tile([0, 1, 0], (len(object_list), 1)), np.zeros((len(object_list), WINDOW + len(COURSE_CATE_LIST) + 1))])
++    crs_rows = np.hstack([np.tile([0, 0, 1], (len(course_list), 1)), np.zeros((len(course_list), WINDOW)), course_feature])
++    for w, graph in enumerate(graphs):
++        enr_rows = np.hstack([np.tile([1, 0, 0], (len(enroll_list), 1)), node_feature[:, w * WINDOW:(w + 1) * WINDOW], zeros_course])
++        graph['feature'] = np.vstack([enr_rows, obj_rows, crs_rows])
++    non_feature = np.vstack([np.tile([1, 0, 0], (len(enroll_list), 1)), np.tile([0, 1, 0], (len(object_list), 1)), np.tile([0, 0, 1], (len(course_list), 1))])
++
++    return {
++        'graphs': graphs, 'num_node': num_node, 'non_feature': non_feature, 'labels': labels,
++        'enroll_node_id': enroll_node_id, 'object_node_id': object_node_id, 'course_node_id': course_node_id,
++        'enroll_course': dict(zip(truth_all['enrollment_id'], truth_all['course_id'])),
++        'enroll_student': dict(zip(truth_all['enrollment_id'], truth_all['username'])),
++        'o_in_course': o_in_course, 'e_with_student': e_with_student, 'student_eid': student_eid,
++        'enroll_feature': enroll_feature, 'no_train_courses': no_train_courses,
++    }
++
++
++def get_subgraph(graph, o_with_target, e_with_student, target_course, target_enroll):
++    """Same as graph_builder.get_subgraph."""
++    nodes = torch.unique(torch.cat([o_with_target, e_with_student, target_course, target_enroll], dim=0,))
++    nodes = nodes.type(torch.int64)
++    subgraph = dgl.node_subgraph(graph, nodes, store_ids=True)
++    return subgraph
++
++
++class xuetangx_graph(DGLDataset):
++    def __init__(self, raw_dir, split_path):
++        self.xuetangx_dir = raw_dir
++        self.split_path = split_path
++        super().__init__(name='xuetangx')
++
++    def process(self):
++        log_all, truth_all, course_info = xuetangx_load(self.xuetangx_dir)
++        split = pd.read_csv(self.split_path, index_col='enroll_id')['split']
++        arrays = build_xuetangx_arrays(log_all, truth_all, course_info, split)
++        print('XuetangX graph: %d nodes, courses without train enrollments: %d' % (arrays['num_node'], arrays['no_train_courses']))
++        built = []
++        for graph in arrays['graphs']:
++            g = dgl.graph((torch.tensor(graph['src']), torch.tensor(graph['dst'])), num_nodes=arrays['num_node'])
++            g.ndata['feature'] = torch.FloatTensor(graph['feature'])
++            g.ndata['non_feature'] = torch.FloatTensor(arrays['non_feature'])
++            g.edata['etype'] = torch.tensor(graph['etype'])
++            built.append(g)
++        self.one_graph, self.two_graph, self.third_graph = built
++        self.labels = arrays['labels']
++        self.enroll_node_id = arrays['enroll_node_id']
++        self.course_node_id = arrays['course_node_id']
++        self.enroll_course = arrays['enroll_course']
++        self.enroll_student = arrays['enroll_student']
++        self.o_in_cousre_dic = arrays['o_in_course']
++        self.e_with_student_dic = arrays['e_with_student']
++        self.one_student_eid_dic, self.two_student_eid_dic, self.third_student_eid_dic = arrays['student_eid']
++        self.split = split
++
++    def __getitem__(self, i):
++        # as kddcup_graph.__getitem__; i is the raw enroll_id, lookups by dict instead of DataFrame filters
++        if i == 0:
++            return self.one_graph
++
++        target_enroll = self.enroll_node_id[i]
++        target_course = self.course_node_id[self.enroll_course[i]]
++        student_name = self.enroll_student[i]
++
++        o_with_target = self.o_in_cousre_dic[target_course]
++        enroll_list = self.e_with_student_dic[student_name]
++
++        subgraphs = []
++        for graph, student_eid_dic in ((self.one_graph, self.one_student_eid_dic),
++                                       (self.two_graph, self.two_student_eid_dic),
++                                       (self.third_graph, self.third_student_eid_dic)):
++            subgraph = get_subgraph(graph=graph,
++                                    o_with_target=torch.tensor(o_with_target, dtype=torch.int64),
++                                    e_with_student=torch.tensor(enroll_list, dtype=torch.int64),
++                                    target_course=torch.tensor([target_course], dtype=torch.int64),
++                                    target_enroll=torch.tensor([target_enroll], dtype=torch.int64),
++                                    )
++            target_mask = np.zeros(subgraph.num_nodes())
++            target_enroll_id = (subgraph.ndata[dgl.NID] == target_enroll).nonzero(as_tuple=True)[0]
++            target_course_id = (subgraph.ndata[dgl.NID] == target_course).nonzero(as_tuple=True)[0]
++            target_mask[target_enroll_id] = 1
++            target_mask[target_course_id] = 2
++            subgraph.ndata['target'] = torch.tensor(target_mask)
++
++            # Masking student edge: an edge out of the target takes the type of the edge into the target
++            drop_etype_tensor = torch.tensor([])
++            for edge_id in student_eid_dic[target_enroll]:
++                drop_etype_tensor = torch.cat([drop_etype_tensor, (subgraph.edata[dgl.EID] == edge_id).nonzero(as_tuple=True)[0]])
++            e_list = list(map(lambda x: subgraph.edges()[1][int(x)].item(), drop_etype_tensor.tolist()))
++            new_etype = []
++            for e_id in e_list:
++                new_etype.append(((subgraph.edges()[0] == e_id) & (subgraph.edges()[1] == target_enroll_id)).nonzero(as_tuple=True)[0].item())
++            subgraph.edata['etype'][[int(x) for x in drop_etype_tensor.tolist()]] = subgraph.edata['etype'][new_etype]
++            subgraphs.append(subgraph)
++
++        return subgraphs[0], subgraphs[1], subgraphs[2], torch.Tensor(self.labels[target_enroll])

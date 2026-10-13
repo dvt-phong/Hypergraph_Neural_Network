@@ -1,32 +1,38 @@
 diff --git a/feat_extract.py b/feat_extract.py
-index 1e3c6e9..62f0de1 100644
+index 1e3c6e9..c3b8da4 100644
 --- a/feat_extract.py
 +++ b/feat_extract.py
-@@ -1,36 +1,51 @@
+@@ -1,36 +1,50 @@
++import os
  import pandas as pd
  
 -train = pd.read_csv('prediction_log/train_log.csv')
 -test = pd.read_csv('prediction_log/test_log.csv')
-+# Changed from the original only to fit in memory: the original loads both logs (42M rows) at once
-+# and runs groupby().sum() on the whole log once per action. Here the logs are read in chunks and
-+# the per-enrollment counts of the chunks are added up. The output files are the same.
-+
-+LOG_COLUMNS = ['enroll_id', 'username', 'course_id', 'session_id', 'action']
-+CHUNK_ROWS = 5000000
-+
- train_truth = pd.read_csv('prediction_log/train_truth.csv', index_col='enroll_id')
- test_truth = pd.read_csv('prediction_log/test_truth.csv', index_col='enroll_id')
- all_truth = pd.concat([train_truth, test_truth])
+-train_truth = pd.read_csv('prediction_log/train_truth.csv', index_col='enroll_id')
+-test_truth = pd.read_csv('prediction_log/test_truth.csv', index_col='enroll_id')
+-all_truth = pd.concat([train_truth, test_truth])
 -all_log = pd.concat([train, test])
++# Changed from the original:
++# (1) memory: the original loads both logs (42M rows) at once and runs groupby().sum() on the whole
++#     log once per action; here the log is read in chunks and the per-enrollment counts of the
++#     chunks are added up (same counts);
++# (2) data: one log of every labeled enrollment from data/processed/baseline_raw (folder CFIN_RAW),
++#     filtered like the main model M (22 actions, course days 0-34). The counts do not depend on
++#     the split, so they are written once to all_features.csv; preprocess.py picks the split. An
++#     enrollment with no kept event gets 0 counts, its username/course_id come from enrollments.csv.
  
 -train_enroll = list(set(list(train['enroll_id'])))
--
++RAW = os.environ.get('CFIN_RAW', 'prediction_log')
++LOG_COLUMNS = ['enroll_id', 'username', 'course_id', 'session_id', 'action']
++CHUNK_ROWS = 5000000
+ 
 -test_enroll = list(set(list(test['enroll_id'])))
  video_action = ['seek_video','play_video','pause_video','stop_video','load_video']
  problem_action = ['problem_get','problem_check','problem_save','reset_problem','problem_check_correct', 'problem_check_incorrect']
  forum_action = ['create_thread','create_comment','delete_thread','delete_comment']
  click_action = ['click_info','click_courseware','click_about','click_forum','click_progress']
  close_action = ['close_courseware']
++count_columns = ['all#count', 'session#count'] + [a+'#num' for a in video_action + problem_action + forum_action + click_action + close_action]
  
 -all_num = all_log.groupby('enroll_id').count()[['action']]
 -all_num.columns = ['all#count']
@@ -38,11 +44,17 @@ index 1e3c6e9..62f0de1 100644
 -    all_log[a+'#num'] = action_
 -    action_num = all_log.groupby('enroll_id').sum()[[a+'#num']]
 -    all_num = pd.merge(all_num, action_num, left_index=True, right_index=True)
-+
-+# Counts of one log file. enroll_ids keeps the order of first appearance, so set(enroll_ids)
-+# iterates like the original set(list(log['enroll_id'])).
+-all_num = pd.merge(all_num, all_truth, left_index=True, right_index=True)
+-enroll_info = all_log[['username','course_id','enroll_id']].drop_duplicates()
+-enroll_info.index = enroll_info['enroll_id']
+-del enroll_info['enroll_id']
+-all_num = pd.merge(all_num, enroll_info, left_index=True, right_index=True)
+-all_num.loc[test_enroll].to_csv('test_features.csv')
+-all_num.loc[train_enroll].to_csv('train_features.csv')
+ 
++# Counts of one log file, per enrollment.
 +def count_log(path):
-+    counts, infos, enroll_ids = [], [], []
++    counts = []
 +    for chunk in pd.read_csv(path, usecols=LOG_COLUMNS, chunksize=CHUNK_ROWS):
 +        group = chunk.groupby('enroll_id')
 +        part = pd.DataFrame({'all#count': group['action'].count(),          # rows with an action
@@ -50,53 +62,327 @@ index 1e3c6e9..62f0de1 100644
 +        for a in video_action + problem_action + forum_action + click_action + close_action:
 +            part[a+'#num'] = (chunk['action'] == a).astype(int).groupby(chunk['enroll_id']).sum()
 +        counts.append(part)
-+        infos.append(chunk[['username','course_id','enroll_id']].drop_duplicates())
-+        enroll_ids.extend(pd.unique(chunk['enroll_id']).tolist())
-+        print(path, len(enroll_ids), flush=True)
-+    return counts, infos, enroll_ids
++        print(path, sum(len(c) for c in counts), flush=True)
++    if not counts:
++        return pd.DataFrame(columns=count_columns, dtype=int)
++    return pd.concat(counts).groupby(level=0).sum()                         # an enrollment may span chunks
 +
 +
-+train_counts, train_infos, train_ids = count_log('prediction_log/train_log.csv')
-+test_counts, test_infos, test_ids = count_log('prediction_log/test_log.csv')
-+train_enroll = list(set(train_ids))
-+test_enroll = list(set(test_ids))
-+
-+all_num = pd.concat(train_counts + test_counts).groupby(level=0).sum()   # an enrollment may span chunks
++enrollments = pd.read_csv(os.path.join(RAW, 'enrollments.csv'), index_col='enroll_id')
++truth = pd.read_csv(os.path.join(RAW, 'truth.csv'), index_col='enroll_id')
++all_num = count_log(os.path.join(RAW, 'log.csv'))[count_columns]
++all_num = all_num.reindex(truth.index, fill_value=0)                         # no kept event -> 0 counts
 +all_num.index.name = 'enroll_id'
- all_num = pd.merge(all_num, all_truth, left_index=True, right_index=True)
--enroll_info = all_log[['username','course_id','enroll_id']].drop_duplicates()
-+enroll_info = pd.concat(train_infos + test_infos).drop_duplicates()
- enroll_info.index = enroll_info['enroll_id']
- del enroll_info['enroll_id']
- all_num = pd.merge(all_num, enroll_info, left_index=True, right_index=True)
- all_num.loc[test_enroll].to_csv('test_features.csv')
- all_num.loc[train_enroll].to_csv('train_features.csv')
--
++all_num['truth'] = truth['truth']
++all_num['username'] = enrollments.loc[all_num.index, 'username']
++all_num['course_id'] = enrollments.loc[all_num.index, 'course_id']
++all_num.to_csv('all_features.csv')
++print('all', all_num.shape, flush=True)
 diff --git a/main.py b/main.py
-index 4369652..6637d69 100644
+index 4369652..e3bc009 100644
 --- a/main.py
 +++ b/main.py
-@@ -7,7 +7,7 @@ import tensorflow as tf
+@@ -1,22 +1,42 @@
+ import os
+-from sklearn.metrics import roc_auc_score
++from sklearn.metrics import roc_auc_score, average_precision_score
+ import sys
++import argparse
++import csv
++import random
++import time
+ import numpy as np
+ import pandas as pd
+ import tensorflow as tf
  import pickle as pkl
  from model import CFIN
  
 -os.environ['CUDA_VISIBLE_DEVICES'] = '2,4'
++# Changed from the original (protocol of the comparison, the model is unchanged):
++# - three splits (the learner split of baseline/prepare_raw.py, feat/s<seed>/ from preprocess.py)
++#   instead of train / test; --seed is both the split seed and the training seed;
++# - the epoch is chosen on validation AUC with the authors' own rule model.training_termination
++#   (stop when none of the last 5 epochs beats the epoch before them), the best weights are saved
++#   and restored, and validation and test are scored once (the original trained on train + val,
++#   printed the test AUC every epoch and stopped at the fixed epoch 27);
++# - --seed seeds numpy and random as well (most weights and the batch order use numpy; the
++#   original only seeded TensorFlow);
++# - predictions and metrics (AUC, AUPRC) are written like baseline/ML.
++
 +os.environ.setdefault('CUDA_VISIBLE_DEVICES', '2,4')   # original forces '2,4'; an outside value now wins
  act_feat_basic = pkl.load(open('act_feats.pkl','rb'))
  user_cat_feat = ['gender', 'cluster_label']
  user_num_feat = ['age','user_enroll_num']
-@@ -161,5 +161,5 @@ params = {
-     "random_seed": 12345
+ course_cat_feat = ['course_category']
+ course_num_feat = ['course_enroll_num']
++SPLITS = ['train', 'validation', 'test']
++RESULT_COLUMNS = (
++    "time", "model", "seed", "best_epoch", "epochs_run",
++    "val_auc", "val_auprc", "test_auc", "test_auprc", "minutes",
++)
+ 
+-def feat_augment(train_feat, test_feat):
++def feat_augment(train_feat, valid_feat, test_feat):
+     act_feats = pkl.load(open('act_feats.pkl', 'rb'))
+-    all_feat = pd.concat([train_feat, test_feat])
++    all_feat = pd.concat([train_feat, valid_feat, test_feat])
+     all_feat_u_mean = all_feat.groupby('username').mean()[act_feats]
+     all_feat_u_mean.columns = [x+'#user#mean' for x in all_feat_u_mean.columns]
+     all_feat_u_max = all_feat.groupby('username').max()[act_feats]
+@@ -26,14 +46,14 @@ def feat_augment(train_feat, test_feat):
+     all_feat = pd.merge(all_feat, all_feat_u_max, right_index=True, left_on='username')
+ 
+     all_feat_c_mean = all_feat.groupby('course_id').mean()[act_feats]
+-    all_feat_c_mean.columns = [x+'#course#mean' for x in all_feat_c_mean.columns] 
++    all_feat_c_mean.columns = [x+'#course#mean' for x in all_feat_c_mean.columns]
+ 
+     all_feat_c_max = all_feat.groupby('course_id').max()[act_feats]
+     all_feat_c_max.columns = [x+'#course#max' for x in all_feat_c_max.columns]
+ 
+     all_feat = pd.merge(all_feat, all_feat_c_mean, right_index=True, left_on='course_id')
+     all_feat = pd.merge(all_feat, all_feat_c_max, right_index=True, left_on='course_id')
+-    
++
+     act_feat = []
+     for f in act_feat_basic:
+         act_feat.append(f)
+@@ -42,10 +62,10 @@ def feat_augment(train_feat, test_feat):
+         act_feat.append(f+'#course#mean')
+         act_feat.append(f+'#course#max')
+ 
+-    return all_feat.loc[train_feat.index], all_feat.loc[test_feat.index], act_feat
++    return all_feat.loc[train_feat.index], all_feat.loc[valid_feat.index], all_feat.loc[test_feat.index], act_feat
+ 
+-def dataparse(train, test, num_feat, cat_feat):
+-    all_data = pd.concat([train, test])
++def dataparse(train, valid, test, num_feat, cat_feat):
++    all_data = pd.concat([train, valid, test])
+     feat_dim = 0
+     feat_dict = dict()
+     for f in cat_feat:
+@@ -65,79 +85,135 @@ def dataparse(train, test, num_feat, cat_feat):
+             data_value[f] = 1.
+         else:
+             data_indice.drop(f, axis=1, inplace=True)
+-            data_value.drop(f, axis=1, inplace=True) 
++            data_value.drop(f, axis=1, inplace=True)
+     return feat_dim, data_indice, data_value
+ 
+-def load_data():
+-    dfTrain = pd.read_csv('feat/train_feat.csv', index_col=0)
+-    dfTest = pd.read_csv('feat/test_feat.csv', index_col=0)
+-    dfTrain_u = dfTrain[user_num_feat + user_cat_feat +['truth']]
+-    dfTest_u = dfTest[user_num_feat + user_cat_feat +['truth']]
+-    
+-    dfTrain_c = dfTrain[course_num_feat + course_cat_feat +['truth']]
+-    dfTest_c = dfTest[course_num_feat + course_cat_feat +['truth']]
+-    dfTrain_a = dfTrain[act_feat_basic +['truth','username','course_id']]
+-    dfTest_a = dfTest[act_feat_basic +['truth','username','course_id']]
+-    
+-    return dfTrain_u, dfTest_u, dfTrain_c, dfTest_c, dfTrain_a, dfTest_a
+-
+-
+-def model_run(dfTrain_u, dfTest_u, dfTrain_c, dfTest_c, dfTrain_a, dfTest_a, params, act_feat):
+-        
+-    u_feat_dim, u_data_indice, u_data_value = dataparse(dfTrain_u, dfTest_u, user_num_feat, user_cat_feat)
++def load_data(feat_dir, smoke_rows=0):
++    frames = []
++    for split in SPLITS:
++        df = pd.read_csv(os.path.join(feat_dir, split + '_feat.csv'), index_col=0)
++        if smoke_rows > 0:
++            df = df.iloc[:smoke_rows]
++        frames.append((df[user_num_feat + user_cat_feat +['truth']],
++                       df[course_num_feat + course_cat_feat +['truth']],
++                       df[act_feat_basic +['truth','username','course_id']]))
++    return frames
++
++
++# AUC and AUPRC of the dropout class (label 1), as baseline/ML.
++def metrics(labels, probabilities):
++    return {
++        "auc": float(roc_auc_score(labels, probabilities)),             # AUC = P(p_dropout > p_non-dropout)
++        "auprc": float(average_precision_score(labels, probabilities)), # AUPRC = Σ_n (R_n − R_{n−1})·P_n
++    }
++
++
++# Write split, enroll_id, label, prob of one split to a CSV file.
++def write_predictions(path, split, enroll_ids, labels, probabilities):
++    with open(path, 'w', newline='', encoding='utf-8') as output:
++        writer = csv.writer(output)
++        writer.writerow(('split', 'enroll_id', 'label', 'prob'))
++        for enroll_id, label, prob in zip(enroll_ids, labels, probabilities):
++            writer.writerow((split, int(enroll_id), int(label), '%.8f' % prob))
++
++
++# Append one row to results.csv (header written when the file is new).
++def append_result(path, row):
++    is_new = not os.path.exists(path)
++    with open(path, 'a', newline='', encoding='utf-8') as output:
++        writer = csv.DictWriter(output, fieldnames=RESULT_COLUMNS)
++        if is_new:
++            writer.writeheader()
++        text_row = {}
++        for name in row:
++            value = row[name]
++            text_row[name] = '%.6f' % value if isinstance(value, float) else value
++        writer.writerow(text_row)
++
++
++def model_run(frames, params, act_feat, seed, max_epoch, out_dir):
++    started_at = time.time()
++    (dfTrain_u, dfTrain_c, dfTrain_a), (dfValid_u, dfValid_c, dfValid_a), (dfTest_u, dfTest_c, dfTest_a) = frames
++
++    u_feat_dim, u_data_indice, u_data_value = dataparse(dfTrain_u, dfValid_u, dfTest_u, user_num_feat, user_cat_feat)
+     ui_train, uv_train = np.asarray(u_data_indice.loc[dfTrain_u.index], dtype=int), np.asarray(u_data_value.loc[dfTrain_u.index], dtype=float)
++    ui_valid, uv_valid = np.asarray(u_data_indice.loc[dfValid_u.index], dtype=int), np.asarray(u_data_value.loc[dfValid_u.index], dtype=float)
+     ui_test, uv_test = np.asarray(u_data_indice.loc[dfTest_u.index], dtype=int), np.asarray(u_data_value.loc[dfTest_u.index], dtype=float)
+-    
++
+     params["u_feat_size"] = u_feat_dim
+     params["u_field_size"] = len(ui_train[0])
+-        
+-    c_feat_dim, c_data_indice, c_data_value = dataparse(dfTrain_c, dfTest_c, course_num_feat, course_cat_feat)
++
++    c_feat_dim, c_data_indice, c_data_value = dataparse(dfTrain_c, dfValid_c, dfTest_c, course_num_feat, course_cat_feat)
+     ci_train, cv_train = np.asarray(c_data_indice.loc[dfTrain_c.index], dtype=int), np.asarray(c_data_value.loc[dfTrain_c.index], dtype=float)
++    ci_valid, cv_valid = np.asarray(c_data_indice.loc[dfValid_c.index], dtype=int), np.asarray(c_data_value.loc[dfValid_c.index], dtype=float)
+     ci_test, cv_test = np.asarray(c_data_indice.loc[dfTest_c.index], dtype=int), np.asarray(c_data_value.loc[dfTest_c.index], dtype=float)
+-    
++
+     params["c_feat_size"] = c_feat_dim
+     params["c_field_size"] = len(ci_train[0])
+-    
++
+     av_train = np.asarray(dfTrain_a[act_feat], dtype=float)
+-    
+     ai_train = np.asarray([range(len(act_feat)) for x in range(len(dfTrain_a))], dtype=int)
++    av_valid = np.asarray(dfValid_a[act_feat], dtype=float)
++    ai_valid = np.asarray([range(len(act_feat)) for x in range(len(dfValid_a))], dtype=int)
+     av_test = np.asarray(dfTest_a[act_feat], dtype=float)
+     ai_test = np.asarray([range(len(act_feat)) for x in range(len(dfTest_a))], dtype=int)
+ 
+     params["a_feat_size"] = len(ai_train[0])
+     params["a_field_size"] = len(ai_train[0])
+-    
++
+     y_train = np.asarray(dfTrain_a['truth'], dtype=int)
++    y_valid = np.asarray(dfValid_a['truth'], dtype=int)
+     y_test = np.asarray(dfTest_a['truth'], dtype=int)
+     model = CFIN(**params)
+-   
+-    # generate valid set
+-    train_num = len(y_train)
+-    indices = np.arange(train_num)
+-    np.random.shuffle(indices)
+-    split_ = int(0.8*train_num)
+-    ui_train_, ui_valid = ui_train[indices][:split_],ui_train[indices[split_:]]
+-    uv_train_, uv_valid = uv_train[indices][:split_],uv_train[indices[split_:]]
+-    ci_train_, ci_valid = ci_train[indices][:split_],ci_train[indices[split_:]]
+-    cv_train_, cv_valid = cv_train[indices][:split_],cv_train[indices[split_:]]
+-    ai_train_, ai_valid = ai_train[indices][:split_],ai_train[indices[split_:]]
+-    av_train_, av_valid = av_train[indices[:split_]],av_train[indices[split_:]]
+-    y_train_, y_valid = y_train[indices[:split_]], y_train[indices[split_:]] 
+-
+-    # model selection
+-    """
+-    best_epoch = model.fit(ui_train_, uv_train_, ci_train_, cv_train_, ai_train_, av_train_, y_train_, ui_valid, uv_valid, ci_valid, cv_valid, ai_valid, av_valid, y_valid)
+-    params['epoch'] = best_epoch
+-    model = CFIN(**params)
+-    """ 
+-    # prediction results on test set
+-    
+-    model.fit(ui_train, uv_train, ci_train, cv_train, ai_train, av_train, y_train, ui_test, uv_test, ci_test, cv_test, ai_test, av_test, y_test, early_stopping=False)
+-    model.evaluate(ui_test, uv_test, ci_test, cv_test, ai_test, av_test, y_test)   
++
++    # One epoch on train at a time; validation AUC after each epoch; keep the best weights.
++    checkpoint = os.path.join('my_model', 'best_seed%d' % seed, 'CFIN')
++    os.makedirs(os.path.dirname(checkpoint), exist_ok=True)
++    valid_result = []
++    best_auc, best_epoch, epoch = -1.0, 0, 0
++    for epoch in range(1, max_epoch + 1):
++        model.fit(ui_train, uv_train, ci_train, cv_train, ai_train, av_train, y_train, max_epoch=1)
++        valid_auc = roc_auc_score(y_valid, model.predict(ui_valid, uv_valid, ci_valid, cv_valid, ai_valid, av_valid)[1])
++        valid_result.append(valid_auc)
++        if valid_auc > best_auc:                                         # best = argmax_epoch AUC_val
++            best_auc, best_epoch = valid_auc, epoch
++            model.saver.save(model.sess, checkpoint)
++        print("[seed %d] epoch %d: valid-auc=%.4f (best %.4f at epoch %d)" % (seed, epoch, valid_auc, best_auc, best_epoch), flush=True)
++        if model.training_termination(valid_result, 5):                  # authors' early stopping rule
++            break
++    model.saver.restore(model.sess, checkpoint)
++
++    # Score validation and test once, with the best weights.
++    scores = {}
++    for split, ui, uv, ci, cv, ai, av, y, df in (('validation', ui_valid, uv_valid, ci_valid, cv_valid, ai_valid, av_valid, y_valid, dfValid_a),
++                                                 ('test', ui_test, uv_test, ci_test, cv_test, ai_test, av_test, y_test, dfTest_a)):
++        probabilities = model.predict(ui, uv, ci, cv, ai, av)[1]
++        scores[split] = metrics(y, probabilities)
++        write_predictions(os.path.join(out_dir, 'seed%d_%s.csv' % (seed, split)), split, df.index, y, probabilities)
++        print("[seed %d] %s: " % (seed, split) + ", ".join("%s=%.4f" % (k, v) for k, v in scores[split].items()), flush=True)
++
++    row = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "model": "CFIN", "seed": seed,
++           "best_epoch": best_epoch, "epochs_run": epoch}
++    for name in ("auc", "auprc"):
++        row["val_" + name] = scores["validation"][name]
++        row["test_" + name] = scores["test"][name]
++    row["minutes"] = (time.time() - started_at) / 60
++    append_result(os.path.join(out_dir, 'results.csv'), row)
++
++parser = argparse.ArgumentParser(description="CFIN on one learner split, epoch chosen on validation AUC.")
++parser.add_argument('--seed', type=int, default=1, help='learner split seed (feat/s<seed>) and training seed')
++parser.add_argument('--max-epoch', type=int, default=81)
++parser.add_argument('--smoke-rows', type=int, default=0, help='use only the first N rows of every split')
++parser.add_argument('--out-dir', default=os.path.join('..', '..', '..', 'outputs', 'baselines', 'CFIN'))
++arguments = parser.parse_args()
++os.makedirs(arguments.out_dir, exist_ok=True)
++random.seed(arguments.seed)
++np.random.seed(arguments.seed)
+ 
+ # load data
+-dfTrain_u, dfTest_u, dfTrain_c, dfTest_c, dfTrain_a, dfTest_a = load_data()
+-dfTrain_a, dfTest_a, act_feat = feat_augment(dfTrain_a, dfTest_a)
++frames = load_data(os.path.join('feat', 's%d' % arguments.seed), arguments.smoke_rows)
++dfTrain_a, dfValid_a, dfTest_a, act_feat = feat_augment(frames[0][2], frames[1][2], frames[2][2])
++frames = [(frames[0][0], frames[0][1], dfTrain_a), (frames[1][0], frames[1][1], dfValid_a), (frames[2][0], frames[2][1], dfTest_a)]
+ 
+ params = {
+     "embedding_size": 32,
+@@ -158,8 +234,7 @@ params = {
+     "verbose": True,
+     "attn": True,
+     "eval_metric": roc_auc_score,
+-    "random_seed": 12345
++    "random_seed": arguments.seed   # changed: was 12345
  }
  
 -y_train_dfm, y_test_dfm = model_run(dfTrain_u, dfTest_u, dfTrain_c, dfTest_c, dfTrain_a, dfTest_a,params, act_feat)
-+model_run(dfTrain_u, dfTest_u, dfTrain_c, dfTest_c, dfTrain_a, dfTest_a,params, act_feat)   # original unpacked two values; model_run returns None
- 
+-
++model_run(frames, params, act_feat, arguments.seed, arguments.max_epoch, arguments.out_dir)
 diff --git a/model.py b/model.py
-index 01e8a27..0b61ef3 100644
+index 01e8a27..4daa412 100644
 --- a/model.py
 +++ b/model.py
-@@ -327,7 +327,7 @@ class CFIN():
+@@ -221,11 +221,14 @@ class CFIN():
+ 
+ 
+     def batch_norm_layer(self, x, train_phase, scope_bn):
+-        bn_train = batch_norm(x, decay=self.batch_norm_decay, center=True, scale=True, updates_collections=None,
+-                              is_training=True, reuse=None, trainable=True, scope=scope_bn)
+-        bn_inference = batch_norm(x, decay=self.batch_norm_decay, center=True, scale=True, updates_collections=None,
+-                                  is_training=False, reuse=True, trainable=True, scope=scope_bn)
+-        z = tf.cond(train_phase, lambda: bn_train, lambda: bn_inference)
++        # changed: both batch_norm calls are built inside the tf.cond branches. The original built them
++        # outside, so the training branch (moving mean/variance updated with the batch statistics) ran
++        # on every sess.run, also in predict: scoring validation/test changed the model.
++        bn_train = lambda: batch_norm(x, decay=self.batch_norm_decay, center=True, scale=True, updates_collections=None,
++                                      is_training=True, reuse=None, trainable=True, scope=scope_bn)
++        bn_inference = lambda: batch_norm(x, decay=self.batch_norm_decay, center=True, scale=True, updates_collections=None,
++                                          is_training=False, reuse=True, trainable=True, scope=scope_bn)
++        z = tf.cond(train_phase, bn_train, bn_inference)
+         return z
+ 
+ 
+@@ -327,7 +330,7 @@ class CFIN():
                      ((not self.greater_is_better) and train_result < best_train_score):
                      break
          """
@@ -106,10 +392,49 @@ index 01e8a27..0b61ef3 100644
          return save_path
          
 diff --git a/preprocess.py b/preprocess.py
-index 8e979a9..92352bf 100644
+index 8e979a9..aae9d1f 100644
 --- a/preprocess.py
 +++ b/preprocess.py
-@@ -57,7 +57,7 @@ all_feat = pd.merge(all_feat, course_enroll_num, left_on='course_id', right_inde
+@@ -1,12 +1,22 @@
++import os
++import argparse
+ import pandas as pd
+ import numpy as np
+ import pickle as pkl
+ import math
+ from sklearn.preprocessing import StandardScaler
+ 
+-train_feat= pd.read_csv('train_features.csv', index_col=0)
+-test_feat= pd.read_csv('test_features.csv', index_col=0)
+-all_feat = pd.concat([train_feat, test_feat])
++# changed: the counts of every enrollment come from all_features.csv (feat_extract.py); the
++# learner split of --split-seed (baseline/prepare_raw.py, folder CFIN_SPLITS) picks the splits.
++parser = argparse.ArgumentParser()
++parser.add_argument('--split-seed', type=int, required=True)
++arguments = parser.parse_args()
++features = pd.read_csv('all_features.csv', index_col=0)
++split = pd.read_csv(os.path.join(os.environ.get('CFIN_SPLITS', 'splits'), 'learner_s%d.csv' % arguments.split_seed), index_col='enroll_id')['split']
++train_feat = features.loc[split.index[split == 'train']]
++valid_feat = features.loc[split.index[split == 'validation']]
++test_feat = features.loc[split.index[split == 'test']]
++all_feat = pd.concat([train_feat, valid_feat, test_feat])
+ 
+ user_profile = pd.read_csv('user_info.csv', index_col='user_id')
+ 
+@@ -24,9 +34,10 @@ all_feat['age'] = [age_convert(birth_year.get(int(u),None)) for u in all_feat['u
+ # extract user gender
+ user_gender = user_profile['gender'].to_dict()
+ def gender_convert(g):
+-    if g == 'm':
++    # changed: the data says 'male'/'female'; the original compared with 'm'/'f', so every gender was 0
++    if g == 'male':
+         return 1
+-    elif g == 'f':
++    elif g == 'female':
+         return 2
+     else:
+         return 0
+@@ -57,13 +68,14 @@ all_feat = pd.merge(all_feat, course_enroll_num, left_on='course_id', right_inde
  
  
  #extract user cluster
@@ -118,13 +443,32 @@ index 8e979a9..92352bf 100644
  cluster_label = np.load('cluster/label_5_10time.npy')
  all_feat['cluster_label'] = [cluster_label[user_cluster_id[u]] for u in all_feat['username']]
  
-@@ -82,6 +82,9 @@ act_feats = [c for c in train_feat.columns if 'count' in c or 'time' in c or 'nu
+ 
+ #extract course category
+-courseinfo = pd.read_csv('course_info.csv', index_col='id')
++# changed: looked up by course_id; the original indexed by 'id' (a number), so every category was 0
++courseinfo = pd.read_csv('course_info.csv', index_col='course_id')
+ en_categorys = ['math','physics','electrical', 'computer','foreign language', 'business', 'economics','biology','medicine','literature','philosophy','history','social science', 'art','engineering','education','environment','chemistry']
+ 
+ def category_convert(cc):
+@@ -82,12 +94,17 @@ act_feats = [c for c in train_feat.columns if 'count' in c or 'time' in c or 'nu
  pkl.dump(act_feats, open('act_feats.pkl','wb'))
  
  num_feats = act_feats + ['age','course_enroll_num','user_enroll_num']
-+# Changed from the original: the 23 activity counts go through log(1 + c) before the z-score,
-+# x = (log(1 + c) − μ) / σ; age and the two enroll numbers keep the original z-score.
-+all_feat[act_feats] = np.log1p(all_feat[act_feats])
++# changed: the scaler is fitted on the train rows only (the original fits on train + test)
  scaler= StandardScaler()
- newX = scaler.fit_transform(all_feat[num_feats])
+-newX = scaler.fit_transform(all_feat[num_feats])
++scaler.fit(all_feat.loc[train_feat.index, num_feats])
++newX = scaler.transform(all_feat[num_feats])
  print(newX.shape)
+ for i, n_f in enumerate(num_feats):
+     all_feat[n_f] = newX[:,i]   
+ 
+-all_feat.loc[train_feat.index].to_csv('train_feat.csv')
+-all_feat.loc[test_feat.index].to_csv('test_feat.csv')
++out_dir = os.path.join('feat', 's%d' % arguments.split_seed)   # changed: one folder per learner split
++os.makedirs(out_dir, exist_ok=True)
++all_feat.loc[train_feat.index].to_csv(os.path.join(out_dir, 'train_feat.csv'))
++all_feat.loc[valid_feat.index].to_csv(os.path.join(out_dir, 'validation_feat.csv'))
++all_feat.loc[test_feat.index].to_csv(os.path.join(out_dir, 'test_feat.csv'))
+ 

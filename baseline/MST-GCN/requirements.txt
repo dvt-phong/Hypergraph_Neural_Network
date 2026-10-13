@@ -1,0 +1,13 @@
+# MST-GCN and SIG-Net share this environment (Python 3.9). The original repos pin no versions except
+# SIG-Net (torch 1.12.1, DGL from the cu117 wheels). Install DGL for the torch/CUDA of the server, e.g.
+#   pip install dgl -f https://data.dgl.ai/wheels/cu116/repo.html     (torch 1.12.1 + CUDA 11.6)
+--extra-index-url https://download.pytorch.org/whl/cu116
+torch==1.12.1
+numpy<2
+pandas
+scikit-learn
+scipy
+tqdm
+matplotlib
+seaborn
+openpyxl

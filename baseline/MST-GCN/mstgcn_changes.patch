@@ -1,0 +1,276 @@
+diff --git a/MST-GCN/src_xuet/main.py b/MST-GCN/src_xuet/main.py
+index ac9aad7..e2b4bca 100644
+--- a/MST-GCN/src_xuet/main.py
++++ b/MST-GCN/src_xuet/main.py
+@@ -60,9 +60,11 @@ def main(args):
+         logger.info(f"Loading XuetangX dataset (Subset Ratio: {args.subset_ratio})...")
+         
+         # 定义数据路径
+-        raw_data_path = 'data/xuetangx' 
+-        cache_path = 'data/xuetangx/cache'
+-        
++        # changed: folders from the command line (baseline/prepare_raw.py output, one cache for every
++        # split) and the learner split of --seed
++        raw_data_path = args.raw_dir
++        cache_path = args.cache_dir
++
+         # 确保缓存目录存在
+         if not os.path.exists(cache_path):
+             os.makedirs(cache_path)
+@@ -73,7 +75,8 @@ def main(args):
+             raw_dir=raw_data_path,
+             save_dir=cache_path,
+             subset_ratio=args.subset_ratio,
+-            force_reload=False  # 如果修改了构图逻辑，请改为 True 或手动删除 cache 文件夹
++            force_reload=False,  # 如果修改了构图逻辑，请改为 True 或手动删除 cache 文件夹
++            split_path=os.path.join(args.split_dir, f"learner_s{args.seed}.csv")
+         )
+         
+     else:
+@@ -113,8 +116,15 @@ if __name__ == "__main__":
+     # ==========================================
+     # 2. [关键修改] 随机种子 (用于 T-test)
+     # ==========================================
+-    parser.add_argument("--seed", type=int, default=0, 
++    parser.add_argument("--seed", type=int, default=0,
+                         help="Random seed for reproducibility. Run 0-4 for Statistical Test.")
++    # changed: data folders, learner split (--seed is also the split seed), output and early stopping
++    parser.add_argument("--raw_dir", type=str, default='data/xuetangx/prediction_log')
++    parser.add_argument("--cache_dir", type=str, default='data/xuetangx/cache')
++    parser.add_argument("--split_dir", type=str, default='data/xuetangx/splits')
++    parser.add_argument("--out_dir", type=str, default='outputs')
++    parser.add_argument("--patience", type=int, default=5,
++                        help="Stop after this many epochs without a better validation AUC.")
+ 
+     # ==========================================
+     # 3. 模型选择与架构参数
+diff --git a/MST-GCN/src_xuet/trainer.py b/MST-GCN/src_xuet/trainer.py
+index 9e10af9..f580c7b 100644
+--- a/MST-GCN/src_xuet/trainer.py
++++ b/MST-GCN/src_xuet/trainer.py
+@@ -7,15 +7,21 @@ import dgl
+ from torch.optim import Adam
+ from model import *
+ from utils import collate_data
+-from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score, classification_report
++from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score, classification_report, average_precision_score
+ from tqdm import tqdm
+ from torch.utils.data import DataLoader, SubsetRandomSampler
+ import random
++import copy
++import csv
++import time
+ import matplotlib.pyplot as plt
+ import seaborn as sns
+ from sklearn.manifold import TSNE
+ from scipy.stats import pearsonr
+ 
++RESULT_COLUMNS = ("time", "model", "seed", "best_epoch", "epochs_run",
++                  "val_auc", "val_auprc", "test_auc", "test_auprc", "minutes")
++
+ 
+ def eval(model, test_dataloader, device):
+     model.eval()
+@@ -184,7 +190,24 @@ def visualize_tsne(model, test_dataloader, device, logger, save_path):
+     plt.close()
+ 
+ 
++# Dropout probability and label of every enrollment of one DataLoader (in loader order).
++def predict(model, dataloader, device):
++    model.eval()
++    probs, labels = [], []
++    with torch.no_grad():
++        for batch in dataloader:
++            g1, g2, g3, label = [b.to(device) for b in batch]
++            if isinstance(model, nn.DataParallel):
++                preds = model.module(g1, g2, g3, False)
++            else:
++                preds = model(g1, g2, g3, False)
++            probs.extend(preds.cpu().tolist())
++            labels.extend((label[:, 3] if label.dim() > 1 else label).cpu().tolist())
++    return np.array(probs), np.array(labels)
++
++
+ def train(args, dataloader, logger):
++    started_at = time.time()
+     dgl.random.seed(args.seed)
+     torch.manual_seed(args.seed)
+     np.random.seed(args.seed)
+@@ -206,12 +229,15 @@ def train(args, dataloader, logger):
+     optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+     loss_fn = nn.BCELoss().to(device)
+     
+-    indices = list(range(len(dataloader)))
+-    split = int(len(dataloader) * 0.8)
+-    train_dl = DataLoader(dataloader, collate_fn=collate_data, sampler=SubsetRandomSampler(indices[:split]), batch_size=args.batch_size)
+-    test_dl = DataLoader(dataloader, collate_fn=collate_data, sampler=SubsetRandomSampler(indices[split:]), batch_size=args.batch_size)
+-    
++    # changed: train / validation / test of the learner split (the original took the first 80% of the
++    # merged train + test rows as train and the rest as test); validation and test in a fixed order
++    indices = list(dataloader.split_index['train'])
++    train_dl = DataLoader(dataloader, collate_fn=collate_data, sampler=SubsetRandomSampler(indices), batch_size=args.batch_size)
++    eval_dl = {name: DataLoader(dataloader, collate_fn=collate_data, sampler=list(dataloader.split_index[name]), batch_size=args.batch_size)
++               for name in ('validation', 'test')}
++
+     losses, gate_stability = [], []
++    best_auc, best_epoch, best_state, stale = -1.0, 0, None, 0
+ 
+     for e in range(1, args.num_epochs + 1):
+         model.train()
+@@ -224,22 +250,43 @@ def train(args, dataloader, logger):
+             epoch_l += loss.item() * preds.shape[0]
+             if gates is not None: epoch_g.append(gates.mean().item())
+ 
+-        avg_l, avg_g = epoch_l / len(indices[:split]), np.mean(epoch_g)
++        avg_l, avg_g = epoch_l / len(indices), np.mean(epoch_g)
+         losses.append(avg_l); gate_stability.append(avg_g)
+-        logger.info(f"Epoch {e}: Loss {avg_l:.4f}, Gate {avg_g:.4f}")
+-
+-    # 稳定性监控图
+-    plt.figure(figsize=(10, 6), dpi=300)
+-    ax1 = plt.gca(); ax2 = ax1.twinx()
+-    ax1.plot(range(1, args.num_epochs+1), losses, 'b-', label='Loss')
+-    ax2.plot(range(1, args.num_epochs+1), gate_stability, 'r--', label='Gate $g_t$')
+-    plt.savefig(f"{args.log_dir}/stability_plot.png")
+-    plt.close()
+ 
+-    # 执行评估与所有可视化
+-    auc, f1, report = eval(model, test_dl, device)
+-    logger.info(f"Final AUC: {auc:.4f}, F1: {f1:.4f}\n{report}")
+-    
+-    visualize_tsne(model, test_dl, device, logger, f"{args.log_dir}/tsne_plot.png")
+-    visualize_gate_distribution(model, test_dl, device, logger, f"{args.log_dir}/gate_plot.png")
+-    visualize_activity_gate_correlation(model, test_dl, device, logger, f"{args.log_dir}/correlation_plot.png")
+\ No newline at end of file
++        # changed: validation AUC after every epoch, keep the best weights, stop after args.patience
++        # epochs without a better one (the original trained a fixed 8 epochs and scored test once)
++        prob, label = predict(model, eval_dl['validation'], device)
++        val_auc = roc_auc_score(label, prob)
++        if val_auc > best_auc:                                           # best = argmax_epoch AUC_val
++            best_auc, best_epoch, best_state, stale = val_auc, e, copy.deepcopy(model.state_dict()), 0
++        else:
++            stale += 1
++        logger.info(f"Epoch {e}: Loss {avg_l:.4f}, Gate {avg_g:.4f}, valid-auc {val_auc:.4f} (best {best_auc:.4f} at epoch {best_epoch})")
++        if stale >= args.patience:
++            break
++    model.load_state_dict(best_state)
++
++    # changed: score validation and test once with the best weights; write predictions and AUC/AUPRC
++    # like baseline/ML (the stability, t-SNE, gate and correlation plots of the original are not drawn)
++    os.makedirs(args.out_dir, exist_ok=True)
++    row = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "model": "MST-GCN", "seed": args.seed,
++           "best_epoch": best_epoch, "epochs_run": e}
++    for name, prefix in (('validation', 'val'), ('test', 'test')):
++        prob, label = predict(model, eval_dl[name], device)
++        enroll_ids = [dataloader.id_to_enroll[int(i)] for i in dataloader.split_index[name]]
++        row[prefix + "_auc"] = float(roc_auc_score(label, prob))                 # AUC = P(p_dropout > p_non-dropout)
++        row[prefix + "_auprc"] = float(average_precision_score(label, prob))     # AUPRC = Σ_n (R_n − R_{n−1})·P_n
++        with open(os.path.join(args.out_dir, f"seed{args.seed}_{name}.csv"), 'w', newline='', encoding='utf-8') as output:
++            writer = csv.writer(output)
++            writer.writerow(('split', 'enroll_id', 'label', 'prob'))
++            for enroll_id, y, p in zip(enroll_ids, label, prob):
++                writer.writerow((name, int(enroll_id), int(y), f"{p:.8f}"))
++        logger.info(f"{name}: auc={row[prefix + '_auc']:.4f}, auprc={row[prefix + '_auprc']:.4f}")
++    row["minutes"] = (time.time() - started_at) / 60
++    results_path = os.path.join(args.out_dir, 'results.csv')
++    is_new = not os.path.exists(results_path)
++    with open(results_path, 'a', newline='', encoding='utf-8') as output:
++        writer = csv.DictWriter(output, fieldnames=RESULT_COLUMNS)
++        if is_new:
++            writer.writeheader()
++        writer.writerow({k: (f"{v:.6f}" if isinstance(v, float) else v) for k, v in row.items()})
+\ No newline at end of file
+diff --git a/MST-GCN/src_xuet/xuetangx_graph_builder.py b/MST-GCN/src_xuet/xuetangx_graph_builder.py
+index 19ffcb2..d6a5ff4 100644
+--- a/MST-GCN/src_xuet/xuetangx_graph_builder.py
++++ b/MST-GCN/src_xuet/xuetangx_graph_builder.py
+@@ -71,15 +71,20 @@ class XuetangXGraph(DGLDataset):
+     """
+     XuetangX 数据集的高性能构建类，已修复为构建 DGL 异构图并使用 Log 聚合特征。
+     """
+-    def __init__(self, raw_dir=None, save_dir=None, subset_ratio=1.0, force_reload=False):
++    def __init__(self, raw_dir=None, save_dir=None, subset_ratio=1.0, force_reload=False, split_path=None):
+         self.subset_ratio = subset_ratio
+         self.window_size = 35  # Dh = 35 days
+-        
++        # changed: the graph and the unscaled features do not depend on the split, so they are cached
++        # once; apply_split() picks the learner split and fits the enrollment scaler on its train rows.
++        self.split_path = split_path
++
+         # 更改 name 以反映异构图和特征推断
+-        super(XuetangXGraph, self).__init__(name='xuetangx_hetero_inferred', 
++        super(XuetangXGraph, self).__init__(name='xuetangx_hetero_inferred',
+                                              raw_dir=raw_dir,
+                                              save_dir=save_dir if save_dir else '.',
+                                              force_reload=force_reload)
++        if split_path is not None:
++            self.apply_split(split_path)
+ 
+     # ***************************************************************
+     # 核心修复：process - 异构图构建和特征工程
+@@ -176,9 +181,10 @@ class XuetangXGraph(DGLDataset):
+         ).reindex(enroll_ids).fillna(0)
+         
+         enroll_agg_feat = pd.concat([enroll_stats, enroll_action_dist], axis=1).values
+-        enroll_agg_feat_scaled = scaler.fit_transform(enroll_agg_feat)
+-        enroll_feat = np.hstack([act_values, enroll_agg_feat_scaled])
+-        
++        # changed: kept unscaled here; apply_split() z-scores these columns with the train rows only
++        # (the original fit the scaler on every enrollment)
++        enroll_feat = np.hstack([act_values, enroll_agg_feat])
++
+         # (B) Course Features: 课程宏观行为聚合特征
+         course_behavior = logs.groupby('course_id').agg(
+             total_actions=('enroll_id', 'size'),
+@@ -240,24 +246,13 @@ class XuetangXGraph(DGLDataset):
+         """
+         path = self.raw_dir
+         
+-        # 1. 加载 Logs (train + test)
+-        logs = pd.read_csv(os.path.join(path, 'train_log.csv'))
+-        if os.path.exists(os.path.join(path, 'test_log.csv')):
+-            print("Merging test logs...")
+-            test_logs = pd.read_csv(os.path.join(path, 'test_log.csv'))
+-            logs = pd.concat([logs, test_logs], ignore_index=True)
+-        
+-        # 2. 加载 Truth
+-        truth_train = pd.read_csv(os.path.join(path, 'train_truth.csv'))
+-        if os.path.exists(os.path.join(path, 'test_truth.csv')):
+-            truth_test = pd.read_csv(os.path.join(path, 'test_truth.csv'))
+-            truth_train = pd.concat([truth_train, truth_test], ignore_index=True)
+-
+-        # Enrichment: 从 Logs 补充 username 和 course_id
+-        print("Enriching Truth data with metadata from Logs...")
+-        enroll_meta = logs[['enroll_id', 'username', 'course_id']].drop_duplicates(subset=['enroll_id'])
++        # changed: one log and one truth file of every labeled enrollment (baseline/prepare_raw.py,
++        # already filtered like the main model M); username/course_id come from enrollments.csv, so an
++        # enrollment with no kept event is kept (the original dropped it with dropna)
++        logs = pd.read_csv(os.path.join(path, 'log.csv'))
++        truth_train = pd.read_csv(os.path.join(path, 'truth.csv'))
++        enroll_meta = pd.read_csv(os.path.join(path, 'enrollments.csv'))
+         truth_train = truth_train.merge(enroll_meta, on='enroll_id', how='left')
+-        truth_train = truth_train.dropna(subset=['username', 'course_id'])
+ 
+         # 3. 处理缺失的 User Profile (不创建虚拟特征)
+         unique_users = logs['username'].unique()
+@@ -287,6 +282,20 @@ class XuetangXGraph(DGLDataset):
+     # 其他函数
+     # ***************************************************************
+ 
++    def apply_split(self, split_path):
++        """Train / validation / test DGL ids of the learner split; enrollment scaler fitted on train."""
++        split = pd.read_csv(split_path)
++        split = split[split['enroll_id'].isin(self.enroll_map)]
++        split['eid_int'] = split['enroll_id'].map(self.enroll_map)
++        self.split_index = {name: split.loc[split['split'] == name, 'eid_int'].to_numpy()
++                            for name in ('train', 'validation', 'test')}
++        feature = self.graph.nodes['enrollment'].data['feature'].numpy().astype(np.float64)
++        agg = feature[:, self.window_size:]                              # unscaled aggregate columns
++        scaler = StandardScaler().fit(agg[self.split_index['train']])   # μ, σ of the train rows
++        feature[:, self.window_size:] = scaler.transform(agg)           # z = (x − μ_train) / σ_train
++        self.graph.nodes['enrollment'].data['feature'] = torch.tensor(feature, dtype=torch.float32)
++        print("Split " + ", ".join(f"{k}={len(v):,}" for k, v in self.split_index.items()))
++
+     def has_cache(self):
+         return os.path.exists(os.path.join(self.save_dir, 'dgl_graph.bin'))
+ 
