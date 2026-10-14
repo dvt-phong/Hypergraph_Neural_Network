@@ -45,15 +45,15 @@ index ac9aad7..e2b4bca 100644
      # ==========================================
      # 3. 模型选择与架构参数
 diff --git a/MST-GCN/src_xuet/trainer.py b/MST-GCN/src_xuet/trainer.py
-index 9e10af9..f580c7b 100644
+index 9e10af9..fdc3f9a 100644
 --- a/MST-GCN/src_xuet/trainer.py
 +++ b/MST-GCN/src_xuet/trainer.py
-@@ -7,15 +7,21 @@ import dgl
+@@ -7,15 +7,24 @@ import dgl
  from torch.optim import Adam
  from model import *
  from utils import collate_data
 -from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score, classification_report
-+from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score, classification_report, average_precision_score
++from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score, classification_report, precision_recall_fscore_support
  from tqdm import tqdm
  from torch.utils.data import DataLoader, SubsetRandomSampler
  import random
@@ -65,13 +65,16 @@ index 9e10af9..f580c7b 100644
  from sklearn.manifold import TSNE
  from scipy.stats import pearsonr
  
++THRESHOLD = 0.5                              # ŷ = 1[p ≥ 0.5], as round() in the original eval()
++METRICS = ("auc", "precision", "recall", "f1")
 +RESULT_COLUMNS = ("time", "model", "seed", "best_epoch", "epochs_run",
-+                  "val_auc", "val_auprc", "test_auc", "test_auprc", "minutes")
++                  "val_auc", "val_precision", "val_recall", "val_f1",
++                  "test_auc", "test_precision", "test_recall", "test_f1", "minutes")
 +
  
  def eval(model, test_dataloader, device):
      model.eval()
-@@ -184,7 +190,24 @@ def visualize_tsne(model, test_dataloader, device, logger, save_path):
+@@ -184,7 +193,24 @@ def visualize_tsne(model, test_dataloader, device, logger, save_path):
      plt.close()
  
  
@@ -96,7 +99,7 @@ index 9e10af9..f580c7b 100644
      dgl.random.seed(args.seed)
      torch.manual_seed(args.seed)
      np.random.seed(args.seed)
-@@ -206,12 +229,15 @@ def train(args, dataloader, logger):
+@@ -206,12 +232,15 @@ def train(args, dataloader, logger):
      optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
      loss_fn = nn.BCELoss().to(device)
      
@@ -117,7 +120,7 @@ index 9e10af9..f580c7b 100644
  
      for e in range(1, args.num_epochs + 1):
          model.train()
-@@ -224,22 +250,43 @@ def train(args, dataloader, logger):
+@@ -224,22 +253,48 @@ def train(args, dataloader, logger):
              epoch_l += loss.item() * preds.shape[0]
              if gates is not None: epoch_g.append(gates.mean().item())
  
@@ -155,22 +158,27 @@ index 9e10af9..f580c7b 100644
 +            break
 +    model.load_state_dict(best_state)
 +
-+    # changed: score validation and test once with the best weights; write predictions and AUC/AUPRC
-+    # like baseline/ML (the stability, t-SNE, gate and correlation plots of the original are not drawn)
++    # changed: score validation and test once with the best weights; write predictions and AUC,
++    # precision, recall, F1 like baseline/ML (the stability, t-SNE, gate and correlation plots of the
++    # original are not drawn)
 +    os.makedirs(args.out_dir, exist_ok=True)
 +    row = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "model": "MST-GCN", "seed": args.seed,
 +           "best_epoch": best_epoch, "epochs_run": e}
 +    for name, prefix in (('validation', 'val'), ('test', 'test')):
 +        prob, label = predict(model, eval_dl[name], device)
 +        enroll_ids = [dataloader.id_to_enroll[int(i)] for i in dataloader.split_index[name]]
++        # P = TP/(TP + FP), R = TP/(TP + FN), F1 = 2·P·R/(P + R) of the dropout class, ŷ = 1[p ≥ 0.5]
++        precision, recall, f1, _ = precision_recall_fscore_support(label, prob >= THRESHOLD, labels=[1], zero_division=0)
 +        row[prefix + "_auc"] = float(roc_auc_score(label, prob))                 # AUC = P(p_dropout > p_non-dropout)
-+        row[prefix + "_auprc"] = float(average_precision_score(label, prob))     # AUPRC = Σ_n (R_n − R_{n−1})·P_n
++        row[prefix + "_precision"] = float(precision[0])
++        row[prefix + "_recall"] = float(recall[0])
++        row[prefix + "_f1"] = float(f1[0])
 +        with open(os.path.join(args.out_dir, f"seed{args.seed}_{name}.csv"), 'w', newline='', encoding='utf-8') as output:
 +            writer = csv.writer(output)
 +            writer.writerow(('split', 'enroll_id', 'label', 'prob'))
 +            for enroll_id, y, p in zip(enroll_ids, label, prob):
 +                writer.writerow((name, int(enroll_id), int(y), f"{p:.8f}"))
-+        logger.info(f"{name}: auc={row[prefix + '_auc']:.4f}, auprc={row[prefix + '_auprc']:.4f}")
++        logger.info(f"{name}: " + ", ".join(f"{metric}={row[prefix + '_' + metric]:.4f}" for metric in METRICS))
 +    row["minutes"] = (time.time() - started_at) / 60
 +    results_path = os.path.join(args.out_dir, 'results.csv')
 +    is_new = not os.path.exists(results_path)

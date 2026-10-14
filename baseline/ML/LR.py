@@ -3,7 +3,8 @@
 #   python baseline/ML/LR.py
 #
 # Protocol of docs/PLAN_BASELINE_v3.md: learner split of baseline/prepare_raw.py (one split per
-# seed, split seed = SGD seed), alpha and epoch chosen on validation AUC, metrics AUC and AUPRC.
+# seed, split seed = SGD seed), alpha and epoch chosen on validation AUC, metrics AUC, precision,
+# recall and F1 of the dropout class at threshold 0.5 (as src/9_train.py of M).
 # LR has no preprocessing of its own, so it uses the 89 columns X of the main model M
 # (data/processed/simple/{split}/X.npy, read only). Its rows are re-ordered by enroll_id and the
 # z-scored columns (59 behavior columns, age) are z-scored again with the learner-train rows; the
@@ -19,7 +20,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import SGDClassifier
-from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.metrics import precision_recall_fscore_support, roc_auc_score
 
 ROOT = Path(__file__).resolve().parents[2]
 X_DIR = ROOT / "data" / "processed" / "simple"
@@ -33,9 +34,12 @@ ZSCORE_COLUMNS = list(range(59)) + [70]      # X[:, 0:59] log1p + z-score, X[:, 
 ALPHA_GRID = (1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0)
 MAX_EPOCHS = 200
 PATIENCE = 10
+THRESHOLD = 0.5                              # ŷ = 1[p ≥ 0.5], as config.THRESHOLD of M
+METRICS = ("auc", "precision", "recall", "f1")
 RESULT_COLUMNS = (
     "time", "model", "seed", "alpha", "best_epoch", "epochs_run",
-    "val_auc", "val_auprc", "test_auc", "test_auprc", "minutes",
+    "val_auc", "val_precision", "val_recall", "val_f1",
+    "test_auc", "test_precision", "test_recall", "test_f1", "minutes",
 )
 
 
@@ -102,11 +106,16 @@ def make_splits(x, truth, split_path):
     return splits
 
 
-# AUC and AUPRC of the dropout class (label 1).
+# AUC, precision, recall and F1 of the dropout class (label 1) at THRESHOLD.
 def metrics(labels, probabilities):
+    predicted = probabilities >= THRESHOLD                              # ŷ = 1[p ≥ 0.5]
+    # P = TP/(TP + FP), R = TP/(TP + FN), F1 = 2·P·R/(P + R)
+    precision, recall, f1, _ = precision_recall_fscore_support(labels, predicted, labels=[1], zero_division=0)
     return {
         "auc": float(roc_auc_score(labels, probabilities)),             # AUC = P(p_dropout > p_non-dropout)
-        "auprc": float(average_precision_score(labels, probabilities)), # AUPRC = Σ_n (R_n − R_{n−1})·P_n
+        "precision": float(precision[0]),
+        "recall": float(recall[0]),
+        "f1": float(f1[0]),
     }
 
 
@@ -180,7 +189,7 @@ def run_one_seed(seed, splits, output_dir):
         scores[split_name] = metrics(data["y"], probability)
         write_predictions(output_dir / f"seed{seed}_{split_name}.csv", split_name, data, probability)
         log(split_name, f"lr seed {seed} alpha={best['alpha']:g}: "
-                        f"auc={scores[split_name]['auc']:.4f}, auprc={scores[split_name]['auprc']:.4f}")
+                        + ", ".join(f"{name}={scores[split_name][name]:.4f}" for name in METRICS))
 
     row = {}
     row["time"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -190,7 +199,7 @@ def run_one_seed(seed, splits, output_dir):
     row["best_epoch"] = best["epoch"]
     row["epochs_run"] = best["epochs_run"]
     for split_name, prefix in (("validation", "val"), ("test", "test")):
-        for metric_name in ("auc", "auprc"):
+        for metric_name in METRICS:
             row[f"{prefix}_{metric_name}"] = scores[split_name][metric_name]
     row["minutes"] = (time.perf_counter() - started_at) / 60
     append_result(output_dir / "results.csv", row)
@@ -217,7 +226,7 @@ if __name__ == "__main__":
         test_scores.append(run_one_seed(seed, splits, output_dir))
     # mean ± std (ddof = 1) over seeds of the test metrics
     parts = []
-    for metric_name in ("auc", "auprc"):
+    for metric_name in METRICS:
         values = [scores[metric_name] for scores in test_scores]
         std = np.std(values, ddof=1) if len(values) > 1 else 0.0
         parts.append(f"{metric_name}={np.mean(values):.4f}+-{std:.4f}")

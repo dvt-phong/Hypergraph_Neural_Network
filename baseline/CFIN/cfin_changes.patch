@@ -79,13 +79,13 @@ index 1e3c6e9..c3b8da4 100644
 +all_num.to_csv('all_features.csv')
 +print('all', all_num.shape, flush=True)
 diff --git a/main.py b/main.py
-index 4369652..e3bc009 100644
+index 4369652..3cb832d 100644
 --- a/main.py
 +++ b/main.py
-@@ -1,22 +1,42 @@
+@@ -1,22 +1,46 @@
  import os
 -from sklearn.metrics import roc_auc_score
-+from sklearn.metrics import roc_auc_score, average_precision_score
++from sklearn.metrics import roc_auc_score, precision_recall_fscore_support
  import sys
 +import argparse
 +import csv
@@ -107,7 +107,8 @@ index 4369652..e3bc009 100644
 +#   printed the test AUC every epoch and stopped at the fixed epoch 27);
 +# - --seed seeds numpy and random as well (most weights and the batch order use numpy; the
 +#   original only seeded TensorFlow);
-+# - predictions and metrics (AUC, AUPRC) are written like baseline/ML.
++# - predictions and metrics (AUC, precision, recall, F1 at threshold 0.5) are written like
++#   baseline/ML.
 +
 +os.environ.setdefault('CUDA_VISIBLE_DEVICES', '2,4')   # original forces '2,4'; an outside value now wins
  act_feat_basic = pkl.load(open('act_feats.pkl','rb'))
@@ -115,13 +116,17 @@ index 4369652..e3bc009 100644
  user_num_feat = ['age','user_enroll_num']
  course_cat_feat = ['course_category']
  course_num_feat = ['course_enroll_num']
+-
+-def feat_augment(train_feat, test_feat):
 +SPLITS = ['train', 'validation', 'test']
++THRESHOLD = 0.5                              # ŷ = 1[p ≥ 0.5], as the original evaluate() and M
++METRICS = ("auc", "precision", "recall", "f1")
 +RESULT_COLUMNS = (
 +    "time", "model", "seed", "best_epoch", "epochs_run",
-+    "val_auc", "val_auprc", "test_auc", "test_auprc", "minutes",
++    "val_auc", "val_precision", "val_recall", "val_f1",
++    "test_auc", "test_precision", "test_recall", "test_f1", "minutes",
 +)
- 
--def feat_augment(train_feat, test_feat):
++
 +def feat_augment(train_feat, valid_feat, test_feat):
      act_feats = pkl.load(open('act_feats.pkl', 'rb'))
 -    all_feat = pd.concat([train_feat, test_feat])
@@ -129,7 +134,7 @@ index 4369652..e3bc009 100644
      all_feat_u_mean = all_feat.groupby('username').mean()[act_feats]
      all_feat_u_mean.columns = [x+'#user#mean' for x in all_feat_u_mean.columns]
      all_feat_u_max = all_feat.groupby('username').max()[act_feats]
-@@ -26,14 +46,14 @@ def feat_augment(train_feat, test_feat):
+@@ -26,14 +50,14 @@ def feat_augment(train_feat, test_feat):
      all_feat = pd.merge(all_feat, all_feat_u_max, right_index=True, left_on='username')
  
      all_feat_c_mean = all_feat.groupby('course_id').mean()[act_feats]
@@ -146,7 +151,7 @@ index 4369652..e3bc009 100644
      act_feat = []
      for f in act_feat_basic:
          act_feat.append(f)
-@@ -42,10 +62,10 @@ def feat_augment(train_feat, test_feat):
+@@ -42,10 +66,10 @@ def feat_augment(train_feat, test_feat):
          act_feat.append(f+'#course#mean')
          act_feat.append(f+'#course#max')
  
@@ -160,7 +165,7 @@ index 4369652..e3bc009 100644
      feat_dim = 0
      feat_dict = dict()
      for f in cat_feat:
-@@ -65,79 +85,135 @@ def dataparse(train, test, num_feat, cat_feat):
+@@ -65,79 +89,140 @@ def dataparse(train, test, num_feat, cat_feat):
              data_value[f] = 1.
          else:
              data_indice.drop(f, axis=1, inplace=True)
@@ -197,11 +202,16 @@ index 4369652..e3bc009 100644
 +    return frames
 +
 +
-+# AUC and AUPRC of the dropout class (label 1), as baseline/ML.
++# AUC, precision, recall and F1 of the dropout class (label 1) at THRESHOLD, as baseline/ML.
 +def metrics(labels, probabilities):
++    predicted = probabilities >= THRESHOLD                              # ŷ = 1[p ≥ 0.5]
++    # P = TP/(TP + FP), R = TP/(TP + FN), F1 = 2·P·R/(P + R)
++    precision, recall, f1, _ = precision_recall_fscore_support(labels, predicted, labels=[1], zero_division=0)
 +    return {
 +        "auc": float(roc_auc_score(labels, probabilities)),             # AUC = P(p_dropout > p_non-dropout)
-+        "auprc": float(average_precision_score(labels, probabilities)), # AUPRC = Σ_n (R_n − R_{n−1})·P_n
++        "precision": float(precision[0]),
++        "recall": float(recall[0]),
++        "f1": float(f1[0]),
 +    }
 +
 +
@@ -322,7 +332,7 @@ index 4369652..e3bc009 100644
 +
 +    row = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "model": "CFIN", "seed": seed,
 +           "best_epoch": best_epoch, "epochs_run": epoch}
-+    for name in ("auc", "auprc"):
++    for name in METRICS:
 +        row["val_" + name] = scores["validation"][name]
 +        row["test_" + name] = scores["test"][name]
 +    row["minutes"] = (time.time() - started_at) / 60
@@ -347,7 +357,7 @@ index 4369652..e3bc009 100644
  
  params = {
      "embedding_size": 32,
-@@ -158,8 +234,7 @@ params = {
+@@ -158,8 +243,7 @@ params = {
      "verbose": True,
      "attn": True,
      "eval_metric": roc_auc_score,

@@ -40,15 +40,15 @@ index bc0b3e9..a7ba6b8 100644
      
      main(args)    
 diff --git a/src/trainer.py b/src/trainer.py
-index e31c68a..ab4c4fb 100644
+index e31c68a..60487b4 100644
 --- a/src/trainer.py
 +++ b/src/trainer.py
-@@ -6,9 +6,16 @@ import dgl
+@@ -6,9 +6,19 @@ import dgl
  from torch.optim import Adam
  from model import *
  from utils import collate_data
 -from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score
-+from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score, average_precision_score
++from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score, precision_recall_fscore_support
  from tqdm import tqdm
  from torch.utils.data import DataLoader, SubsetRandomSampler
 +import copy
@@ -56,12 +56,15 @@ index e31c68a..ab4c4fb 100644
 +import random
 +import time
 +
++THRESHOLD = 0.5                              # ŷ = 1[p ≥ 0.5], as round() in the original eval()
++METRICS = ("auc", "precision", "recall", "f1")
 +RESULT_COLUMNS = ("time", "model", "seed", "best_epoch", "epochs_run",
-+                  "val_auc", "val_auprc", "test_auc", "test_auprc", "minutes")
++                  "val_auc", "val_precision", "val_recall", "val_f1",
++                  "test_auc", "test_precision", "test_recall", "test_f1", "minutes")
      
  def eval(model, test_dataloader, device):
      # Evaluate AUC, ACC, F1, Prec, Recall
-@@ -129,4 +136,88 @@ def train(args, dataloader, logger):
+@@ -129,4 +139,92 @@ def train(args, dataloader, logger):
      f1_std = np.std(f1_list)*100
      logger.info(f"**********The final testing AUC is {auc_mean:.2f}±{auc_std:.2f}********")
      logger.info(f"**********The final testing F1 is {f1_mean:.2f}±{f1_std:.2f}********")
@@ -136,14 +139,18 @@ index e31c68a..ab4c4fb 100644
 +           "best_epoch": best_epoch, "epochs_run": e}
 +    for name, prefix in (('validation', 'val'), ('test', 'test')):
 +        prob, label = predict(model, eval_dataloader[name], device)
++        # P = TP/(TP + FP), R = TP/(TP + FN), F1 = 2·P·R/(P + R) of the dropout class, ŷ = 1[p ≥ 0.5]
++        precision, recall, f1, _ = precision_recall_fscore_support(label, prob >= THRESHOLD, labels=[1], zero_division=0)
 +        row[prefix + "_auc"] = float(roc_auc_score(label, prob))                 # AUC = P(p_dropout > p_non-dropout)
-+        row[prefix + "_auprc"] = float(average_precision_score(label, prob))     # AUPRC = Σ_n (R_n − R_{n−1})·P_n
++        row[prefix + "_precision"] = float(precision[0])
++        row[prefix + "_recall"] = float(recall[0])
++        row[prefix + "_f1"] = float(f1[0])
 +        with open(os.path.join(args.out_dir, f"seed{args.seed}_{name}.csv"), 'w', newline='', encoding='utf-8') as output:
 +            writer = csv.writer(output)
 +            writer.writerow(('split', 'enroll_id', 'label', 'prob'))
 +            for enroll_id, y, p in zip(split_ids[name], label, prob):
 +                writer.writerow((name, int(enroll_id), int(y), f"{p:.8f}"))
-+        logger.info(f"[seed {args.seed}] {name}: auc={row[prefix + '_auc']:.4f}, auprc={row[prefix + '_auprc']:.4f}")
++        logger.info(f"[seed {args.seed}] {name}: " + ", ".join(f"{metric}={row[prefix + '_' + metric]:.4f}" for metric in METRICS))
 +    row["minutes"] = (time.time() - started_at) / 60
 +    results_path = os.path.join(args.out_dir, 'results.csv')
 +    is_new = not os.path.exists(results_path)

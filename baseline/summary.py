@@ -1,14 +1,14 @@
 # Baseline table (docs/PLAN_BASELINE_v3.md)
 #
-#   python baseline/summary.py                    # threshold chosen on validation (max F1), default
-#   python baseline/summary.py --threshold 0.5    # fixed threshold 0.5, as src/9_train.py of M
+#   python baseline/summary.py                    # fixed threshold 0.5, as src/9_train.py of M (default)
+#   python baseline/summary.py --threshold val    # threshold chosen on validation (max F1)
 #
 # Every metric is computed from the saved predictions outputs/baselines/<model>/seed<s>_{validation,
 # test}.csv (split, enroll_id, label, prob), one learner split per seed, so no model is rerun:
-#   AUC, AUPRC                    threshold-free;
-#   precision, recall, F1         of the dropout class (label 1) at threshold t: either t chosen on
-#                                 the validation predictions of the same split (the t with the best
-#                                 validation F1, then applied unchanged to test) or a fixed t.
+#   AUC                           threshold-free;
+#   precision, recall, F1         of the dropout class (label 1) at threshold t: either a fixed t
+#                                 (default 0.5) or t chosen on the validation predictions of the same
+#                                 split (the t with the best validation F1, then applied unchanged to test).
 # Prints test mean ± std (ddof = 1) over the splits and writes outputs/baselines/summary.csv (one row
 # per model) and summary_per_split.csv. Checks that every seed<s>_test.csv holds exactly the test
 # enrollments of splits/learner_s<s>.csv.
@@ -18,12 +18,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import average_precision_score, precision_recall_curve, precision_recall_fscore_support, roc_auc_score
+from sklearn.metrics import precision_recall_curve, precision_recall_fscore_support, roc_auc_score
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = ("LR", "SVM", "CFIN", "CA-TFHN", "MST-GCN", "SIG-Net")
 SEEDS = (1, 11, 111, 1111, 11111)
-METRICS = ("auc", "auprc", "precision", "recall", "f1")
+METRICS = ("auc", "precision", "recall", "f1")
 
 
 # Problems of the test prediction file of one split (other enrollments, NaN prob).
@@ -46,14 +46,13 @@ def best_f1_threshold(labels, probabilities):
     return float(thresholds[np.argmax(f1)])
 
 
-# AUC, AUPRC and precision / recall / F1 of the dropout class at threshold t.
+# AUC and precision / recall / F1 of the dropout class at threshold t.
 def metrics(labels, probabilities, threshold):
     predicted = probabilities >= threshold                               # ŷ = 1[p ≥ t]
     # P = TP/(TP + FP), R = TP/(TP + FN), F1 = 2·P·R/(P + R)
     precision, recall, f1, _ = precision_recall_fscore_support(labels, predicted, labels=[1], zero_division=0)
     return {
         "auc": float(roc_auc_score(labels, probabilities)),             # AUC = P(p_dropout > p_non-dropout)
-        "auprc": float(average_precision_score(labels, probabilities)), # AUPRC = Σ_n (R_n − R_{n−1})·P_n
         "precision": float(precision[0]),
         "recall": float(recall[0]),
         "f1": float(f1[0]),
@@ -64,10 +63,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Mean ± std of the baselines over the learner splits.")
     parser.add_argument("--results-dir", type=Path, default=ROOT / "outputs" / "baselines")
     parser.add_argument("--split-dir", type=Path, default=ROOT / "data" / "processed" / "baseline_raw" / "splits")
-    parser.add_argument("--threshold", type=float, default=None,
-                        help="fixed threshold for precision/recall/F1; default: best validation F1 per split")
+    parser.add_argument("--threshold", default="0.5",
+                        help="threshold for precision/recall/F1: a number (default 0.5, as M) or 'val' "
+                             "(best validation F1 per split)")
     arguments = parser.parse_args()
-    rule = "best validation F1" if arguments.threshold is None else f"fixed {arguments.threshold:g}"
+    rule = "best validation F1" if arguments.threshold == "val" else f"fixed {float(arguments.threshold):g}"
     print(f"Threshold for precision / recall / F1: {rule}")
 
     rows, split_rows = [], []
@@ -83,10 +83,10 @@ if __name__ == "__main__":
             test = pd.read_csv(test_path)
             validation = pd.read_csv(validation_path)
             problems += [f"seed {seed}: {p}" for p in check_test_file(test, arguments.split_dir / f"learner_s{seed}.csv")]
-            if arguments.threshold is None:
+            if arguments.threshold == "val":
                 threshold = best_f1_threshold(validation["label"].to_numpy(), validation["prob"].to_numpy())
             else:
-                threshold = arguments.threshold
+                threshold = float(arguments.threshold)
             score = metrics(test["label"].to_numpy(), test["prob"].to_numpy(), threshold)
             scores.append(score)
             split_rows.append(dict(model=model, seed=seed, threshold=threshold, **score))
