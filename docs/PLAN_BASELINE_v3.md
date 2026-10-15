@@ -101,6 +101,7 @@ Mỗi baseline học sâu có một thư mục `baseline/<TÊN>/` gồm `run_<t�
 | Bước 1 `--split-seed`: sửa gender/category; thêm `cluster_label` (code gốc không tạo nhưng 3 bước sau đọc cột này; lấy từ file cluster như CFIN); scaler fit trên train; bỏ lệnh `print` từng khóa | Q4, P6, lỗi code gốc |
 | Bước 3, link prediction, 2 bước dựng đồ thị: thêm validation; scaler người học / khóa học fit trên train; seed; sửa `'wb'` nằm trong `os.path.join`; thêm `enroll_id`, `val_mask` vào đồ thị | P6, lỗi code gốc |
 | **`models.py:185` (lỗi mới)**: `if i == 1` trong vòng `for i in range(5)` → tuần 0 gọi `torch.cat((None, x))`, code gốc không chạy được. Sửa thành `i == 0` | Lỗi code gốc |
+| **`linkprediction_models.py` (lỗi mới, 2026-10-15)**: `train_loader` nhận `edge_label` (toàn 1) cùng `neg_sampling_ratio=3`. PyG 2.1 (bản README yêu cầu) cộng 1 vào nhãn có sẵn để dành 0 cho cạnh âm → cạnh dương mang nhãn 2, BCE giảm không giới hạn (server: loss −4.7×10⁹ ở epoch 7). Sửa: bỏ `edge_label=edge_label`, loader tự gán 1/0 | Lỗi code gốc |
 | `train.py`: mask train/val/test; dừng theo val AUC (patience 5, tối đa 45); seed; ghi dự đoán | P4, P7 |
 
 Lưu ý môi trường: trên Windows, Git đổi xuống dòng trong file pickle `datastore/cluster/user_dict` (lỗi `numpy.core.multiarray\r`). Trên server Linux không bị; file sau khi bỏ CR giống hệt bản của CFIN.

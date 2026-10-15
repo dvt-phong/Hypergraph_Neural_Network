@@ -362,7 +362,7 @@ index c332ac8..351d19c 100644
 +with open(os.path.join(input_dir, 'StrongClassmatesGraph.pkl'), 'wb') as f:   # changed: 'wb' was inside os.path.join
      pkl.dump(graph, f)
 diff --git a/src/linkprediction/linkprediction_models.py b/src/linkprediction/linkprediction_models.py
-index 141aa64..2b782c9 100644
+index 141aa64..cda8066 100644
 --- a/src/linkprediction/linkprediction_models.py
 +++ b/src/linkprediction/linkprediction_models.py
 @@ -1,4 +1,6 @@
@@ -431,6 +431,22 @@ index 141aa64..2b782c9 100644
  course_feat = torch.from_numpy(course_feat_std).to(torch.float)
  unique_course_id_df = pd.DataFrame(
      data={'course_id': unique_course_id, 'course_graph_id': pd.RangeIndex(len(unique_course_id))})
+@@ -85,12 +104,14 @@ edge_label = train_data['user', 'enroll', 'course'].edge_label
+ edge_label_index_val = val_data['user', 'enroll', 'course'].edge_label_index
+ edge_label_val = val_data['user', 'enroll', 'course'].edge_label
+ 
++# changed: no edge_label here. With negative sampling, PyG 2.1 shifts given labels by 1 (0 = negative),
++# so the all-ones train labels became 2 and the BCE loss fell without bound (-4.7e9 by epoch 7).
++# Without edge_label the loader labels positives 1 and sampled negatives 0, as the BCE expects.
+ train_loader = LinkNeighborLoader(
+     data=train_data,
+     num_neighbors=[3, 90],
+     neg_sampling_ratio=3,
+     edge_label_index=(('user', 'enroll', 'course'), edge_label_index),
+-    edge_label=edge_label,
+     batch_size=256,
+     shuffle=True,
+ )
 diff --git a/src/models.py b/src/models.py
 index 4a01cf1..343caa2 100644
 --- a/src/models.py
