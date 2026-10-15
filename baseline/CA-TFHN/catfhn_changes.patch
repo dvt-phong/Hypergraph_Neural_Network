@@ -461,7 +461,7 @@ index 4a01cf1..343caa2 100644
              else:
                  lstm_input = torch.cat((lstm_input, x), dim=1)
 diff --git a/train.py b/train.py
-index 768b97d..9774468 100644
+index 768b97d..8838583 100644
 --- a/train.py
 +++ b/train.py
 @@ -1,6 +1,10 @@
@@ -475,7 +475,7 @@ index 768b97d..9774468 100644
  import torch
  import numpy as np
  
-@@ -8,22 +12,44 @@ from torch import optim
+@@ -8,26 +12,56 @@ from torch import optim
  from src.models import *
  from torch_geometric.loader import NeighborLoader
  from tqdm import tqdm
@@ -490,7 +490,12 @@ index 768b97d..9774468 100644
 +#   (3 x the original 15); the best weights are restored and validation and test are scored once
 +#   (the original printed the test metrics every epoch);
 +# - predictions and metrics (AUC, precision, recall, F1 at threshold 0.5, as the original) are
-+#   written like baseline/ML.
++#   written like baseline/ML;
++# - num_nodes is set: PyG 2.1 cannot infer it (no 'x') and takes max(edge_index) + 1, so when the last
++#   nodes have no edge the loader does not slice labels / features per batch (split 111);
++# - a dead model is re-initialised: when the validation predictions are constant after epoch 1 (every
++#   unit of a classifier ReLU layer is 0, so only the output bias learns; split 1: p = 0.4739 for all,
++#   AUC 0.5), the model restarts with seed r + 1000·k, at most -max-restarts times.
  
  myparser = argparse.ArgumentParser(description='optional parameters')
 -myparser.add_argument('-indir', type=str, help='input dir (default: current dir)', default='.')
@@ -503,6 +508,7 @@ index 768b97d..9774468 100644
 +myparser.add_argument('-r', type=int, default=1, help='learner split seed and random seed')
  myparser.add_argument('-lr', type=float, default=1e-4, help='learning rate (default: 1e-4)')
 +myparser.add_argument('-smoke-batches', type=int, default=0, help='only this many train batches per epoch')
++myparser.add_argument('-max-restarts', type=int, default=5, help='re-initialisations of a dead model')
  
  args = myparser.parse_args()
 +random.seed(args.r)
@@ -517,15 +523,21 @@ index 768b97d..9774468 100644
  epoch_num = args.e
  learning_rate = args.lr
 +THRESHOLD = 0.5                              # ŷ = 1[p ≥ 0.5], as the original test()
++DEAD_STD = 1e-6                              # dead model: std of validation p < 1e-6 after epoch 1
 +METRICS = ("auc", "precision", "recall", "f1")
-+RESULT_COLUMNS = ("time", "model", "seed", "best_epoch", "epochs_run",
++RESULT_COLUMNS = ("time", "model", "seed", "restarts", "best_epoch", "epochs_run",
 +                  "val_auc", "val_precision", "val_recall", "val_f1",
 +                  "test_auc", "test_precision", "test_recall", "test_f1", "minutes")
 +started_at = time.time()
  
  # load the graph
  with open(os.path.join(input_dir, 'StrongClassmatesGraph.pkl'), 'rb') as f:
-@@ -39,13 +65,20 @@ train_loader = NeighborLoader(
+     graph = pickle.load(f)
++graph.num_nodes = len(graph.labels)          # not max(edge_index) + 1, which misses trailing isolated nodes
+ graph = graph.to(device)
+ 
+ # create graph loader
+@@ -39,13 +73,20 @@ train_loader = NeighborLoader(
      shuffle=True
  )
  
@@ -553,12 +565,28 @@ index 768b97d..9774468 100644
  
  # set the hyper parameters
  param_dict = dict({
-@@ -75,10 +108,26 @@ model = model.to(device)
- # select the optimizer
- optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+@@ -68,17 +109,38 @@ param_dict = dict({
+     # DNN
+     'dnn_input_f1': 16, 'dnn_hidden_f1': 16, 'dnn_hidden_f2': 8, 'dnn_hidden_f3': 4, 'dnn_output': 1
+ })
+-# create the model
+-model = LGB(param_dict)
+-model = model.to(device)
+ 
+-# select the optimizer
+-optimizer = optim.Adam(model.parameters(), lr=learning_rate)
  
 -# train
 -for epoch in range(epoch_num):
++# Model and optimizer initialised with one seed.
++def build_model(seed):
++    torch.manual_seed(seed)
++    new_model = LGB(param_dict).to(device)
++    return new_model, optim.Adam(new_model.parameters(), lr=learning_rate)
++
++
++model, optimizer = build_model(args.r)
++
 +
 +# Dropout probability, label and graph node id of every node of one loader.
 +def predict(loader):
@@ -573,9 +601,10 @@ index 768b97d..9774468 100644
 +    return torch.cat(preds).numpy(), torch.cat(truths).numpy(), torch.cat(node_ids).numpy()
 +
 +
-+# train; validation AUC after each epoch; keep the best weights
-+best_auc, best_epoch, best_state, stale, epoch = -1.0, 0, None, 0, 0
-+for epoch in range(1, epoch_num + 1):
++# train; validation AUC after each epoch; keep the best weights; restart a model dead after epoch 1
++best_auc, best_epoch, best_state, stale, epoch, restarts = -1.0, 0, None, 0, 0, 0
++while epoch < epoch_num:
++    epoch += 1
 +    model.train()
      total_loss, total_examples = 0, 0
 -    for sub_graph in tqdm(train_loader):
@@ -583,7 +612,7 @@ index 768b97d..9774468 100644
          optimizer.zero_grad()
          pred = model(sub_graph)
          batch_size = sub_graph['batch_size']
-@@ -88,31 +137,44 @@ for epoch in range(epoch_num):
+@@ -88,31 +150,51 @@ for epoch in range(epoch_num):
          optimizer.step()
          total_loss += float(loss) * pred.numel()
          total_examples += pred.numel()
@@ -591,6 +620,13 @@ index 768b97d..9774468 100644
 +        if args.smoke_batches and step >= args.smoke_batches:
 +            break
 +    prob, truth, _ = predict(val_loader)
++    if epoch == 1 and prob.std() < DEAD_STD and restarts < args.max_restarts:
++        restarts += 1
++        print(f"[seed {args.r}] dead model after epoch 1 (validation p = {prob.mean():.4f} for all, "
++              f"std {prob.std():.1e}); restart {restarts} with seed {args.r + 1000 * restarts}", flush=True)
++        model, optimizer = build_model(args.r + 1000 * restarts)
++        epoch = 0
++        continue
 +    val_auc = roc_auc_score(truth, prob)
 +    if val_auc > best_auc:                                                   # best = argmax_epoch AUC_val
 +        best_auc, best_epoch, best_state, stale = val_auc, epoch, copy.deepcopy(model.state_dict()), 0
@@ -630,7 +666,7 @@ index 768b97d..9774468 100644
 -    print(f"Epoch: {epoch:03d}, Test F1: {f1:.4f}")
 +# score validation and test once, with the best weights
 +enroll_ids = graph.enroll_id.cpu().numpy()                                   # record_graph_id -> enroll_id
-+row = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "model": "CA-TFHN", "seed": args.r,
++row = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "model": "CA-TFHN", "seed": args.r, "restarts": restarts,
 +       "best_epoch": best_epoch, "epochs_run": epoch}
 +for split, prefix, loader in (('validation', 'val', val_loader), ('test', 'test', test_loader)):
 +    prob, truth, node_ids = predict(loader)
