@@ -1,5 +1,5 @@
 diff --git a/MST-GCN/src_xuet/main.py b/MST-GCN/src_xuet/main.py
-index ac9aad7..e2b4bca 100644
+index ac9aad7..f265476 100644
 --- a/MST-GCN/src_xuet/main.py
 +++ b/MST-GCN/src_xuet/main.py
 @@ -60,9 +60,11 @@ def main(args):
@@ -9,8 +9,8 @@ index ac9aad7..e2b4bca 100644
 -        raw_data_path = 'data/xuetangx' 
 -        cache_path = 'data/xuetangx/cache'
 -        
-+        # changed: folders from the command line (baseline/prepare_raw.py output, one cache for every
-+        # split) and the learner split of --seed
++        # changed: folders from the command line (events.csv and x59_s<seed>.npz of the main model M,
++        # one cache for every seed) and the split of --seed
 +        raw_data_path = args.raw_dir
 +        cache_path = args.cache_dir
 +
@@ -23,7 +23,7 @@ index ac9aad7..e2b4bca 100644
              subset_ratio=args.subset_ratio,
 -            force_reload=False  # 如果修改了构图逻辑，请改为 True 或手动删除 cache 文件夹
 +            force_reload=False,  # 如果修改了构图逻辑，请改为 True 或手动删除 cache 文件夹
-+            split_path=os.path.join(args.split_dir, f"learner_s{args.seed}.csv")
++            split_path=os.path.join(args.x_dir, f"x59_s{args.seed}.npz")
          )
          
      else:
@@ -34,10 +34,10 @@ index ac9aad7..e2b4bca 100644
 -    parser.add_argument("--seed", type=int, default=0, 
 +    parser.add_argument("--seed", type=int, default=0,
                          help="Random seed for reproducibility. Run 0-4 for Statistical Test.")
-+    # changed: data folders, learner split (--seed is also the split seed), output and early stopping
-+    parser.add_argument("--raw_dir", type=str, default='data/xuetangx/prediction_log')
++    # changed: data folders, split of the seed (--seed is also the split seed), output and early stopping
++    parser.add_argument("--raw_dir", type=str, default='data/processed/simple', help="folder of events.csv")
 +    parser.add_argument("--cache_dir", type=str, default='data/xuetangx/cache')
-+    parser.add_argument("--split_dir", type=str, default='data/xuetangx/splits')
++    parser.add_argument("--x_dir", type=str, default='data/processed/simple', help="folder of x59_s<seed>.npz")
 +    parser.add_argument("--out_dir", type=str, default='outputs')
 +    parser.add_argument("--patience", type=int, default=5,
 +                        help="Stop after this many epochs without a better validation AUC.")
@@ -45,7 +45,7 @@ index ac9aad7..e2b4bca 100644
      # ==========================================
      # 3. 模型选择与架构参数
 diff --git a/MST-GCN/src_xuet/trainer.py b/MST-GCN/src_xuet/trainer.py
-index 9e10af9..fdc3f9a 100644
+index 9e10af9..158a78e 100644
 --- a/MST-GCN/src_xuet/trainer.py
 +++ b/MST-GCN/src_xuet/trainer.py
 @@ -7,15 +7,24 @@ import dgl
@@ -108,8 +108,8 @@ index 9e10af9..fdc3f9a 100644
 -    train_dl = DataLoader(dataloader, collate_fn=collate_data, sampler=SubsetRandomSampler(indices[:split]), batch_size=args.batch_size)
 -    test_dl = DataLoader(dataloader, collate_fn=collate_data, sampler=SubsetRandomSampler(indices[split:]), batch_size=args.batch_size)
 -    
-+    # changed: train / validation / test of the learner split (the original took the first 80% of the
-+    # merged train + test rows as train and the rest as test); validation and test in a fixed order
++    # changed: train / validation / test of the seed (the original took the first 80% of the merged
++    # train + test rows as train and the rest as test); validation and test in a fixed order
 +    indices = list(dataloader.split_index['train'])
 +    train_dl = DataLoader(dataloader, collate_fn=collate_data, sampler=SubsetRandomSampler(indices), batch_size=args.batch_size)
 +    eval_dl = {name: DataLoader(dataloader, collate_fn=collate_data, sampler=list(dataloader.split_index[name]), batch_size=args.batch_size)
@@ -189,10 +189,10 @@ index 9e10af9..fdc3f9a 100644
 +        writer.writerow({k: (f"{v:.6f}" if isinstance(v, float) else v) for k, v in row.items()})
 \ No newline at end of file
 diff --git a/MST-GCN/src_xuet/xuetangx_graph_builder.py b/MST-GCN/src_xuet/xuetangx_graph_builder.py
-index 19ffcb2..d6a5ff4 100644
+index 19ffcb2..737cd25 100644
 --- a/MST-GCN/src_xuet/xuetangx_graph_builder.py
 +++ b/MST-GCN/src_xuet/xuetangx_graph_builder.py
-@@ -71,15 +71,20 @@ class XuetangXGraph(DGLDataset):
+@@ -71,15 +71,22 @@ class XuetangXGraph(DGLDataset):
      """
      XuetangX 数据集的高性能构建类，已修复为构建 DGL 异构图并使用 Log 聚合特征。
      """
@@ -201,8 +201,10 @@ index 19ffcb2..d6a5ff4 100644
          self.subset_ratio = subset_ratio
          self.window_size = 35  # Dh = 35 days
 -        
-+        # changed: the graph and the unscaled features do not depend on the split, so they are cached
-+        # once; apply_split() picks the learner split and fits the enrollment scaler on its train rows.
++        # changed (docs/PLAN_X59.md): raw_dir holds events.csv of the main model M; the graph and the
++        # object / course features do not depend on the seed, so they are cached once; apply_split()
++        # reads x59_s<seed>.npz: the train / validation / test of the seed and X59 as the enrollment
++        # feature (the same input as M).
 +        self.split_path = split_path
 +
          # 更改 name 以反映异构图和特征推断
@@ -216,24 +218,63 @@ index 19ffcb2..d6a5ff4 100644
  
      # ***************************************************************
      # 核心修复：process - 异构图构建和特征工程
-@@ -176,9 +181,10 @@ class XuetangXGraph(DGLDataset):
-         ).reindex(enroll_ids).fillna(0)
+@@ -148,7 +155,10 @@ class XuetangXGraph(DGLDataset):
+             ('course', 'c_contains_o', 'object'): (torch.tensor(dst_c_dgl), torch.tensor(src_o_dgl))
+         }
+ 
+-        self.graph = dgl.heterograph(data_dict)
++        # changed: the number of nodes of every type is given, so an enrollment without any object edge
++        # (e.g. no event in days 0-34) is still a node (DGL otherwise stops at the largest id with an edge)
++        num_nodes_dict = {'enrollment': len(enroll_ids), 'object': len(object_ids), 'course': len(course_ids)}
++        self.graph = dgl.heterograph(data_dict, num_nodes_dict=num_nodes_dict)
+         print(f"Heterogeneous Graph built: {self.graph}")
          
-         enroll_agg_feat = pd.concat([enroll_stats, enroll_action_dist], axis=1).values
+         # =================================================
+@@ -158,27 +168,10 @@ class XuetangXGraph(DGLDataset):
+         
+         scaler = StandardScaler()
+         
+-        # (A) Enrollment Features: 行为时间序列 + 注册实例聚合特征
+-        act_matrix = logs.groupby(['enroll_id', 'day']).size().unstack(fill_value=0)
+-        act_matrix = act_matrix.reindex(enroll_ids, fill_value=0)
+-        current_cols = act_matrix.shape[1]
+-        if current_cols < self.window_size:
+-            for c in range(current_cols, self.window_size):
+-                act_matrix[c] = 0
+-        act_values = act_matrix.iloc[:, :self.window_size].values
+-        
+-        enroll_action_dist = pd.crosstab(logs['enroll_id'], logs['action']).reset_index()
+-        enroll_action_dist = enroll_action_dist.set_index('enroll_id').reindex(enroll_ids).fillna(0)
+-        
+-        enroll_stats = logs.groupby('enroll_id').agg(
+-            total_actions=('action', 'size'),
+-            unique_objects=('object', 'nunique'),
+-        ).reindex(enroll_ids).fillna(0)
+-        
+-        enroll_agg_feat = pd.concat([enroll_stats, enroll_action_dist], axis=1).values
 -        enroll_agg_feat_scaled = scaler.fit_transform(enroll_agg_feat)
 -        enroll_feat = np.hstack([act_values, enroll_agg_feat_scaled])
 -        
-+        # changed: kept unscaled here; apply_split() z-scores these columns with the train rows only
-+        # (the original fit the scaler on every enrollment)
-+        enroll_feat = np.hstack([act_values, enroll_agg_feat])
++        # (A) Enrollment Features
++        # changed: X59 of x59_s<seed>.npz, set in apply_split() (the original built the same 59
++        # columns here: 35 daily counts, total actions, unique objects, 22 action counts)
 +
          # (B) Course Features: 课程宏观行为聚合特征
          course_behavior = logs.groupby('course_id').agg(
              total_actions=('enroll_id', 'size'),
-@@ -240,24 +246,13 @@ class XuetangXGraph(DGLDataset):
+@@ -203,7 +196,6 @@ class XuetangXGraph(DGLDataset):
+         obj_vec_scaled = scaler.fit_transform(obj_action_dist.values)
+         
+         # (D) 将特征分配给异构图的节点 (关键修复点)
+-        self.graph.nodes['enrollment'].data['feature'] = torch.tensor(enroll_feat, dtype=torch.float32)
+         self.graph.nodes['object'].data['feature'] = torch.tensor(obj_vec_scaled, dtype=torch.float32)
+         self.graph.nodes['course'].data['feature'] = torch.tensor(crs_vec_scaled, dtype=torch.float32)
+         
+@@ -239,46 +231,25 @@ class XuetangXGraph(DGLDataset):
+         加载真实数据，并执行关键的数据完整性修复 (仅推断必需的 course start time)。
          """
          path = self.raw_dir
-         
+-        
 -        # 1. 加载 Logs (train + test)
 -        logs = pd.read_csv(os.path.join(path, 'train_log.csv'))
 -        if os.path.exists(os.path.join(path, 'test_log.csv')):
@@ -246,37 +287,65 @@ index 19ffcb2..d6a5ff4 100644
 -        if os.path.exists(os.path.join(path, 'test_truth.csv')):
 -            truth_test = pd.read_csv(os.path.join(path, 'test_truth.csv'))
 -            truth_train = pd.concat([truth_train, truth_test], ignore_index=True)
--
+ 
 -        # Enrichment: 从 Logs 补充 username 和 course_id
 -        print("Enriching Truth data with metadata from Logs...")
 -        enroll_meta = logs[['enroll_id', 'username', 'course_id']].drop_duplicates(subset=['enroll_id'])
-+        # changed: one log and one truth file of every labeled enrollment (baseline/prepare_raw.py,
-+        # already filtered like the main model M); username/course_id come from enrollments.csv, so an
-+        # enrollment with no kept event is kept (the original dropped it with dropna)
-+        logs = pd.read_csv(os.path.join(path, 'log.csv'))
-+        truth_train = pd.read_csv(os.path.join(path, 'truth.csv'))
-+        enroll_meta = pd.read_csv(os.path.join(path, 'enrollments.csv'))
-         truth_train = truth_train.merge(enroll_meta, on='enroll_id', how='left')
+-        truth_train = truth_train.merge(enroll_meta, on='enroll_id', how='left')
 -        truth_train = truth_train.dropna(subset=['username', 'course_id'])
++        # changed: events.csv of the main model M (every labeled enrollment, 22 actions, course days
++        # 0-34, day = course_day); an enrollment with no event has one row with an empty action, so
++        # it is kept in truth_train (the original dropped it with dropna) but not in logs
++        events = pd.read_csv(os.path.join(path, 'events.csv'),
++                             usecols=['enroll_id', 'user_id', 'course_id', 'label', 'action', 'object_id', 'course_day'])
++        events = events.rename(columns={'user_id': 'username', 'object_id': 'object', 'course_day': 'day', 'label': 'truth'})
++        truth_train = events[['enroll_id', 'truth', 'username', 'course_id']].drop_duplicates(subset=['enroll_id'])
++        truth_train = truth_train.reset_index(drop=True)
++        logs = events[events['action'].notna()].copy()
++        logs['day'] = logs['day'].astype(int)
  
          # 3. 处理缺失的 User Profile (不创建虚拟特征)
          unique_users = logs['username'].unique()
-@@ -287,6 +282,20 @@ class XuetangXGraph(DGLDataset):
+         users = pd.DataFrame({'user_id': unique_users, 'username': unique_users}) 
+         
+-        # 4. 处理缺失的 Course Info (只推断 start time)
++        # 4. 处理缺失的 Course Info
+         unique_courses = logs['course_id'].unique()
+         courses = pd.DataFrame({'course_id': unique_courses})
+-        
+-        print("Inferring course start times from logs (MANDATORY)...")
+-        course_starts = logs.groupby('course_id')['time'].min().reset_index()
+-        course_starts.columns = ['course_id', 'start']
+-        courses = courses.merge(course_starts, on='course_id', how='left')
+-
+-        # 5. 计算 day (依赖于推断的 start time)
+-        print("Calculating 'day' column from timestamps (Vectorized)...")
+-        logs['time'] = pd.to_datetime(logs['time'])
+-        courses['start'] = pd.to_datetime(courses['start'])
+-        logs = logs.merge(courses[['course_id', 'start']], on='course_id', how='left')
+-        logs['day'] = (logs['time'] - logs['start']).dt.days
+-        logs.loc[logs['day'] < 0, 'day'] = 0
+ 
+         return logs, users, courses, truth_train
+ 
+@@ -287,6 +258,22 @@ class XuetangXGraph(DGLDataset):
      # 其他函数
      # ***************************************************************
  
 +    def apply_split(self, split_path):
-+        """Train / validation / test DGL ids of the learner split; enrollment scaler fitted on train."""
-+        split = pd.read_csv(split_path)
-+        split = split[split['enroll_id'].isin(self.enroll_map)]
-+        split['eid_int'] = split['enroll_id'].map(self.enroll_map)
-+        self.split_index = {name: split.loc[split['split'] == name, 'eid_int'].to_numpy()
-+                            for name in ('train', 'validation', 'test')}
-+        feature = self.graph.nodes['enrollment'].data['feature'].numpy().astype(np.float64)
-+        agg = feature[:, self.window_size:]                              # unscaled aggregate columns
-+        scaler = StandardScaler().fit(agg[self.split_index['train']])   # μ, σ of the train rows
-+        feature[:, self.window_size:] = scaler.transform(agg)           # z = (x − μ_train) / σ_train
-+        self.graph.nodes['enrollment'].data['feature'] = torch.tensor(feature, dtype=torch.float32)
++        """Train / validation / test DGL ids of the seed and X59 as the enrollment feature."""
++        data = np.load(split_path)
++        row_of_enroll = {}
++        for row in range(len(data['enroll_id'])):
++            row_of_enroll[int(data['enroll_id'][row])] = row
++        rows = []
++        for eid_int in range(len(self.id_to_enroll)):
++            rows.append(row_of_enroll[int(self.id_to_enroll[eid_int])])  # x59 row of every DGL enrollment
++        split = data['split'][rows]
++        self.split_index = {}
++        for name in ('train', 'validation', 'test'):
++            self.split_index[name] = np.flatnonzero(split == name)
++        self.graph.nodes['enrollment'].data['feature'] = torch.tensor(data['X'][rows], dtype=torch.float32)
 +        print("Split " + ", ".join(f"{k}={len(v):,}" for k, v in self.split_index.items()))
 +
      def has_cache(self):

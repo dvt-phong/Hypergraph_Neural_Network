@@ -2,7 +2,7 @@
 # Run src/9_train.py and then src/10_summary.py inside a detached tmux session, so
 # training keeps going after the SSH connection is closed. Arguments go to 9_train.py.
 #
-#   bash scripts/run_tmux.sh --scenario all --seeds 1 11 111 1111 11111
+#   bash scripts/run_tmux.sh --scenario M --seeds 1 11 111 1111 11111
 #   bash scripts/run_tmux.sh --scenario all --seeds 1 --epochs 10
 #   PYTHON=/path/to/python bash scripts/run_tmux.sh ...   (default: .venv, else python3)
 #

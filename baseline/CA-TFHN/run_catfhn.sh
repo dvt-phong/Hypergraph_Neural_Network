@@ -1,44 +1,40 @@
-# Run the original CA-TFHN code (github.com/codeds27/CA-TFHN, commit f8ef659) on the raw data and
-# learner splits of baseline/prepare_raw.py (docs/PLAN_BASELINE_v3.md). The changes to the original
-# are in catfhn_changes.patch.
+# Run the original CA-TFHN code (github.com/codeds27/CA-TFHN, commit f8ef659) on X59, activity only
+# (docs/PLAN_X59.md). The changes to the original are in catfhn_changes.patch.
 #
 # Environment (Linux server, Python 3.9, versions of the original README):
 #   conda create -n catfhn python=3.9 -y && conda activate catfhn
 #   pip install -r baseline/CA-TFHN/requirements.txt
-# Run from the project root, after `python baseline/prepare_raw.py`:
-#   bash baseline/CA-TFHN/run_catfhn.sh setup      # clone + patch (once)
-#   bash baseline/CA-TFHN/run_catfhn.sh features   # step 0 once; steps 1, 3, link prediction, graphs per split
-#   bash baseline/CA-TFHN/run_catfhn.sh smoke      # split seed 1, 1 epoch of 20 batches
-#   bash baseline/CA-TFHN/run_catfhn.sh full       # 5 learner splits (seed = split seed) -> outputs/baselines/CA-TFHN/
+# Run from the project root, after src/2_preprocess.py and src/3_features.py (x59_s<seed>.npz):
+#   bash baseline/CA-TFHN/run_catfhn.sh setup      # clone, reset to the pinned commit, apply the patch (rerun after git pull)
+#   bash baseline/CA-TFHN/run_catfhn.sh features   # per seed: X59 tables, mapping, link prediction, graphs
+#   bash baseline/CA-TFHN/run_catfhn.sh smoke      # seed 1, 1 epoch of 20 batches
+#   bash baseline/CA-TFHN/run_catfhn.sh full       # 5 seeds -> outputs/baselines/CA-TFHN/
 set -eo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-RAW="$ROOT/data/processed/baseline_raw"
+X_DIR="$ROOT/data/processed/simple"
 OUT="$ROOT/outputs/baselines/CA-TFHN"
 CODE="$HERE/code"
 SEEDS="${SEEDS:-1 11 111 1111 11111}"
 PY="${PY:-python}"
 case "$PY" in */*) PY="$(cd "$(dirname "$PY")" && pwd)/$(basename "$PY")";; esac   # path -> absolute (we cd below)
-export CATFHN_RAW="$RAW"
+export CATFHN_X="$X_DIR"
 export CATFHN_DATA="$CODE/datastore"
-export CATFHN_CLUSTER="$CODE/datastore/cluster"
 STAGE="${1:-full}"
 
-# 1. Original code at the pinned commit, plus our changes.
+# 1. Original code at the pinned commit, plus our changes. setup always resets the clone to the
+#    commit and applies the current patch, so a clone left from an older patch is never used.
 if [ "$STAGE" = "setup" ] || [ ! -d "$CODE" ]; then
-    if [ ! -d "$CODE" ]; then
-        git clone https://github.com/codeds27/CA-TFHN "$CODE"
-        git -C "$CODE" checkout f8ef659
-        git -C "$CODE" apply "$HERE/catfhn_changes.patch"
-    fi
+    [ -d "$CODE" ] || git clone https://github.com/codeds27/CA-TFHN "$CODE"
+    git -C "$CODE" reset --hard f8ef659
+    git -C "$CODE" apply "$HERE/catfhn_changes.patch"
     [ "$STAGE" = "setup" ] && exit 0
 fi
 cd "$CODE"
-[ -f "$RAW/prediction_log/log.csv" ] || { echo "Missing $RAW; run python baseline/prepare_raw.py first"; exit 1; }
+[ -f "$X_DIR/x59_s1.npz" ] || { echo "Missing $X_DIR/x59_s1.npz; run src/2_preprocess.py and src/3_features.py first"; exit 1; }
 
 case "$STAGE" in
 features)
-    "$PY" src/dataprocess/0_process_user_activity_logs.py 2>&1 | tee datastore/step0.log      # all_features_35.csv
     for seed in $SEEDS; do                                                                     # datastore/s<seed>/
         mkdir -p "datastore/s$seed"
         {

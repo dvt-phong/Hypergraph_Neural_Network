@@ -1,7 +1,15 @@
-# 2. Split XuetangX into train / validation / test files
+# 2. Write the events of every labeled XuetangX enrollment and the split of every seed
 # - MST-GCN https://github.com/wudongze9/MST-GCN
 # - CA-TFHN https://github.com/codeds27/CA-TFHN
 # - CFIN https://github.com/wzfhaha/dropout_prediction
+#
+# Outputs in data/processed/simple:
+#   events.csv          node_id, enroll_id, user_id, course_id, label, action, object_id, course_day
+#                       one row per kept event (22 actions, course days 0–34); an enrollment with
+#                       no kept event gets one row with an empty action
+#   splits/s{seed}.csv  node_id, enroll_id, split
+#                       official test -> test; official train -> 80% train / 20% validation (seed)
+# node_id = position of enroll_id in the sorted list of every labeled enroll_id.
 
 import argparse
 import codecs
@@ -12,7 +20,9 @@ from datetime import date
 from importlib import import_module
 from pathlib import Path
 
-config_constant = import_module("0_config")
+config = import_module("0_config")
+
+EVENTS_FILE = "events.csv"
 
 
 # Read a UTF-8 CSV file row by row, one dict per row
@@ -45,189 +55,155 @@ def read_prediction_data(prediction_data_path, selected_names):
                     yield name, row
 
 
-# Split enrollments into enrollment id -> "train" (80%) or "validation" (20%).
-def split_train_enrollments(enrollment_ids):
-    shuffled_ids = list(enrollment_ids)
-    random.Random(config_constant.SPLIT_SEED).shuffle(shuffled_ids)            # random order, seed 1
-    train_count = int(len(shuffled_ids) * config_constant.TRAIN_RATIO)         # n_train = ⌊0.8·n⌋
+# Path of the split file of one seed
+def split_path(output_dir, seed):
+    return Path(output_dir) / "splits" / f"s{seed}.csv"
+
+
+# Split of one seed: official train -> "train" (80%) or "validation" (20%), official test -> "test"
+def split_enrollments(train_ids, test_ids, seed):
+    shuffled_ids = sorted(train_ids)
+    random.Random(seed).shuffle(shuffled_ids)                            # random order of this seed
+    train_count = int(len(shuffled_ids) * config.TRAIN_RATIO)            # n_train = ⌊0.8·n⌋
 
     split_by_enrollment = {}
-    for position, enrollment_id in enumerate(shuffled_ids):
+    for position in range(len(shuffled_ids)):
+        enrollment_id = shuffled_ids[position]
         if position < train_count:
             split_by_enrollment[enrollment_id] = "train"
         else:
             split_by_enrollment[enrollment_id] = "validation"
+    for enrollment_id in test_ids:
+        split_by_enrollment[enrollment_id] = "test"
     return split_by_enrollment
 
 
-# Write the events and labeled of enrollment to train.csv, validation.csv or test.csv.
-def stream_events(prediction_data_path, output_dir, users, courses, labels, split_by_enrollment):
-    node_ids = {}
-    for split_name in config_constant.SPLITS:
-        node_ids[split_name] = {}
-    # (user, course) of every enrollment, also those with no event in days 0–34.
-    enrollment_metadata = {}
-    columns = (
-        "node_id", "enroll_id", "user_id", "course_id", "label",
-        "gender", "education", "birth", "course_start", "course_end",
-        "category", "action", "object_id", "course_day",
-    )
+# Write the kept events of every labeled enrollment to events.csv
+def write_events(prediction_data_path, output_dir, courses, labels, node_ids):
+    columns = ("node_id", "enroll_id", "user_id", "course_id", "label", "action", "object_id", "course_day")
+    first_rows = {}            # enroll_id -> (user_id, course_id) of its first raw row
+    has_event = set()          # enroll_ids with at least one kept event
+    event_count = 0
 
-    # One output file and one CSV writer per split; the files are closed at the end.
-    files = {}
-    writers = {}
-    for split_name in config_constant.SPLITS:
-        files[split_name] = open(output_dir / f"{split_name}.csv", "w", newline="", encoding="utf-8")
-        writers[split_name] = csv.writer(files[split_name])
-        writers[split_name].writerow(columns)
+    with open(output_dir / EVENTS_FILE, "w", newline="", encoding="utf-8") as output:
+        writer = csv.writer(output)
+        writer.writerow(columns)
 
-    for _, row in read_prediction_data(prediction_data_path, config_constant.LOG_FILES):
-        enrollment_id = int(row["enroll_id"])
-        user_id = int(row["username"])
-        course_id = row["course_id"]
-        if enrollment_id not in split_by_enrollment:
-            continue
-        if enrollment_id not in enrollment_metadata:
-            enrollment_metadata[enrollment_id] = (user_id, course_id)
+        for _, row in read_prediction_data(prediction_data_path, config.LOG_FILES):
+            enrollment_id = int(row["enroll_id"])
+            if enrollment_id not in labels:
+                continue
+            user_id = int(row["username"])
+            course_id = row["course_id"]
+            if enrollment_id not in first_rows:
+                first_rows[enrollment_id] = (user_id, course_id)
 
-        action = row["action"]
-        if action not in config_constant.ACTIONS:
-            continue
+            action = row["action"]
+            if action not in config.ACTIONS:
+                continue
+            event_date = date.fromisoformat(row["time"][:10])
+            course_start = date.fromisoformat(courses[course_id]["start"][:10])
+            course_day = (event_date - course_start).days                # d = date(event) − date(course start)
+            if course_day < 0 or course_day >= config.OBSERVATION_DAYS:  # keep 0 ≤ d < 35
+                continue
 
-        event_date = date.fromisoformat(row["time"][:10])
-        course_start = date.fromisoformat(courses[course_id]["start"][:10])
-        course_day = (event_date - course_start).days                       # d = date(event) − date(course start)
-        if 0 <= course_day < config_constant.OBSERVATION_DAYS:              # keep 0 ≤ d < 35
-            split_name = split_by_enrollment[enrollment_id]
-            split_node_ids = node_ids[split_name]
-            if enrollment_id not in split_node_ids:
-                split_node_ids[enrollment_id] = len(split_node_ids)
-
-            user = users[user_id]
-            course = courses[course_id]
-            writers[split_name].writerow((
-                split_node_ids[enrollment_id],
+            writer.writerow((
+                node_ids[enrollment_id],
                 enrollment_id,
                 user_id,
                 course_id,
                 labels[enrollment_id],
-                user["gender"],
-                user["education"],
-                user["birth"],
-                course["start"],
-                course["end"],
-                course["category"],
                 action,
                 row["object"].strip(),
                 course_day,
             ))
+            has_event.add(enrollment_id)
+            event_count += 1
 
-    # Keep enrollments with no event -> 0 in event count
-    empty_behavior_count = 0
-    for enrollment_id in sorted(split_by_enrollment):
-        split_name = split_by_enrollment[enrollment_id]
-        split_node_ids = node_ids[split_name]
-        if enrollment_id in split_node_ids:
-            continue
-        if enrollment_id not in enrollment_metadata:
-            raise ValueError(
-                f"Enrollment {enrollment_id} has a label but no raw log row"
-            )
+        # Enrollments with no kept event: one row with an empty action (0 in every count).
+        empty_count = 0
+        for enrollment_id in sorted(labels):
+            if enrollment_id in has_event:
+                continue
+            if enrollment_id not in first_rows:
+                raise ValueError(f"Enrollment {enrollment_id} has a label but no raw log row")
+            user_id, course_id = first_rows[enrollment_id]
+            writer.writerow((
+                node_ids[enrollment_id],
+                enrollment_id,
+                user_id,
+                course_id,
+                labels[enrollment_id],
+                "",
+                "",
+                "",
+            ))
+            empty_count += 1
 
-        user_id, course_id = enrollment_metadata[enrollment_id]
-        split_node_ids[enrollment_id] = len(split_node_ids)
-        user = users[user_id]
-        course = courses[course_id]
-        writers[split_name].writerow((
-            split_node_ids[enrollment_id],
-            enrollment_id,
-            user_id,
-            course_id,
-            labels[enrollment_id],
-            user["gender"],
-            user["education"],
-            user["birth"],
-            course["start"],
-            course["end"],
-            course["category"],
-            "",
-            "",
-            "",
-        ))
-        empty_behavior_count += 1
-
-    for split_name in config_constant.SPLITS:
-        files[split_name].close()
-
-    written_node_count = 0
-    for split_name in config_constant.SPLITS:
-        written_node_count += len(node_ids[split_name])
-    if written_node_count != len(split_by_enrollment):
-        raise RuntimeError("Not every labeled enrollment was written")
-    print(
-        f"Wrote {written_node_count} enrollments; preserved "
-        f"{empty_behavior_count} with zero observed events",
-        flush=True,
-    )
+    print(f"Wrote {event_count:,} events of {len(labels):,} enrollments "
+          f"({empty_count:,} with no event) to {output_dir / EVENTS_FILE}", flush=True)
 
 
-# Run step 2: raw files -> three split CSVs (skipped when they already exist)
-def preprocess(raw_dir=config_constant.RAW, output_dir=config_constant.PROCESSED):
+# Write splits/s{seed}.csv for every seed
+def write_splits(output_dir, node_ids, train_ids, test_ids):
+    (output_dir / "splits").mkdir(parents=True, exist_ok=True)
+    for seed in config.SEEDS:
+        split_by_enrollment = split_enrollments(train_ids, test_ids, seed)
+        rows = []
+        for enrollment_id in sorted(split_by_enrollment):
+            rows.append((node_ids[enrollment_id], enrollment_id, split_by_enrollment[enrollment_id]))
+        write_csv(split_path(output_dir, seed), ("node_id", "enroll_id", "split"), rows)
+
+        counts = {}
+        for split_name in config.SPLITS:
+            counts[split_name] = 0
+        for enrollment_id in split_by_enrollment:
+            counts[split_by_enrollment[enrollment_id]] += 1
+        print(f"Saved {split_path(output_dir, seed)}: {counts}", flush=True)
+
+
+# Run step 2: raw files -> events.csv and the split files (skipped when they already exist)
+def preprocess(raw_dir=config.RAW, output_dir=config.PROCESSED):
     raw_dir = Path(raw_dir)
     output_dir = Path(output_dir)
     prediction_data_path = raw_dir / "prediction_data.tar.gz"
-    user_path = raw_dir / "user_info.csv"
-    course_path = raw_dir / "course_info.csv"
 
-    all_exist = True
-    for split_name in config_constant.SPLITS:
-        if not (output_dir / f"{split_name}.csv").is_file():
+    all_exist = (output_dir / EVENTS_FILE).is_file()
+    for seed in config.SEEDS:
+        if not split_path(output_dir, seed).is_file():
             all_exist = False
     if all_exist:
         print(f"Skipped existing outputs in {output_dir}", flush=True)
         return
-
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    users = {}
-    for row in read_csv(user_path):
-        users[int(row["user_id"])] = row
-
     courses = {}
-    for row in read_csv(course_path):
+    for row in read_csv(raw_dir / "course_info.csv"):
         courses[row["course_id"]] = row
 
-    train_labels = {}
-    test_labels = {}
-    for truth_name, row in read_prediction_data(prediction_data_path, config_constant.TRUTH_FILES):
-        enrollment_id = int(row["enroll_id"])
-        label = int(row["truth"])
-        if truth_name == "train_truth.csv":
-            train_labels[enrollment_id] = label
-        else:
-            test_labels[enrollment_id] = label
-
-    split_by_enrollment = split_train_enrollments(sorted(train_labels))
-    for enrollment_id in test_labels:
-        split_by_enrollment[enrollment_id] = "test"
-
     labels = {}
-    labels.update(train_labels)
-    labels.update(test_labels)
-    stream_events(
-        prediction_data_path,
-        output_dir,
-        users,
-        courses,
-        labels,
-        split_by_enrollment,
-    )
-    print(f"Saved preprocessed data to {output_dir}", flush=True)
+    train_ids = []
+    test_ids = []
+    for truth_name, row in read_prediction_data(prediction_data_path, config.TRUTH_FILES):
+        enrollment_id = int(row["enroll_id"])
+        labels[enrollment_id] = int(row["truth"])
+        if truth_name == "train_truth.csv":
+            train_ids.append(enrollment_id)
+        else:
+            test_ids.append(enrollment_id)
+
+    node_ids = {}
+    for enrollment_id in sorted(labels):
+        node_ids[enrollment_id] = len(node_ids)                          # node_id = rank of enroll_id
+
+    write_splits(output_dir, node_ids, train_ids, test_ids)
+    write_events(prediction_data_path, output_dir, courses, labels, node_ids)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Split XuetangX into train, validation and test CSVs.")
-    parser.add_argument("--raw-dir", type=Path, default=config_constant.RAW)
-    parser.add_argument("--output-dir", type=Path, default=config_constant.PROCESSED)
+    parser = argparse.ArgumentParser(description="Write events.csv and the train / validation / test "
+                                                 "split of every seed.")
+    parser.add_argument("--raw-dir", type=Path, default=config.RAW)
+    parser.add_argument("--output-dir", type=Path, default=config.PROCESSED)
     arguments = parser.parse_args()
     preprocess(arguments.raw_dir, arguments.output_dir)

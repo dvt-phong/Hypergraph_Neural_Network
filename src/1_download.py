@@ -1,4 +1,4 @@
-# 1. Download the raw XuetangX files (prediction_data, user_info, course_info).
+# 1. Download the raw XuetangX files (prediction_data, course_info).
 # - XuetangX dataset http://moocdata.cn/data/user-activity
 
 import argparse
@@ -20,11 +20,6 @@ def download_xuetangx(raw_dir=config.RAW):
 
         print(f"Downloading {file_name}", flush=True)
         urllib.request.urlretrieve(download_url, destination_path)
-
-
-# Download OULAD dataset
-def download_oulad(raw_dir=config.RAW):
-    pass
 
 
 if __name__ == "__main__":

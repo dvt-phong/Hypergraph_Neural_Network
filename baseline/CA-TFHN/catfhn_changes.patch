@@ -1,119 +1,17 @@
-diff --git a/src/dataprocess/0_process_user_activity_logs.py b/src/dataprocess/0_process_user_activity_logs.py
-index 8ced08f..ba4dc0e 100644
---- a/src/dataprocess/0_process_user_activity_logs.py
-+++ b/src/dataprocess/0_process_user_activity_logs.py
-@@ -3,24 +3,22 @@ import pandas as pd
- from tqdm import tqdm
- import gc
- 
--input_data_dir = '../../datastore'
--output_data_dir = '../../datastore'
--sta_day = 35
-+# Changed from the original (docs/PLAN_BASELINE_v3.md):
-+# (1) data: one log of every labeled enrollment from data/processed/baseline_raw (folder CATFHN_RAW),
-+#     already filtered like the main model M (22 actions, course days 0-34). The counts do not depend
-+#     on the split, so they are written once to all_features_35.csv; step 1 picks the learner split.
-+#     An enrollment with no kept event gets 0 counts (the original dropped it in the merge);
-+# (2) speed: the original runs groupby().sum() on the whole log once per (action, day), 770 times;
-+#     here the log is read in chunks and counted once per (enroll_id, action, day). Same table:
-+#     column '<action>_<day>#num' = number of rows with that action on course day `day`.
- 
--train = pd.read_csv(os.path.join(input_data_dir, 'prediction_log/train_log.csv'))[
--    ['enroll_id', 'username', 'course_id', 'action', 'time']]
--train_truth = pd.read_csv(os.path.join(input_data_dir, 'prediction_log/train_truth.csv'), index_col='enroll_id')
--test = pd.read_csv(os.path.join(input_data_dir, 'prediction_log/test_log.csv'))[
--    ['enroll_id', 'username', 'course_id', 'action', 'time']]
--test_truth = pd.read_csv(os.path.join(input_data_dir, 'prediction_log/test_truth.csv'), index_col='enroll_id')
--all_truth = pd.concat([train_truth, test_truth])
--all_log = pd.concat([train, test])
-+input_data_dir = os.environ.get('CATFHN_RAW', '../../datastore')
-+output_data_dir = os.environ.get('CATFHN_DATA', '../../datastore')
-+sta_day = 35
-+CHUNK_ROWS = 5000000
- 
- course_info = pd.read_csv(os.path.join(input_data_dir, 'course_info.csv'))
--course_info['start'] = pd.to_datetime(course_info['start']).dt.date
--all_log['time'] = pd.to_datetime(all_log['time']).dt.date
--all_log = pd.merge(all_log, course_info[['course_id', 'start']], how='left', on='course_id')
--all_log['time_diff'] = (all_log['time'] - all_log['start']).dt.days
-+course_info['start'] = pd.to_datetime(course_info['start']).dt.normalize()
- 
- video_action = ['seek_video', 'play_video', 'pause_video', 'stop_video', 'load_video']
- problem_action = ['problem_get', 'problem_check', 'problem_save', 'reset_problem', 'problem_check_correct',
-@@ -30,33 +28,33 @@ click_action = ['click_info', 'click_courseware', 'click_about', 'click_forum',
- close_action = ['close_courseware']
- all_action = video_action + problem_action + forum_action + click_action + close_action
- 
--cal_count = 0
--all_num = None
- all_action_feat = []
--for action in tqdm(all_action):
--    for i in tqdm(range(sta_day)):
--        action_day_ = ((all_log['action'] == action) & (all_log['time_diff'] == i)).astype(int)
--        all_log[str(action) + '_' + str(i) + '#num'] = action_day_
--        action_day_num = all_log.groupby('enroll_id').sum()[[str(action) + '_' + str(i) + '#num']]
--        if cal_count == 0:
--            cal_count += 1
--            all_num = action_day_num
--        else:
--            cal_count += 1
--            all_num = pd.merge(all_num, action_day_num, left_index=True, right_index=True)
--        del action_day_num
--        del action_day_
--        del all_log[str(action) + '_' + str(i) + '#num']
--        gc.collect()
-+for action in all_action:
-+    for i in range(sta_day):
-         all_action_feat.append(str(action) + '_' + str(i) + '#num')
- 
--all_num = pd.merge(all_num, all_truth, left_index=True, right_index=True)
--enroll_info = all_log[['username', 'course_id', 'enroll_id']].drop_duplicates()
--enroll_info.index = enroll_info['enroll_id']
--del enroll_info['enroll_id']
--all_num = pd.merge(all_num, enroll_info, left_index=True, right_index=True)
--train_enroll = list(set(list(train['enroll_id'])))
--test_enroll = list(set(list(test['enroll_id'])))
--all_num.loc[test_enroll].to_csv(os.path.join(output_data_dir, 'test_features_35.csv'))
--all_num.loc[train_enroll].to_csv(os.path.join(output_data_dir, 'train_features_35.csv'))
-+counts = []
-+reader = pd.read_csv(os.path.join(input_data_dir, 'prediction_log/log.csv'),
-+                     usecols=['enroll_id', 'course_id', 'action', 'time'], chunksize=CHUNK_ROWS)
-+for all_log in tqdm(reader):
-+    all_log['time'] = pd.to_datetime(all_log['time']).dt.normalize()
-+    all_log = pd.merge(all_log, course_info[['course_id', 'start']], how='left', on='course_id')
-+    all_log['time_diff'] = (all_log['time'] - all_log['start']).dt.days          # day = date(event) − date(start)
-+    all_log = all_log[all_log['action'].isin(all_action) & (all_log['time_diff'] >= 0) & (all_log['time_diff'] < sta_day)]
-+    name = all_log['action'] + '_' + all_log['time_diff'].astype(str) + '#num'
-+    counts.append(all_log.groupby([all_log['enroll_id'], name]).size())
-+    del all_log, name
-+    gc.collect()
-+
-+counts = pd.concat(counts).groupby(level=[0, 1]).sum()                          # an enrollment may span chunks
-+all_num = counts.unstack(fill_value=0).reindex(columns=all_action_feat, fill_value=0)
- 
-+all_truth = pd.read_csv(os.path.join(input_data_dir, 'prediction_log/truth.csv'), index_col='enroll_id')
-+enroll_info = pd.read_csv(os.path.join(input_data_dir, 'prediction_log/enrollments.csv'), index_col='enroll_id')
-+all_num = all_num.reindex(all_truth.index, fill_value=0)                       # no kept event -> 0 counts
-+all_num.index.name = 'enroll_id'
-+all_num['truth'] = all_truth['truth']
-+all_num['username'] = enroll_info.loc[all_num.index, 'username']
-+all_num['course_id'] = enroll_info.loc[all_num.index, 'course_id']
-+all_num.to_csv(os.path.join(output_data_dir, 'all_features_35.csv'))
-+print('all_features_35.csv', all_num.shape, flush=True)
 diff --git a/src/dataprocess/1_process_user_contextual_features.py b/src/dataprocess/1_process_user_contextual_features.py
-index 7e6916d..a0de23a 100644
+index 7e6916d..143d810 100644
 --- a/src/dataprocess/1_process_user_contextual_features.py
 +++ b/src/dataprocess/1_process_user_contextual_features.py
-@@ -1,17 +1,29 @@
+@@ -1,87 +1,27 @@
+-import math
 +import argparse
- import math
  import os
- import pickle as pkl
+-import pickle as pkl
 +import numpy as np
  import pandas as pd
- from sklearn.preprocessing import StandardScaler
- from tqdm import tqdm
- 
+-from sklearn.preprocessing import StandardScaler
+-from tqdm import tqdm
+-
 -input_data_dir = '../../datastore'
 -output_data_dir = '../../datastore'
 -train_feat = pd.read_csv(os.path.join(input_data_dir, 'train_features_35.csv'), index_col=0)
@@ -121,120 +19,170 @@ index 7e6916d..a0de23a 100644
 -all_feat = pd.concat([train_feat, test_feat])
 -
 -user_profile = pd.read_csv(os.path.join(input_data_dir, 'user_info.csv'), index_col='user_id')
-+# changed: the counts of every enrollment come from all_features_35.csv (step 0); the learner split
-+# of --split-seed (baseline/prepare_raw.py) picks train / validation / test; outputs go to s<seed>/.
+-birth_year = user_profile['birth'].to_dict()
+-
+-
+-def age_convert(y):
+-    if y == None or math.isnan(y):
+-        return 0
+-    a = 2023 - int(y)
+-    if a > 70 or a < 10:
+-        a = 0
+-    return a
+-
+-
+-all_feat['age'] = [age_convert(birth_year.get(int(u), None)) for u in all_feat['username']]
+-user_gender = user_profile['gender'].to_dict()
+-
+-
+-def gender_convert(g):
+-    if g == 'm':
+-        return 1
+-    elif g == 'f':
+-        return 2
+-    else:
+-        return 0
+-
+-
+-all_feat['gender'] = [gender_convert(user_gender.get(int(u), None)) for u in all_feat['username']]
+-user_edu = user_profile['education'].to_dict()
+-
+-
+-def edu_convert(x):
+-    edus = ["Bachelor's", "High", "Master's", "Primary", "Middle", "Associate", "Doctorate"]
+-    if not isinstance(x, str):
+-        return 0
+-    ii = edus.index(x)
+-    return ii + 1
+-
+-
+-all_feat['education'] = [edu_convert(user_edu.get(int(u), None)) for u in all_feat['username']]
+-user_enroll_num = all_feat.groupby('username').count()[['course_id']]
+-course_enroll_num = all_feat.groupby('course_id').count()[['username']]
+-user_enroll_num.columns = ['user_enroll_num']
+-course_enroll_num.columns = ['course_enroll_num']
+-all_feat = pd.merge(all_feat, user_enroll_num, left_on='username', right_index=True)
+-all_feat = pd.merge(all_feat, course_enroll_num, left_on='course_id', right_index=True)
+-
+-courseinfo = pd.read_csv(os.path.join(input_data_dir, 'course_info.csv'), index_col='id')
+-en_categorys = ['math', 'physics', 'electrical', 'computer', 'foreign language', 'business', 'economics', 'biology',
+-                'medicine', 'literature', 'philosophy', 'history', 'social science', 'art', 'engineering', 'education',
+-                'environment', 'chemistry']
+-
+-
+-def category_convert(cc):
+-    if isinstance(cc, str):
+-        print(cc)
+-        for i, c in zip(range(len(en_categorys)), en_categorys):
+-            if cc == c:
+-                return i + 1
+-    else:
+-        return 0
+-
+-
+-category_dict = courseinfo['category'].to_dict()
+-all_feat['course_category'] = [category_convert(category_dict.get(str(x), None)) for x in all_feat['course_id']]
+-act_feats = [c for c in train_feat.columns if 'count' in c or 'time' in c or 'num' in c]
+-pkl.dump(act_feats, open('act_feats.pkl', 'wb'))
+-num_feats = ['age', 'course_enroll_num', 'user_enroll_num']
+-scaler = StandardScaler()
+-newX = scaler.fit_transform(all_feat[num_feats])
+-for i, n_f in tqdm(enumerate(num_feats)):
+-    all_feat[n_f] = newX[:, i]
+-all_feat.loc[train_feat.index].to_csv(os.path.join(output_data_dir, 'train_feat_35_final.csv'))
+-all_feat.loc[test_feat.index].to_csv(os.path.join(output_data_dir, 'test_feat_35_final.csv'))
+ 
++# changed (docs/PLAN_X59.md): activity only. The original built the per-day action counts and the
++# user / course context (age, gender, education, cluster, enroll numbers, category) here; now every
++# enrollment gets X59 of the main model M (x59_s<seed>.npz, folder CATFHN_X): train / validation /
++# test of the seed, username, course_id, truth and the 59 columns x0..x58. Outputs go to s<seed>/.
 +parser = argparse.ArgumentParser()
 +parser.add_argument('--split-seed', type=int, required=True)
 +arguments = parser.parse_args()
-+raw_data_dir = os.environ.get('CATFHN_RAW', '../../datastore')
-+input_data_dir = os.environ.get('CATFHN_DATA', '../../datastore')
-+output_data_dir = os.path.join(input_data_dir, 's%d' % arguments.split_seed)
++x_dir = os.environ.get('CATFHN_X', '../../datastore')
++output_data_dir = os.path.join(os.environ.get('CATFHN_DATA', '../../datastore'), 's%d' % arguments.split_seed)
 +os.makedirs(output_data_dir, exist_ok=True)
-+features = pd.read_csv(os.path.join(input_data_dir, 'all_features_35.csv'), index_col=0)
-+split = pd.read_csv(os.path.join(raw_data_dir, 'splits', 'learner_s%d.csv' % arguments.split_seed), index_col='enroll_id')['split']
-+train_feat = features.loc[split.index[split == 'train']]
-+valid_feat = features.loc[split.index[split == 'validation']]
-+test_feat = features.loc[split.index[split == 'test']]
-+all_feat = pd.concat([train_feat, valid_feat, test_feat])
 +
-+user_profile = pd.read_csv(os.path.join(raw_data_dir, 'user_info.csv'), index_col='user_id')
- birth_year = user_profile['birth'].to_dict()
- 
- 
-@@ -29,9 +41,10 @@ user_gender = user_profile['gender'].to_dict()
- 
- 
- def gender_convert(g):
--    if g == 'm':
-+    # changed: the data says 'male'/'female'; the original compared with 'm'/'f', so every gender was 0
-+    if g == 'male':
-         return 1
--    elif g == 'f':
-+    elif g == 'female':
-         return 2
-     else:
-         return 0
-@@ -57,7 +70,14 @@ course_enroll_num.columns = ['course_enroll_num']
- all_feat = pd.merge(all_feat, user_enroll_num, left_on='username', right_index=True)
- all_feat = pd.merge(all_feat, course_enroll_num, left_on='course_id', right_index=True)
- 
--courseinfo = pd.read_csv(os.path.join(input_data_dir, 'course_info.csv'), index_col='id')
-+# changed: the original never adds cluster_label, but steps 3, linkprediction and graphgeneration read
-+# it; it is added here as in CFIN (Feng et al. 2019), from the cluster files shipped in datastore/cluster.
-+user_cluster_id = pkl.load(open(os.path.join(os.environ.get('CATFHN_CLUSTER', '../../datastore/cluster'), 'user_dict'), 'rb'), encoding='latin1')
-+cluster_label = np.load(os.path.join(os.environ.get('CATFHN_CLUSTER', '../../datastore/cluster'), 'label_5_10time.npy'))
-+all_feat['cluster_label'] = [cluster_label[user_cluster_id[u]] for u in all_feat['username']]
-+
-+# changed: looked up by course_id; the original indexed by 'id' (a number), so every category was 0
-+courseinfo = pd.read_csv(os.path.join(raw_data_dir, 'course_info.csv'), index_col='course_id')
- en_categorys = ['math', 'physics', 'electrical', 'computer', 'foreign language', 'business', 'economics', 'biology',
-                 'medicine', 'literature', 'philosophy', 'history', 'social science', 'art', 'engineering', 'education',
-                 'environment', 'chemistry']
-@@ -65,7 +85,6 @@ en_categorys = ['math', 'physics', 'electrical', 'computer', 'foreign language',
- 
- def category_convert(cc):
-     if isinstance(cc, str):
--        print(cc)
-         for i, c in zip(range(len(en_categorys)), en_categorys):
-             if cc == c:
-                 return i + 1
-@@ -78,10 +97,13 @@ all_feat['course_category'] = [category_convert(category_dict.get(str(x), None))
- act_feats = [c for c in train_feat.columns if 'count' in c or 'time' in c or 'num' in c]
- pkl.dump(act_feats, open('act_feats.pkl', 'wb'))
- num_feats = ['age', 'course_enroll_num', 'user_enroll_num']
-+# changed: the scaler is fitted on the train rows only (the original fits on train + test)
- scaler = StandardScaler()
--newX = scaler.fit_transform(all_feat[num_feats])
-+scaler.fit(all_feat.loc[train_feat.index, num_feats])
-+newX = scaler.transform(all_feat[num_feats])
- for i, n_f in tqdm(enumerate(num_feats)):
-     all_feat[n_f] = newX[:, i]
- all_feat.loc[train_feat.index].to_csv(os.path.join(output_data_dir, 'train_feat_35_final.csv'))
-+all_feat.loc[valid_feat.index].to_csv(os.path.join(output_data_dir, 'validation_feat_35_final.csv'))
- all_feat.loc[test_feat.index].to_csv(os.path.join(output_data_dir, 'test_feat_35_final.csv'))
- 
++data = np.load(os.path.join(x_dir, 'x59_s%d.npz' % arguments.split_seed))
++x_columns = ['x%d' % i for i in range(data['X'].shape[1])]
++for split in ['train', 'validation', 'test']:
++    rows = data['split'] == split
++    feat = pd.DataFrame(data['X'][rows], columns=x_columns)
++    feat.insert(0, 'enroll_id', data['enroll_id'][rows])
++    feat.insert(1, 'username', data['user_id'][rows])
++    feat.insert(2, 'course_id', data['course_id'][rows])
++    feat.insert(3, 'truth', data['label'][rows])
++    feat.to_csv(os.path.join(output_data_dir, '%s_feat_35_final.csv' % split), index=False)
++    print(split, feat.shape, flush=True)
 diff --git a/src/dataprocess/3_mapping.py b/src/dataprocess/3_mapping.py
-index 7545ba5..c9ce0b5 100644
+index 7545ba5..31a2a50 100644
 --- a/src/dataprocess/3_mapping.py
 +++ b/src/dataprocess/3_mapping.py
-@@ -1,22 +1,32 @@
+@@ -1,45 +1,32 @@
 +import argparse
  import os
  import pandas as pd
- import torch
- from sklearn.preprocessing import StandardScaler
+-import torch
+-from sklearn.preprocessing import StandardScaler
  
 -input_data_dir = '../../datastore'
 -output_data_dir = '../../datastore'
-+# changed: files of one learner split (--split-seed, folder s<seed>/) and a validation part
++# changed: files of one seed (--split-seed, folder s<seed>/) with a validation part; activity only
++# (docs/PLAN_X59.md), so the user / course context columns and their scalers (never saved by the
++# original) are removed: this step only numbers users, courses and enrollments for the graphs
 +parser = argparse.ArgumentParser()
 +parser.add_argument('--split-seed', type=int, required=True)
 +arguments = parser.parse_args()
 +input_data_dir = os.path.join(os.environ.get('CATFHN_DATA', '../../datastore'), 's%d' % arguments.split_seed)
 +output_data_dir = input_data_dir
  train = pd.read_csv(os.path.join(input_data_dir, 'train_feat_35_final.csv'))[
-     ['enroll_id', 'username', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num', 'course_id',
-      'course_enroll_num',
-      'course_category', 'truth']]
+-    ['enroll_id', 'username', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num', 'course_id',
+-     'course_enroll_num',
+-     'course_category', 'truth']]
++    ['enroll_id', 'username', 'course_id', 'truth']]
  train['tt_label'] = ['train'] * len(train)
 +valid = pd.read_csv(os.path.join(input_data_dir, 'validation_feat_35_final.csv'))[
-+    ['enroll_id', 'username', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num', 'course_id',
-+     'course_enroll_num',
-+     'course_category', 'truth']]
++    ['enroll_id', 'username', 'course_id', 'truth']]
 +valid['tt_label'] = ['validation'] * len(valid)
  test = pd.read_csv(os.path.join(input_data_dir, 'test_feat_35_final.csv'))[
-     ['enroll_id', 'username', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num', 'course_id',
-      'course_enroll_num',
-      'course_category', 'truth']]
+-    ['enroll_id', 'username', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num', 'course_id',
+-     'course_enroll_num',
+-     'course_category', 'truth']]
++    ['enroll_id', 'username', 'course_id', 'truth']]
  test['tt_label'] = ['test'] * len(test)
  
 -all_log = pd.concat([train, test])
+-user_feat = all_log[['username', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num']].drop_duplicates(
+-    subset=['username'])
+-unique_user_id = user_feat['username'].unique()
+-del user_feat['username']
+-user_std = StandardScaler()
+-user_feat_std = user_std.fit_transform(user_feat)
+-user_feat = torch.from_numpy(user_feat_std).to(torch.float)
 +all_log = pd.concat([train, valid, test])
- user_feat = all_log[['username', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num']].drop_duplicates(
-     subset=['username'])
- unique_user_id = user_feat['username'].unique()
++unique_user_id = all_log['username'].unique()
+ unique_user_id_df = pd.DataFrame(data={'username': unique_user_id, 'user_graph_id': pd.RangeIndex(len(unique_user_id))})
+-username_graph_dict = dict()
+-for i in range(len(unique_user_id_df)):
+-    username_graph_dict[i] = unique_user_id_df.loc[i, 'username']
+ all_log = pd.merge(all_log, unique_user_id_df, how='left', on='username')
+-course_feat = all_log[['course_id', 'course_enroll_num', 'course_category']].drop_duplicates(subset=['course_id'])
+-unique_course_id = course_feat['course_id'].unique()
+-del course_feat['course_id']
+-course_std = StandardScaler()
+-course_feat_std = course_std.fit_transform(course_feat)
+-course_feat = torch.from_numpy(course_feat_std).to(torch.float)
++unique_course_id = all_log['course_id'].unique()
+ unique_course_id_df = pd.DataFrame(
+     data={'course_id': unique_course_id, 'course_graph_id': pd.RangeIndex(len(unique_course_id))})
+-course_graph_dict = dict()
+-for i in range(len(unique_course_id_df)):
+-    course_graph_dict[i] = unique_course_id_df.loc[i, 'course_id']
+ all_log = pd.merge(all_log, unique_course_id_df, how='left', on='course_id')
+ all_log['record_graph_id'] = list(range(len(all_log)))
+ all_log = all_log[
 diff --git a/src/graphgeneration/0_create_strong_classmates_graph.py b/src/graphgeneration/0_create_strong_classmates_graph.py
-index afc8da7..83b8151 100644
+index afc8da7..f3adbdd 100644
 --- a/src/graphgeneration/0_create_strong_classmates_graph.py
 +++ b/src/graphgeneration/0_create_strong_classmates_graph.py
 @@ -1,3 +1,4 @@
@@ -246,7 +194,7 @@ index afc8da7..83b8151 100644
  
  sim_threshold = 0.95
  
-+# changed: files of one learner split (--split-seed, folder s<seed>/)
++# changed: files of one seed (--split-seed, folder s<seed>/)
 +parser = argparse.ArgumentParser()
 +parser.add_argument('--split-seed', type=int, required=True)
 +arguments = parser.parse_args()
@@ -294,7 +242,7 @@ index afc8da7..83b8151 100644
      pkl.dump(Sim_Graph, f)
 \ No newline at end of file
 diff --git a/src/graphgeneration/1_graph_addition_information.py b/src/graphgeneration/1_graph_addition_information.py
-index c332ac8..351d19c 100644
+index c332ac8..bcc4856 100644
 --- a/src/graphgeneration/1_graph_addition_information.py
 +++ b/src/graphgeneration/1_graph_addition_information.py
 @@ -1,3 +1,4 @@
@@ -302,11 +250,13 @@ index c332ac8..351d19c 100644
  import os
  import numpy as np
  from tqdm import tqdm
-@@ -7,15 +8,20 @@ import torch
+@@ -5,17 +6,21 @@ import pickle as pkl
+ import warnings
+ import torch
  import pandas as pd
- from sklearn.preprocessing import StandardScaler
+-from sklearn.preprocessing import StandardScaler
  
-+# changed: files of one learner split (--split-seed, folder s<seed>/)
++# changed: files of one seed (--split-seed, folder s<seed>/)
 +parser = argparse.ArgumentParser()
 +parser.add_argument('--split-seed', type=int, required=True)
 +arguments = parser.parse_args()
@@ -326,35 +276,57 @@ index c332ac8..351d19c 100644
  
  mapping_graph_log = pd.read_csv(os.path.join(input_dir, 'graph_mapping.csv'))
  
-@@ -25,18 +31,24 @@ del all_log['username_y']
+@@ -24,46 +29,18 @@ all_log = all_log.sort_values('record_graph_id')
+ del all_log['username_y']
  del all_log['course_id_y']
  
- user_feat = all_log[
+-user_feat = all_log[
 -    ['user_graph_id', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num']].drop_duplicates(
-+    ['user_graph_id', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num', 'tt_label']].drop_duplicates(
-     subset=['user_graph_id'])
-+train_user = (user_feat['tt_label'] == 'train').values   # a learner is in one split only
- del user_feat['user_graph_id']
-+del user_feat['tt_label']
-+# changed: the scalers are fitted on the train users / train courses only (the original fits on all)
- user_std = StandardScaler()
+-    subset=['user_graph_id'])
+-del user_feat['user_graph_id']
+-user_std = StandardScaler()
 -user_feat_std = user_std.fit_transform(user_feat)
-+user_std.fit(user_feat[train_user])
-+user_feat_std = user_std.transform(user_feat)
- enroll_user_feat = torch.tensor([user_feat_std[int(user_graph_id)] for user_graph_id in all_log['user_graph_id']])
- course_feat = all_log[['course_graph_id', 'course_enroll_num', 'course_category']].drop_duplicates(
-     subset=['course_graph_id'])
-+train_course = course_feat['course_graph_id'].isin(all_log.loc[all_log['tt_label'] == 'train', 'course_graph_id']).values
- del course_feat['course_graph_id']
- 
- course_std = StandardScaler()
+-enroll_user_feat = torch.tensor([user_feat_std[int(user_graph_id)] for user_graph_id in all_log['user_graph_id']])
+-course_feat = all_log[['course_graph_id', 'course_enroll_num', 'course_category']].drop_duplicates(
+-    subset=['course_graph_id'])
+-del course_feat['course_graph_id']
+-
+-course_std = StandardScaler()
 -course_feat = course_std.fit_transform(course_feat.values)
-+course_std.fit(course_feat.values[train_course])
-+course_feat = course_std.transform(course_feat.values)
- 
- user_select_courses_mean_df = all_log.groupby('user_graph_id')
- user_course_feat_dict = dict()
-@@ -65,5 +77,5 @@ seq_feat = torch.from_numpy(all_log[all_action_feat].values).to(torch.float)
+-
+-user_select_courses_mean_df = all_log.groupby('user_graph_id')
+-user_course_feat_dict = dict()
+-for data in tqdm(user_select_courses_mean_df):
+-    cur_username = data[0]
+-    course_select_list = list(data[1]['course_graph_id'])
+-    course_feat_cur_user = np.array([course_feat[int(course_graph_id)] for course_graph_id in course_select_list])
+-    course_feat_cur_user = np.mean(course_feat_cur_user, axis=0)
+-    user_course_feat_dict[int(cur_username)] = course_feat_cur_user
+-user_course_feat_matrix = torch.tensor([user_course_feat_dict[int(username)] for username in all_log['user_graph_id']])
+-user_course_org_feat = torch.cat((enroll_user_feat, user_course_feat_matrix), dim=1).to(torch.float)
+-graph.org_context = user_course_org_feat
++# changed (docs/PLAN_X59.md): activity only, the input of every enrollment is its X59 row.
++# org_context: X59 (59 columns) instead of the user context (age, gender, education, cluster,
++# user_enroll_num) and the mean course context (course_enroll_num, category) of the original (7).
++# seq_feat: the 35 daily event counts of X59 as 35 days x 1 activity instead of 35 days x 22 action
++# counts (model: activity_num = 1).
++x_columns = ['x%d' % i for i in range(59)]
++graph.org_context = torch.from_numpy(all_log[x_columns].values).to(torch.float)
+ sta_day = 35
+-video_action = ['seek_video', 'play_video', 'pause_video', 'stop_video', 'load_video']
+-problem_action = ['problem_get', 'problem_check', 'problem_save', 'reset_problem', 'problem_check_correct',
+-                  'problem_check_incorrect']
+-forum_action = ['create_thread', 'create_comment', 'delete_thread', 'delete_comment', 'close_forum']
+-click_action = ['click_info', 'click_courseware', 'click_about', 'click_forum', 'click_progress']
+-close_action = ['close_courseware']
+-all_action = video_action + problem_action + forum_action + click_action + close_action
+-all_action_feat = []
+-for i in range(sta_day):
+-    for action in all_action:
+-        all_action_feat.append(str(action) + '_' + str(i) + '#num')
+-seq_feat = torch.from_numpy(all_log[all_action_feat].values).to(torch.float)
++day_columns = x_columns[:sta_day]                                   # X59[:, 0:35] = events on day 0..34
++seq_feat = torch.from_numpy(all_log[day_columns].values).to(torch.float)
  seq_feat = seq_feat.view(len(all_log), sta_day, -1)
  graph.seq_feat = seq_feat
  
@@ -362,7 +334,7 @@ index c332ac8..351d19c 100644
 +with open(os.path.join(input_dir, 'StrongClassmatesGraph.pkl'), 'wb') as f:   # changed: 'wb' was inside os.path.join
      pkl.dump(graph, f)
 diff --git a/src/linkprediction/linkprediction_models.py b/src/linkprediction/linkprediction_models.py
-index 141aa64..cda8066 100644
+index 141aa64..6c2f69f 100644
 --- a/src/linkprediction/linkprediction_models.py
 +++ b/src/linkprediction/linkprediction_models.py
 @@ -1,4 +1,6 @@
@@ -372,11 +344,13 @@ index 141aa64..cda8066 100644
  import torch
  import torch.nn.functional as F
  import torch_geometric.transforms as T
-@@ -13,25 +15,40 @@ from torch_geometric.loader import LinkNeighborLoader, NeighborLoader
+@@ -11,39 +13,43 @@ from torch_geometric.data import HeteroData
+ from torch_geometric.nn import to_hetero, SAGEConv
+ from torch_geometric.loader import LinkNeighborLoader, NeighborLoader
  from sklearn.metrics import roc_auc_score
- from sklearn.preprocessing import StandardScaler
- 
-+# changed: files of one learner split (--split-seed, folder s<seed>/); the seed also seeds torch,
+-from sklearn.preprocessing import StandardScaler
++
++# changed: files of one seed (--split-seed, folder s<seed>/); the seed also seeds torch,
 +# numpy and random (RandomLinkSplit and the loaders were not seeded in the original)
 +parser = argparse.ArgumentParser()
 +parser.add_argument('--split-seed', type=int, required=True)
@@ -384,7 +358,7 @@ index 141aa64..cda8066 100644
 +random.seed(arguments.split_seed)
 +np.random.seed(arguments.split_seed)
 +torch.manual_seed(arguments.split_seed)
-+
+ 
  device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 -input_data_dir = '../../datastore'
 -output_data_dir = '../../datastore'
@@ -394,44 +368,51 @@ index 141aa64..cda8066 100644
 +model_save_dir = input_data_dir
  threshold = 0.6
  
- train = pd.read_csv(os.path.join(input_data_dir, 'train_feat_35_final.csv'))[
-     ['username', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num', 'course_id', 'course_enroll_num',
-      'course_category']]
-+valid = pd.read_csv(os.path.join(input_data_dir, 'validation_feat_35_final.csv'))[
-+    ['username', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num', 'course_id', 'course_enroll_num',
-+     'course_category']]
- test = pd.read_csv(os.path.join(input_data_dir, 'test_feat_35_final.csv'))[
-     ['username', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num', 'course_id', 'course_enroll_num',
-      'course_category']]
+-train = pd.read_csv(os.path.join(input_data_dir, 'train_feat_35_final.csv'))[
+-    ['username', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num', 'course_id', 'course_enroll_num',
+-     'course_category']]
+-test = pd.read_csv(os.path.join(input_data_dir, 'test_feat_35_final.csv'))[
+-    ['username', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num', 'course_id', 'course_enroll_num',
+-     'course_category']]
 -all_log = pd.concat([train, test])
-+all_log = pd.concat([train, valid, test])
- user_feat = all_log[['username', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num']].drop_duplicates(
-     subset=['username'])
- unique_user_id = user_feat['username'].unique()
-+train_user = user_feat['username'].isin(train['username']).values
- del user_feat['username']
-+# changed: the scalers are fitted on the train users / train courses only (the original fits on all)
- user_std = StandardScaler()
+-user_feat = all_log[['username', 'age', 'gender', 'education', 'cluster_label', 'user_enroll_num']].drop_duplicates(
+-    subset=['username'])
+-unique_user_id = user_feat['username'].unique()
+-del user_feat['username']
+-user_std = StandardScaler()
 -user_feat_std = user_std.fit_transform(user_feat)
-+user_std.fit(user_feat[train_user])
-+user_feat_std = user_std.transform(user_feat)
- user_feat = torch.from_numpy(user_feat_std).to(torch.float)
+-user_feat = torch.from_numpy(user_feat_std).to(torch.float)
++# changed (docs/PLAN_X59.md): activity only. The user feature is the mean X59 of the user's
++# enrollments and the course feature the mean X59 of the course's enrollments (the original used age,
++# gender, education, cluster, user_enroll_num and course_enroll_num, category with a scaler); X59 is
++# already z-scored on the train rows, so there is no scaler. groupby(sort=False) keeps the order of
++# first appearance, as drop_duplicates in the original and in 3_mapping.py.
++x_columns = ['x%d' % i for i in range(59)]
++train = pd.read_csv(os.path.join(input_data_dir, 'train_feat_35_final.csv'))[['username', 'course_id'] + x_columns]
++valid = pd.read_csv(os.path.join(input_data_dir, 'validation_feat_35_final.csv'))[['username', 'course_id'] + x_columns]
++test = pd.read_csv(os.path.join(input_data_dir, 'test_feat_35_final.csv'))[['username', 'course_id'] + x_columns]
++all_log = pd.concat([train, valid, test])
++user_feat = all_log.groupby('username', sort=False)[x_columns].mean()       # mean X59 per user
++unique_user_id = user_feat.index.to_numpy()
++user_feat = torch.from_numpy(user_feat.to_numpy()).to(torch.float)
  unique_user_id_df = pd.DataFrame(data={'username': unique_user_id, 'user_graph_id': pd.RangeIndex(len(unique_user_id))})
  username_graph_dict = dict()
-@@ -40,9 +57,11 @@ for i in range(len(unique_user_id_df)):
+ for i in range(len(unique_user_id_df)):
+     username_graph_dict[i] = unique_user_id_df.loc[i, 'username']
  all_log = pd.merge(all_log, unique_user_id_df, how='left', on='username')
- course_feat = all_log[['course_id', 'course_enroll_num', 'course_category']].drop_duplicates(subset=['course_id'])
- unique_course_id = course_feat['course_id'].unique()
-+train_course = course_feat['course_id'].isin(train['course_id']).values
- del course_feat['course_id']
- course_std = StandardScaler()
+-course_feat = all_log[['course_id', 'course_enroll_num', 'course_category']].drop_duplicates(subset=['course_id'])
+-unique_course_id = course_feat['course_id'].unique()
+-del course_feat['course_id']
+-course_std = StandardScaler()
 -course_feat_std = course_std.fit_transform(course_feat)
-+course_std.fit(course_feat[train_course])
-+course_feat_std = course_std.transform(course_feat)
- course_feat = torch.from_numpy(course_feat_std).to(torch.float)
+-course_feat = torch.from_numpy(course_feat_std).to(torch.float)
++course_feat = all_log.groupby('course_id', sort=False)[x_columns].mean()   # mean X59 per course
++unique_course_id = course_feat.index.to_numpy()
++course_feat = torch.from_numpy(course_feat.to_numpy()).to(torch.float)
  unique_course_id_df = pd.DataFrame(
      data={'course_id': unique_course_id, 'course_graph_id': pd.RangeIndex(len(unique_course_id))})
-@@ -85,12 +104,14 @@ edge_label = train_data['user', 'enroll', 'course'].edge_label
+ course_graph_dict = dict()
+@@ -85,12 +91,14 @@ edge_label = train_data['user', 'enroll', 'course'].edge_label
  edge_label_index_val = val_data['user', 'enroll', 'course'].edge_label_index
  edge_label_val = val_data['user', 'enroll', 'course'].edge_label
  
@@ -447,6 +428,17 @@ index 141aa64..cda8066 100644
      batch_size=256,
      shuffle=True,
  )
+@@ -167,8 +175,8 @@ param_dict = dict({
+     'hidden_features1': 32,
+     'output_features1': 16,
+     'heads': 1,
+-    'user_features_len': 5,
+-    'course_features_len': 2,
++    'user_features_len': 59,    # changed: was 5 (user context)
++    'course_features_len': 59,  # changed: was 2 (course context)
+     'graph_hidden_features': 16
+ })
+ 
 diff --git a/src/models.py b/src/models.py
 index 4a01cf1..343caa2 100644
 --- a/src/models.py
@@ -461,7 +453,7 @@ index 4a01cf1..343caa2 100644
              else:
                  lstm_input = torch.cat((lstm_input, x), dim=1)
 diff --git a/train.py b/train.py
-index 768b97d..8838583 100644
+index 768b97d..3623e21 100644
 --- a/train.py
 +++ b/train.py
 @@ -1,6 +1,10 @@
@@ -475,17 +467,19 @@ index 768b97d..8838583 100644
  import torch
  import numpy as np
  
-@@ -8,26 +12,56 @@ from torch import optim
+@@ -8,26 +12,61 @@ from torch import optim
  from src.models import *
  from torch_geometric.loader import NeighborLoader
  from tqdm import tqdm
 -from sklearn.metrics import roc_auc_score, f1_score, precision_score, recall_score
 +from sklearn.metrics import roc_auc_score, precision_recall_fscore_support
 +
-+# Changed from the original (protocol of docs/PLAN_BASELINE_v3.md, the model is unchanged):
-+# - the graph of one learner split (datastore/s<seed>/StrongClassmatesGraph.pkl) with train / val /
-+#   test masks; --seed is both the split seed and the training seed (the original took -r but never
-+#   used it);
++# Changed from the original (protocol of docs/PLAN_X59.md, the model is unchanged):
++# - activity only: the input of every enrollment is X59 of the main model M; org_context = X59 (59
++#   columns, was 7 context columns), seq_feat = the 35 daily event counts of X59 (activity_num 1,
++#   was 22 action counts), so lstm_input_features = (7 + 1)·(1 + 1) = 16 (was (7 + 1)·(22 + 1) = 184);
++# - the graph of one seed (datastore/s<seed>/StrongClassmatesGraph.pkl) with train / val / test
++#   masks; -r is both the split seed and the training seed (the original took -r but never used it);
 +# - the epoch is chosen on validation AUC: stop after 5 epochs without a better one, at most 45
 +#   (3 x the original 15); the best weights are restored and validation and test are scored once
 +#   (the original printed the test metrics every epoch);
@@ -493,9 +487,12 @@ index 768b97d..8838583 100644
 +#   written like baseline/ML;
 +# - num_nodes is set: PyG 2.1 cannot infer it (no 'x') and takes max(edge_index) + 1, so when the last
 +#   nodes have no edge the loader does not slice labels / features per batch (split 111);
-+# - a dead model is re-initialised: when the validation predictions are constant after epoch 1 (every
-+#   unit of a classifier ReLU layer is 0, so only the output bias learns; split 1: p = 0.4739 for all,
-+#   AUC 0.5), the model restarts with seed r + 1000·k, at most -max-restarts times.
++# - a dead model is re-initialised with seed r + 1000·k (at most -max-restarts times). The classifier
++#   is 16 -> 16 -> 8 -> 4 -> 1 with ReLU, and its input hardly differs between enrollments at
++#   initialisation, so for some seeds every unit of a ReLU layer is 0 for every enrollment (seed 1:
++#   4/4 units of the last layer); then the gradient is 0, only the output bias learns and the AUC
++#   stays 0.5. Checked twice: at initialisation (every classifier ReLU layer needs a unit > 0 on the
++#   first validation batch) and after epoch 1 (the validation p must not be constant: std ≥ 1e-6).
  
  myparser = argparse.ArgumentParser(description='optional parameters')
 -myparser.add_argument('-indir', type=str, help='input dir (default: current dir)', default='.')
@@ -505,7 +502,7 @@ index 768b97d..8838583 100644
 -myparser.add_argument('-r', type=int, default=0, help='random seed (default: 0)')
 +myparser.add_argument('-e', type=int, default=45, help='max epoch (default: 45 = 3 x original 15)')
 +myparser.add_argument('-patience', type=int, default=5, help='epochs without a better validation AUC')
-+myparser.add_argument('-r', type=int, default=1, help='learner split seed and random seed')
++myparser.add_argument('-r', type=int, default=1, help='split seed and random seed')
  myparser.add_argument('-lr', type=float, default=1e-4, help='learning rate (default: 1e-4)')
 +myparser.add_argument('-smoke-batches', type=int, default=0, help='only this many train batches per epoch')
 +myparser.add_argument('-max-restarts', type=int, default=5, help='re-initialisations of a dead model')
@@ -523,7 +520,7 @@ index 768b97d..8838583 100644
  epoch_num = args.e
  learning_rate = args.lr
 +THRESHOLD = 0.5                              # ŷ = 1[p ≥ 0.5], as the original test()
-+DEAD_STD = 1e-6                              # dead model: std of validation p < 1e-6 after epoch 1
++DEAD_STD = 1e-6                              # dead model: std of validation p < 1e-6 after epoch 1 (constant p)
 +METRICS = ("auc", "precision", "recall", "f1")
 +RESULT_COLUMNS = ("time", "model", "seed", "restarts", "best_epoch", "epochs_run",
 +                  "val_auc", "val_precision", "val_recall", "val_f1",
@@ -537,7 +534,7 @@ index 768b97d..8838583 100644
  graph = graph.to(device)
  
  # create graph loader
-@@ -39,13 +73,20 @@ train_loader = NeighborLoader(
+@@ -39,24 +78,31 @@ train_loader = NeighborLoader(
      shuffle=True
  )
  
@@ -565,7 +562,21 @@ index 768b97d..8838583 100644
  
  # set the hyper parameters
  param_dict = dict({
-@@ -68,17 +109,38 @@ param_dict = dict({
+     # Constant
+-    'activity_num': 22, 'sta_day': 35, 'week_count': 5, 'select_count': 5,
++    'activity_num': 1, 'sta_day': 35, 'week_count': 5, 'select_count': 5,                # changed: was 22 actions
+     # Context-Embedding
+-    'org_context_feat_len': 7, 'enhanced_context_feat_len': 32, 'context_each_embed': 16, 'context_all_len': 16,
++    'org_context_feat_len': 59, 'enhanced_context_feat_len': 32, 'context_each_embed': 16, 'context_all_len': 16,   # changed: was 7
+     # GraphSage
+     'input_features': 16, 'hidden_features': 32, 'output_features': 16,
+     # LSTM of first block in TFHN
+-    'lstm_input_features': 184, 'lstm_hidden_features': 128, 'lstm_hidden_num_layers': 1,
++    'lstm_input_features': 16, 'lstm_hidden_features': 128, 'lstm_hidden_num_layers': 1,   # changed: was 184
+     # Self-Attention of first block in TFHN
+     'num_attention_heads': 1, 'attention_features': 64,
+     # LSTM2 of second block in TFHN
+@@ -68,17 +114,71 @@ param_dict = dict({
      # DNN
      'dnn_input_f1': 16, 'dnn_hidden_f1': 16, 'dnn_hidden_f2': 8, 'dnn_hidden_f3': 4, 'dnn_output': 1
  })
@@ -585,7 +596,40 @@ index 768b97d..8838583 100644
 +    return new_model, optim.Adam(new_model.parameters(), lr=learning_rate)
 +
 +
++# Number of live units (> 0 for at least one enrollment of the first validation batch) of every
++# classifier ReLU layer.
++def alive_units(new_model):
++    inputs = []
++
++    # Keep the input of the classifier (all_mean_feat).
++    def keep_input(module, module_inputs, module_output):
++        inputs.append(module_inputs[0])
++
++    hook = new_model.classifier.register_forward_hook(keep_input)
++    new_model.eval()
++    with torch.no_grad():
++        new_model(next(iter(val_loader)))
++        hook.remove()
++        x = inputs[0]
++        counts = []
++        for layer in new_model.classifier.dnn:
++            x = layer(x)
++            if isinstance(layer, nn.ReLU):
++                counts.append(int((x > 0).any(dim=0).sum()))
++    return counts
++
++
++# Initialise; re-initialise while a classifier ReLU layer has no live unit.
++restarts = 0
 +model, optimizer = build_model(args.r)
++units = alive_units(model)
++while min(units) == 0 and restarts < args.max_restarts:
++    restarts += 1
++    print(f"[seed {args.r}] dead classifier at initialisation (live ReLU units {units}); "
++          f"restart {restarts} with seed {args.r + 1000 * restarts}", flush=True)
++    model, optimizer = build_model(args.r + 1000 * restarts)
++    units = alive_units(model)
++print(f"[seed {args.r}] live classifier ReLU units at initialisation: {units}", flush=True)
 +
 +
 +# Dropout probability, label and graph node id of every node of one loader.
@@ -602,7 +646,7 @@ index 768b97d..8838583 100644
 +
 +
 +# train; validation AUC after each epoch; keep the best weights; restart a model dead after epoch 1
-+best_auc, best_epoch, best_state, stale, epoch, restarts = -1.0, 0, None, 0, 0, 0
++best_auc, best_epoch, best_state, stale, epoch = -1.0, 0, None, 0, 0
 +while epoch < epoch_num:
 +    epoch += 1
 +    model.train()
@@ -612,7 +656,7 @@ index 768b97d..8838583 100644
          optimizer.zero_grad()
          pred = model(sub_graph)
          batch_size = sub_graph['batch_size']
-@@ -88,31 +150,51 @@ for epoch in range(epoch_num):
+@@ -88,31 +188,51 @@ for epoch in range(epoch_num):
          optimizer.step()
          total_loss += float(loss) * pred.numel()
          total_examples += pred.numel()

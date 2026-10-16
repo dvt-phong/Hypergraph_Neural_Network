@@ -1,7 +1,7 @@
-# 4. Build one hypergraph H
+# 4. Build one hypergraph H over every enrollment (train + validation + test of every seed)
 # - HGNN https://github.com/iMoonLab/HGNN
 # - MST-GCN https://github.com/wudongze9/MST-GCN
-# - SIG-Net https://github.com/Noverse0/SIG-Net
+# H does not depend on the seed: the seed only says which nodes are train / validation / test.
 
 import argparse
 import time
@@ -11,7 +11,8 @@ from pathlib import Path
 import numpy as np
 
 config = import_module("0_config")
-read_csv = import_module("2_preprocess").read_csv
+preprocess_module = import_module("2_preprocess")
+read_csv = preprocess_module.read_csv
 
 HYPERGRAPH_FILE = "hypergraph.npz"
 COURSE = config.EDGE_FAMILIES.index("course")
@@ -25,14 +26,14 @@ def log(message):
     print(f"[{time.strftime('%H:%M:%S')}][hypergraph] {message}", flush=True)
 
 
-# Read a train / validation / test CSV
-def read_split(path):
-    nodes = {}
-    objects = {}
+# Read the course, user and objects of every node from events.csv
+def read_events(path):
+    nodes = {}         # node_id -> (course_id, user_id)
+    objects = {}       # node_id -> set of "course|family|object"
     for row in read_csv(path):
         node_id = int(row["node_id"])
         if node_id not in nodes:
-            nodes[node_id] = row
+            nodes[node_id] = (row["course_id"], int(row["user_id"]))
         action = row["action"]
         object_id = row["object_id"].strip()
         if action in config.OBJECT_ACTIONS and object_id.lower() not in config.MISSING_VALUES:
@@ -42,27 +43,29 @@ def read_split(path):
             objects[node_id].add(f"{row['course_id']}|{family}|{object_id}")
     if sorted(nodes) != list(range(len(nodes))):
         raise ValueError(f"{path}: node ids are not 0..n-1")
-    node_list = []
-    for node_id in range(len(nodes)):
-        node_list.append(nodes[node_id])
-    return node_list, objects
+    return nodes, objects
 
 
-# Course hyperedges
-def course_hyperedges(nodes):
-    members = {}
-    for node_id in range(len(nodes)):
-        course_id = nodes[node_id]["course_id"]
-        if course_id not in members:
-            members[course_id] = []
-        members[course_id].append(node_id)
+# Hyperedges of one family from a dict key -> member nodes
+def make_hyperedges(family, members):
     hyperedges = []
-    for course_id in sorted(members):
-        hyperedges.append((COURSE, course_id, members[course_id]))
+    for key in sorted(members):
+        hyperedges.append((family, key, members[key]))
     return hyperedges
 
 
-# Object hyperedges
+# Course hyperedges: the nodes of one course
+def course_hyperedges(nodes):
+    members = {}
+    for node_id in range(len(nodes)):
+        course_id = nodes[node_id][0]
+        if course_id not in members:
+            members[course_id] = []
+        members[course_id].append(node_id)
+    return make_hyperedges(COURSE, members)
+
+
+# Object hyperedges: the nodes that used one object
 def object_hyperedges(objects):
     members = {}
     for node_id in sorted(objects):
@@ -70,42 +73,26 @@ def object_hyperedges(objects):
             if key not in members:
                 members[key] = []
             members[key].append(node_id)
-    hyperedges = []
-    for key in sorted(members):
-        hyperedges.append((OBJECT, key, members[key]))
-    return hyperedges
+    return make_hyperedges(OBJECT, members)
 
 
-# User hyperedges
+# User hyperedges: the nodes of one learner
 def user_hyperedges(nodes):
     members = {}
     for node_id in range(len(nodes)):
-        user_id = int(nodes[node_id]["user_id"])
+        user_id = nodes[node_id][1]
         if user_id not in members:
             members[user_id] = []
         members[user_id].append(node_id)
-    hyperedges = []
-    for user_id in sorted(members):
-        hyperedges.append((USER, f"user|{user_id}", members[user_id]))
-    return hyperedges
+    return make_hyperedges(USER, members)
 
 
 # Run step 4: build the hypergraph
 def build_hypergraph(output_dir=config.PROCESSED):
     started_at = time.perf_counter()
     output_dir = Path(output_dir)
-    nodes = []
-    objects = {}
-    split = []
-    for split_id in range(len(config.SPLITS)):
-        split_name = config.SPLITS[split_id]
-        log(f"reading {split_name}.csv")
-        split_nodes, split_objects = read_split(output_dir / f"{split_name}.csv")
-        offset = len(nodes)
-        for local_id in split_objects:
-            objects[offset + local_id] = split_objects[local_id]       # global id = offset + local id
-        nodes.extend(split_nodes)
-        split.extend([split_id] * len(split_nodes))
+    log(f"reading {preprocess_module.EVENTS_FILE}")
+    nodes, objects = read_events(output_dir / preprocess_module.EVENTS_FILE)
 
     all_hyperedges = course_hyperedges(nodes) + object_hyperedges(objects) + user_hyperedges(nodes)
     # Keep |e| ≥ 2
@@ -114,7 +101,7 @@ def build_hypergraph(output_dir=config.PROCESSED):
         if len(members) >= 2:
             hyperedges.append((family, key, members))
 
-    # Sparse incidence matrix H 
+    # Sparse incidence matrix H: one (node, hyperedge) pair per membership
     node_ids = []
     edge_ids = []
     edge_family = []
@@ -125,33 +112,25 @@ def build_hypergraph(output_dir=config.PROCESSED):
             node_ids.append(node_id)
             edge_ids.append(edge_id)
 
-    labels = []
-    for node in nodes:
-        labels.append(int(node["label"]))
-
     np.savez_compressed(
         output_dir / HYPERGRAPH_FILE,
+        num_nodes=len(nodes),
         node_ids=np.asarray(node_ids, dtype=np.int64),
         edge_ids=np.asarray(edge_ids, dtype=np.int64),
         edge_family=np.asarray(edge_family, dtype=np.int64),
-        labels=np.asarray(labels, dtype=np.float32),
-        split=np.asarray(split, dtype=np.int64),
     )
 
-    # Number of nodes of each split and hyperedges of each family, for the log.
-    split_counts = {}
-    for split_id in range(len(config.SPLITS)):
-        split_counts[config.SPLITS[split_id]] = split.count(split_id)
+    # Number of hyperedges of each family, for the log.
     counts = {"course": 0, "object": 0, "user": 0}
     for family, key, members in hyperedges:
         counts[config.EDGE_FAMILIES[family]] += 1
-    log(f"saved {output_dir / HYPERGRAPH_FILE}: nodes={len(nodes):,} {split_counts}, hyperedges={counts}, "
+    log(f"saved {output_dir / HYPERGRAPH_FILE}: nodes={len(nodes):,}, hyperedges={counts}, "
         f"memberships={len(node_ids):,}, elapsed={time.perf_counter() - started_at:.0f}s")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build one hypergraph H (Course, Object, User) over "
-                                                 "train, validation and test.")
+                                                 "every enrollment.")
     parser.add_argument("--output-dir", type=Path, default=config.PROCESSED)
     arguments = parser.parse_args()
     build_hypergraph(arguments.output_dir)

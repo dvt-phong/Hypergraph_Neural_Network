@@ -1,8 +1,12 @@
-# 3. Build the node feature matrix X of train / validation / test
-# - MST-GCN https://github.com/wudongze9/MST-GCN
-# - CA-TFHN https://github.com/codeds27/CA-TFHN
-# - CFIN https://github.com/wzfhaha/dropout_prediction
-
+# 3. Build the node feature matrix X59 (log activity only) of every seed
+# - MST-GCN https://github.com/wudongze9/MST-GCN (the 59 enrollment features)
+# - CFIN https://github.com/wzfhaha/dropout_prediction (log1p before the z-score)
+#
+# X59 = [35 daily event counts | total events | distinct objects | 22 action counts]
+# x = (log(1 + c) − μ_train) / σ_train, μ and σ from the train rows of the seed.
+# Output data/processed/simple/x59_s{seed}.npz, one row per node (row = node_id):
+#   enroll_id, user_id, course_id, label, split ("train" / "validation" / "test"), X [N, 59]
+# Every model (M and every baseline) reads this file.
 
 import argparse
 from importlib import import_module
@@ -16,257 +20,123 @@ read_csv = preprocess_module.read_csv
 write_csv = preprocess_module.write_csv
 
 
-# ("feature", "feature+user", "feature+course", "full")
-# [0, 59) behavior | [59, 71) user | [71, 89) course
-# Use it for experiment
-def feature_columns(name):
-    behavior = np.arange(0, config.BEHAVIOR_FEATURE_COUNT)                       # 35 days + total + objects + 22 actions
-    user = np.arange(config.USER_FEATURE_START, config.COURSE_FEATURE_START)     # gender + education + age
-    course = np.arange(config.COURSE_FEATURE_START, config.TOTAL_FEATURE_COUNT)  # category
-    feature_sets = {
-        "feature": behavior,
-        "feature+user": np.concatenate([behavior, user]),
-        "feature+course": np.concatenate([behavior, course]),
-        "full": np.concatenate([behavior, user, course]),
-    }
-    return feature_sets[name]
+# Path of the X59 file of one seed
+def x59_path(output_dir, seed):
+    return Path(output_dir) / f"x59_s{seed}.npz"
 
 
-# Set header for file
-def feature_metadata():
-    metadata = []
-
-    # Daily-count columns: total valid events on each observed course day.
+# Name and source of the 59 columns
+def feature_names():
+    names = []
     for day_number in range(config.DAY_FEATURE_COUNT):
-        metadata.append((
-            f"activity_day_{day_number}",
-            f"course_day={day_number}",
-        ))
-
-    # Total events and distinct objects over the 35 days (MST-GCN)
-    metadata.append(("total_events", "events in course days 0-34 (MST-GCN total_actions)"))
-    metadata.append(("distinct_objects", "distinct objects used in course days 0-34 (MST-GCN unique_objects)"))
-
-    # Action-count columns: total occurrences of each action across all days.
-    for family, actions in config.ACTION_GROUPS.items():
+        names.append((f"activity_day_{day_number}", f"events on course day {day_number}"))
+    names.append(("total_events", "events in course days 0-34 (MST-GCN total_actions)"))
+    names.append(("distinct_objects", "distinct objects used in course days 0-34 (MST-GCN unique_objects)"))
+    for family in config.ACTION_GROUPS:
         action_number = 1
-        for action_name in actions:
-            metadata.append((f"action_{family}_{action_number}", action_name))
+        for action_name in config.ACTION_GROUPS[family]:
+            names.append((f"action_{family}_{action_number}", action_name))
             action_number += 1
-
-    # User-context columns: one-hot gender
-    for gender in config.GENDERS:
-        metadata.append((f"gender_{gender}", f"gender={gender}"))
-    metadata.append(("gender_missing", "gender is missing"))
-
-    # User-context columns: one-hot education
-    for education in config.EDUCATIONS:
-        clean_education = education.lower().replace("'", "").replace(" ", "_")
-        metadata.append((
-            f"education_{clean_education}",
-            f"education={education}",
-        ))
-    metadata.append(("education_missing", "education is missing"))
-
-    # User-context column: age -> standardized (CFIN)
-    metadata.append((
-        "age",
-        f"course start year - birth year, {config.AGE_MISSING} if missing or outside "
-        f"[{config.AGE_MIN}, {config.AGE_MAX}] (CFIN)",
-    ))
-
-    # Course-context columns: one-hot category
-    for category in config.CATEGORIES:
-        clean_category = category.replace(" ", "_")
-        metadata.append((f"category_{clean_category}", f"category={category}"))
-    metadata.append(("category_missing", "category is missing"))
-    return metadata
+    return names
 
 
-# Set the one-hot cell of a categorical value
-def set_one_hot(feature_matrix, row_index, value, vocabulary, feature_start):
-    if not value:
-        value_index = len(vocabulary)                                    # missing column
-    elif value in vocabulary:
-        value_index = vocabulary.index(value)
-    else:
-        raise ValueError(f"'{value}' is not in the vocabulary {vocabulary}; add it to 0_config.py")
-    feature_matrix[row_index, feature_start + value_index] = 1.0
+# Count the 59 values of every node, and read its enroll_id, user_id, course_id and label
+def count_events(events_path):
+    action_columns = {}
+    for offset in range(len(config.ACTIONS)):
+        action_columns[config.ACTIONS[offset]] = config.ACTION_FEATURE_START + offset
 
-
-# Age of a user when course starts
-# age = year(course start) − birth year;  a = 0 if birth is missing or a < 10 or a > 70 (CFIN)
-def age_at_course_start(birth, course_start):
-    if birth.lower() in config.MISSING_VALUES:
-        return config.AGE_MISSING                                        # birth missing -> a = 0
-    age = int(course_start[:4]) - int(float(birth))                      # a = year(course start) − birth year
-    if age < config.AGE_MIN or age > config.AGE_MAX:
-        return config.AGE_MISSING                                        # a outside [10, 70] -> a = 0
-    return age
-
-
-# Count data for feature
-def build_split_features(data_path):
-    action_indices = {}
-    # Column of every action, after the 35 day columns and the 2 summary columns.
-    for offset, action in enumerate(config.ACTIONS):
-        action_indices[action] = config.ACTION_FEATURE_START + offset
-
-    nodes = {}
-    behavior_by_node = {}
-    objects_by_node = {}
-    # Count events per day and per action, and collect the objects, for every node.
-    for row in read_csv(data_path):
+    counts = {}        # node_id -> 59 counts
+    objects = {}       # node_id -> set of object ids
+    nodes = {}         # node_id -> (enroll_id, user_id, course_id, label)
+    for row in read_csv(events_path):
         node_id = int(row["node_id"])
         if node_id not in nodes:
-            nodes[node_id] = row
-            behavior_by_node[node_id] = np.zeros(
-                config.BEHAVIOR_FEATURE_COUNT,
-                dtype=np.int32,
-            )
-            objects_by_node[node_id] = set()
+            nodes[node_id] = (int(row["enroll_id"]), int(row["user_id"]), row["course_id"], int(row["label"]))
+            counts[node_id] = np.zeros(config.FEATURE_COUNT, dtype=np.int64)
+            objects[node_id] = set()
 
-        action = row["action"].strip()
-        if action:
-            course_day = int(row["course_day"])
-            behavior_by_node[node_id][course_day] += 1                  
-            behavior_by_node[node_id][config.TOTAL_EVENTS_INDEX] += 1   
-            behavior_by_node[node_id][action_indices[action]] += 1     
-            object_id = row["object_id"].strip()
-            if object_id.lower() not in config.MISSING_VALUES:
-                objects_by_node[node_id].add(object_id)
-
-    for node_id, objects in objects_by_node.items():
-        behavior_by_node[node_id][config.OBJECT_COUNT_INDEX] = len(objects)
+        action = row["action"]
+        if not action:
+            continue                                                     # enrollment with no event
+        course_day = int(row["course_day"])
+        counts[node_id][course_day] += 1                                 # events on that day
+        counts[node_id][config.TOTAL_EVENTS_INDEX] += 1                  # all events
+        counts[node_id][action_columns[action]] += 1                     # events of that action
+        object_id = row["object_id"].strip()
+        if object_id.lower() not in config.MISSING_VALUES:
+            objects[node_id].add(object_id)
 
     node_count = len(nodes)
-    behavior_features = np.zeros(
-        (node_count, config.BEHAVIOR_FEATURE_COUNT),
-        dtype=np.int32,
-    )
+    if sorted(nodes) != list(range(node_count)):
+        raise ValueError(f"{events_path}: node ids are not 0..n-1")
 
-    user_context = np.zeros(
-        (node_count, config.USER_FEATURE_COUNT),
-        dtype=np.float32,
-    )
-    course_context = np.zeros(
-        (node_count, config.COURSE_FEATURE_COUNT),
-        dtype=np.float32,
-    )
-
-    # Set behavior counts and encode user/course context for every node.
-    for node_id in sorted(nodes):
-        node = nodes[node_id]
-        behavior_features[node_id] = behavior_by_node[node_id]
-
-        gender = node["gender"].strip()
-        education = node["education"].strip()
-        category = node["category"].strip()
-        if gender.lower() in config.MISSING_VALUES:
-            gender = ""
-        if education.lower() in config.MISSING_VALUES:
-            education = ""
-        if category.lower() in config.MISSING_VALUES:
-            category = ""
-
-        # one-hot gender
-        set_one_hot(
-            user_context,
-            node_id,
-            gender,
-            config.GENDERS,
-            config.GENDER_FEATURE_START,
-        )
-        # one-hot education level
-        set_one_hot(
-            user_context,
-            node_id,
-            education,
-            config.EDUCATIONS,
-            config.EDUCATION_FEATURE_START,
-        )
-        # calculate age, missing -> 0
-        user_context[node_id, config.AGE_FEATURE_INDEX] = age_at_course_start(
-            node["birth"].strip(),
-            node["course_start"].strip(),
-        )
-        # one-hot course category
-        set_one_hot(
-            course_context,
-            node_id,
-            category,
-            config.CATEGORIES,
-            config.CATEGORY_FEATURE_START,
-        )
-
-    return behavior_features, user_context, course_context
+    count_matrix = np.zeros((node_count, config.FEATURE_COUNT), dtype=np.int64)
+    enroll_ids = np.zeros(node_count, dtype=np.int64)
+    user_ids = np.zeros(node_count, dtype=np.int64)
+    labels = np.zeros(node_count, dtype=np.int64)
+    course_ids = []
+    for node_id in range(node_count):
+        count_matrix[node_id] = counts[node_id]
+        count_matrix[node_id, config.OBJECT_COUNT_INDEX] = len(objects[node_id])
+        enroll_id, user_id, course_id, label = nodes[node_id]
+        enroll_ids[node_id] = enroll_id
+        user_ids[node_id] = user_id
+        labels[node_id] = label
+        course_ids.append(course_id)
+    return {"counts": count_matrix, "enroll_id": enroll_ids, "user_id": user_ids,
+            "course_id": np.array(course_ids), "label": labels}
 
 
-# Run step 3 and save into train-> X.npy / test -> X.npy / validation -> X.npy
+# Split name of every node for one seed
+def read_split(output_dir, seed, node_count):
+    split = np.empty(node_count, dtype="<U10")
+    for row in read_csv(preprocess_module.split_path(output_dir, seed)):
+        split[int(row["node_id"])] = row["split"]
+    return split
+
+
+# log1p, then z-score with the train rows of the seed
+def scale_counts(counts, is_train):
+    # x = (log(1 + c) − μ_train) / σ_train
+    log_counts = np.log1p(counts.astype(np.float64))                     # log(1 + c)
+    mean = np.mean(log_counts[is_train], axis=0)                         # μ_train per column
+    std = np.std(log_counts[is_train], axis=0)                           # σ_train per column
+    std[std == 0] = 1.0                                                  # constant column -> z = 0
+    scaled = (log_counts - mean) / std
+    return scaled.astype(np.float32)
+
+
+# Run step 3: events.csv -> x59_s{seed}.npz for every seed
 def build_features(output_dir=config.PROCESSED):
     output_dir = Path(output_dir)
-    feature_data = {}
+    data = count_events(output_dir / preprocess_module.EVENTS_FILE)
+    node_count = len(data["label"])
+    print(f"Counted {config.FEATURE_COUNT} columns of {node_count:,} nodes", flush=True)
 
-    for split_name in config.SPLITS:
-        split_dir = output_dir / split_name
-        split_dir.mkdir(parents=True, exist_ok=True)
-        behavior, user, course = build_split_features(
-            output_dir / f"{split_name}.csv"
+    for seed in config.SEEDS:
+        split = read_split(output_dir, seed, node_count)
+        x = scale_counts(data["counts"], split == "train")
+        np.savez(
+            x59_path(output_dir, seed),
+            enroll_id=data["enroll_id"],
+            user_id=data["user_id"],
+            course_id=data["course_id"],
+            label=data["label"],
+            split=split,
+            X=x,
         )
-        feature_data[split_name] = {
-            "behavior": behavior,
-            "user": user,
-            "course": course,
-        }
+        print(f"Saved {x59_path(output_dir, seed)}: X {x.shape}", flush=True)
 
-    # log-transformed and then standardized
-    # x = (log(1 + c) - μ_train) / σ_train
-    train_counts = np.log1p(feature_data["train"]["behavior"].astype(np.float64))   # log(1 + c)
-    count_mean = np.mean(train_counts, axis=0)                           # μ_train of log(1 + c), per column
-    count_std = np.std(train_counts, axis=0)                             # σ_train of log(1 + c), per column
-    count_std[count_std == 0] = 1.0                                     # constant column -> z = 0
-
-    # age uses z = (a - μ_train) / σ_train (CFIN)
-    train_age = feature_data["train"]["user"][:, config.AGE_FEATURE_INDEX].astype(np.float64)
-    age_mean = float(np.mean(train_age))                                  # μ_train of a
-    age_std = float(np.std(train_age))                                    # σ_train of a
-    print(f"Age: train mean={age_mean:.3f}, std={age_std:.3f}, "
-          f"unknown={np.mean(train_age == config.AGE_MISSING):.1%}", flush=True)
-
-    feature_paths = {}
-    # Same train statistics for every split.
-    for split_name in config.SPLITS:
-        split_data = feature_data[split_name]
-        behavior = np.log1p(split_data["behavior"].astype(np.float64))   # log(1 + c)
-        scaled_behavior = (behavior - count_mean) / count_std             # final X[:, 0:59]: z-score
-        user_features = split_data["user"].copy()
-        user_features[:, config.AGE_FEATURE_INDEX] = (
-            (user_features[:, config.AGE_FEATURE_INDEX] - age_mean) / age_std   # final X[:, 70]: z-score
-        )
-
-        node_features = np.concatenate(
-            (scaled_behavior, user_features, split_data["course"]),
-            axis=1,
-        ).astype(np.float32, copy=False)
-        feature_path = output_dir / split_name / "X.npy"
-        np.save(feature_path, node_features)
-        feature_paths[split_name] = feature_path
-        print(f"Saved {feature_path}", flush=True)
-
-    feature_rows = []
-    for feature_index, metadata in enumerate(feature_metadata()):
-        feature_name, feature_source = metadata
-        feature_rows.append((feature_index, feature_name, feature_source))
-    write_csv(
-        output_dir / "feature_names.csv",
-        ("feature_index", "feature_name", "source"),
-        feature_rows,
-    )
-    return feature_paths
+    rows = []
+    names = feature_names()
+    for index in range(len(names)):
+        rows.append((index, names[index][0], names[index][1]))
+    write_csv(output_dir / "feature_names.csv", ("feature_index", "feature_name", "source"), rows)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Build train, validation, and test node features.")
+    parser = argparse.ArgumentParser(description="Build X59 of every seed.")
     parser.add_argument("--output-dir", type=Path, default=config.PROCESSED)
     arguments = parser.parse_args()
     build_features(arguments.output_dir)

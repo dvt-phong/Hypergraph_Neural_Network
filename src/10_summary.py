@@ -48,7 +48,6 @@ def summarize():
                 row[name] = "✓"
             else:
                 row[name] = "✗"
-        row["features"] = group["features"].iloc[-1]
         row["hgnn_layers"] = group["hgnn_layers"].iloc[-1]
         if bool(group["use_mlp"].iloc[-1]):
             row["mlp"] = "✓"

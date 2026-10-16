@@ -20,7 +20,7 @@ DropoutModel = import_module("8_model").DropoutModel
 
 RESULT_COLUMNS = (
     "time", "scenario", "seed",
-    "families", "features", "hgnn_layers", "use_mlp", "learn_w",
+    "families", "hgnn_layers", "use_mlp", "learn_w",
     "epochs", "eval_every", "patience", "hidden_dim", "dropout", "learning_rate", "weight_decay",
     "best_epoch", "epochs_run",
     "val_auc", "val_auprc", "val_f1",
@@ -189,7 +189,6 @@ def train_one_seed(code, seed, settings, data, device):
     row["scenario"] = code
     row["seed"] = seed
     row["families"] = "+".join(scenario["families"])
-    row["features"] = scenario["features"]
     row["hgnn_layers"] = scenario["hgnn_layers"]
     row["use_mlp"] = scenario["use_mlp"]
     row["learn_w"] = scenario["learn_w"]
@@ -245,21 +244,19 @@ if __name__ == "__main__":
     device = resolve_device(arguments.device)
     log("setup", f"device={device}, scenarios={codes}, seeds={arguments.seeds}, settings={settings}")
 
-    # Read the data once (all families, all columns); every scenario takes its part of it.
-    loaded = graph_data.load_graph(arguments.output_dir)
-    split_counts = []
-    for split_id in range(len(config.SPLITS)):
-        count = int(np.sum(loaded["split"] == split_id))
-        split_counts.append(f"{config.SPLITS[split_id]}={count:,}")
-    log("setup", f"H over {loaded['graph']['num_nodes']:,} nodes: " + ", ".join(split_counts))
+    # Seed by seed: the seed gives the train / validation split and the model initialisation.
+    for seed in arguments.seeds:
+        loaded = graph_data.load_graph(seed, arguments.output_dir)
+        split_counts = []
+        for split_name in config.SPLITS:
+            count = int(np.sum(loaded["split"] == split_name))
+            split_counts.append(f"{split_name}={count:,}")
+        log("setup", f"seed {seed}: H over {loaded['graph']['num_nodes']:,} nodes: " + ", ".join(split_counts))
 
-    # Scenario by scenario; every seed of a scenario before the next one.
-    for code in codes:
-        scenario = config.SCENARIOS[code]   # the Vietnamese description is not logged (Windows console)
-        families_text = "+".join(scenario["families"])
-        log("scenario", f"{code}: families={families_text}, features={scenario['features']}, "
-                        f"hgnn_layers={scenario['hgnn_layers']}, use_mlp={scenario['use_mlp']}, "
-                        f"learn_w={scenario['learn_w']}")
-        data = graph_data.apply_scenario(loaded, config.SCENARIOS[code])
-        for seed in arguments.seeds:
+        for code in codes:
+            scenario = config.SCENARIOS[code]   # the Vietnamese description is not logged (Windows console)
+            families_text = "+".join(scenario["families"])
+            log("scenario", f"{code}: families={families_text}, hgnn_layers={scenario['hgnn_layers']}, "
+                            f"use_mlp={scenario['use_mlp']}, learn_w={scenario['learn_w']}")
+            data = graph_data.apply_scenario(loaded, scenario)
             train_one_seed(code, seed, settings, data, device)

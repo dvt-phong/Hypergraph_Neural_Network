@@ -19,11 +19,9 @@ dist/
 !/baseline/ML/
 !/baseline/CA-TFHN/
 !/baseline/MST-GCN/
-!/baseline/SIG-Net/
 /baseline/CFIN/dropout_prediction/
 /baseline/CA-TFHN/code/
 /baseline/MST-GCN/code/
-/baseline/SIG-Net/code/
 /baseline/CFIN/.tools/
 /baseline/CFIN/.python/
 !/baseline/new_dataset/
