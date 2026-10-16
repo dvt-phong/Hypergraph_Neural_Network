@@ -6,7 +6,7 @@
 #   pip install -r baseline/MST-GCN/requirements.txt   # then DGL, see the comment in that file
 # Run from the project root, after src/2_preprocess.py and src/3_features.py:
 #   bash baseline/MST-GCN/run_mstgcn.sh setup      # clone, reset to the pinned commit, apply the patch (rerun after git pull)
-#   bash baseline/MST-GCN/run_mstgcn.sh features   # build the graph cache once (it does not depend on the seed)
+#   bash baseline/MST-GCN/run_mstgcn.sh features   # rebuild the graph cache (it does not depend on the seed)
 #   bash baseline/MST-GCN/run_mstgcn.sh smoke      # seed 1, 1 epoch on a 1% subset (own cache)
 #   bash baseline/MST-GCN/run_mstgcn.sh full       # 5 seeds -> outputs/baselines/MST-GCN/
 set -eo pipefail
@@ -36,6 +36,7 @@ cd "$CODE/MST-GCN/src_xuet"
 
 case "$STAGE" in
 features)
+    rm -rf "$CACHE/full"                                   # never reuse a graph cache built from older data
     mkdir -p "$CACHE/full" "$OUT"
     "$PY" -c "
 from xuetangx_graph_builder import XuetangXGraph
@@ -43,6 +44,7 @@ XuetangXGraph(raw_dir='$X_DIR', save_dir='$CACHE/full', split_path='$X_DIR/x59_s
 " 2>&1 | tee "$CACHE/full/features.log"
     ;;
 smoke)
+    rm -rf "$CACHE/smoke"
     mkdir -p "$CACHE/smoke" "$OUT/smoke"
     "$PY" main.py "${ARGS[@]}" --cache_dir "$CACHE/smoke" --subset_ratio 0.01 --seed 1 --num_epochs 1 \
         --out_dir "$OUT/smoke" --log_dir "$OUT/smoke" 2>&1 | tee "$OUT/smoke/main.log"
