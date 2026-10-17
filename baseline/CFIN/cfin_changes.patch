@@ -1,15 +1,14 @@
 diff --git a/main.py b/main.py
-index 4369652..70b6273 100644
+index 4369652..849261b 100644
 --- a/main.py
 +++ b/main.py
-@@ -1,39 +1,59 @@
+@@ -1,39 +1,60 @@
  import os
 -from sklearn.metrics import roc_auc_score
 -import sys
 +from sklearn.metrics import roc_auc_score, precision_recall_fscore_support
 +import argparse
 +import csv
-+import random
 +import time
  import numpy as np
  import pandas as pd
@@ -34,8 +33,10 @@ index 4369652..70b6273 100644
 +#   course_enroll_num) are not used, so the model has no context branch (model.py);
 +#   feat_augment is kept: every X59 column also gets its mean / max over the enrollments of the
 +#   same user and of the same course;
-+# - three splits (train / validation / test of the seed) instead of train / test; --seed is both
-+#   the split seed and the training seed (numpy and random as well; the original only seeded TF);
++# - three splits (train / validation / test of the seed) instead of train / test; --seed only picks
++#   the split: the model keeps the original random_seed 12345 and numpy is not seeded (as the original);
++# - the rest of the model is the original, including its batch norm (built outside tf.cond, so every
++#   predict also updates the moving statistics) and the save of the last epoch to my_model/CFIN;
 +# - as the original, 27 epochs on train without early stopping and the last epoch is scored; the
 +#   validation AUC is printed after every epoch instead of the test AUC, and validation and test
 +#   are scored once at the end;
@@ -81,7 +82,7 @@ index 4369652..70b6273 100644
      act_feat = []
      for f in act_feat_basic:
          act_feat.append(f)
-@@ -42,111 +62,123 @@ def feat_augment(train_feat, test_feat):
+@@ -42,111 +63,121 @@ def feat_augment(train_feat, test_feat):
          act_feat.append(f+'#course#mean')
          act_feat.append(f+'#course#max')
  
@@ -273,15 +274,13 @@ index 4369652..70b6273 100644
 +    append_result(os.path.join(out_dir, 'results.csv'), row)
 +
 +parser = argparse.ArgumentParser(description="CFIN (activity only) on X59 of one seed, 27 epochs as the original.")
-+parser.add_argument('--seed', type=int, default=1, help='split seed (x59_s<seed>.npz) and training seed')
++parser.add_argument('--seed', type=int, default=1, help='split seed (x59_s<seed>.npz)')
 +parser.add_argument('--x-dir', default=os.path.join('..', '..', '..', 'data', 'processed', 'simple'))
 +parser.add_argument('--max-epoch', type=int, default=None, help='epochs (default: params["epoch"] = 27 of the original)')
 +parser.add_argument('--smoke-rows', type=int, default=0, help='use only the first N rows of every split')
 +parser.add_argument('--out-dir', default=os.path.join('..', '..', '..', 'outputs', 'baselines', 'CFIN'))
 +arguments = parser.parse_args()
 +os.makedirs(arguments.out_dir, exist_ok=True)
-+random.seed(arguments.seed)
-+np.random.seed(arguments.seed)
  
  # load data
 -dfTrain_u, dfTest_u, dfTrain_c, dfTest_c, dfTrain_a, dfTest_a = load_data()
@@ -300,19 +299,15 @@ index 4369652..70b6273 100644
      "activation": tf.nn.relu,
      "epoch": 27,
      "batch_size": 32,
-@@ -158,8 +190,7 @@ params = {
-     "verbose": True,
-     "attn": True,
-     "eval_metric": roc_auc_score,
--    "random_seed": 12345
-+    "random_seed": arguments.seed   # changed: was 12345
+@@ -161,5 +192,4 @@ params = {
+     "random_seed": 12345
  }
  
 -y_train_dfm, y_test_dfm = model_run(dfTrain_u, dfTest_u, dfTrain_c, dfTest_c, dfTrain_a, dfTest_a,params, act_feat)
 -
 +model_run([dfTrain_a, dfValid_a, dfTest_a], params, act_feat, arguments.seed, arguments.max_epoch, arguments.out_dir)
 diff --git a/model.py b/model.py
-index 01e8a27..b735ac9 100644
+index 01e8a27..a74e751 100644
 --- a/model.py
 +++ b/model.py
 @@ -7,12 +7,14 @@ from tensorflow.contrib.layers.python.layers import batch_norm as batch_norm
@@ -451,23 +446,7 @@ index 01e8a27..b735ac9 100644
          
          glorot = np.sqrt(2.0 / (input_size + self.deep_layers[0]))
          weights["layer_0"] = tf.Variable(
-@@ -221,70 +186,61 @@ class CFIN():
- 
- 
-     def batch_norm_layer(self, x, train_phase, scope_bn):
--        bn_train = batch_norm(x, decay=self.batch_norm_decay, center=True, scale=True, updates_collections=None,
--                              is_training=True, reuse=None, trainable=True, scope=scope_bn)
--        bn_inference = batch_norm(x, decay=self.batch_norm_decay, center=True, scale=True, updates_collections=None,
--                                  is_training=False, reuse=True, trainable=True, scope=scope_bn)
--        z = tf.cond(train_phase, lambda: bn_train, lambda: bn_inference)
-+        # changed: both batch_norm calls are built inside the tf.cond branches. The original built them
-+        # outside, so the training branch (moving mean/variance updated with the batch statistics) ran
-+        # on every sess.run, also in predict: scoring validation/test changed the model.
-+        bn_train = lambda: batch_norm(x, decay=self.batch_norm_decay, center=True, scale=True, updates_collections=None,
-+                                      is_training=True, reuse=None, trainable=True, scope=scope_bn)
-+        bn_inference = lambda: batch_norm(x, decay=self.batch_norm_decay, center=True, scale=True, updates_collections=None,
-+                                          is_training=False, reuse=True, trainable=True, scope=scope_bn)
-+        z = tf.cond(train_phase, bn_train, bn_inference)
+@@ -229,62 +194,49 @@ class CFIN():
          return z
  
  
@@ -514,8 +493,7 @@ index 01e8a27..b735ac9 100644
  
 -    def fit(self, ui_train, uv_train, ci_train, cv_train, ai_train, av_train, y_train,
 -            ui_valid=None, uv_valid=None, ci_valid = None, cv_valid = None, ai_valid=None, av_valid=None,y_valid=None,
-+    # changed: train / validation arguments of the activity part only; the commented-out refit
-+    # block of the original (never run) and the final save are removed (main.py saves the best epoch)
++    # changed: train / validation arguments of the activity part only
 +    def fit(self, ai_train, av_train, y_train, ai_valid=None, av_valid=None, y_valid=None,
              early_stopping = True, early_stopping_round = 5, max_epoch =None):
 -        has_valid = uv_valid is not None
@@ -544,47 +522,16 @@ index 01e8a27..b735ac9 100644
                  self.valid_result.append(valid_result)
              if self.verbose > 0 and epoch % self.verbose == 0:
                  if has_valid:
-@@ -298,38 +254,7 @@ class CFIN():
-                 best_epoch = epoch - early_stopping_round + 1
-                 print("best epoch: ", best_epoch)
-                 return best_epoch
--                
--        """         
--        if has_valid and refit:
--            if self.greater_is_better:
--                best_valid_score = max(self.valid_result)
--            else:
--                best_valid_score = min(self.valid_result)
--            best_epoch = self.valid_result.index(best_valid_score)
--            best_train_score = self.train_result[best_epoch]
--            ui_train = np.concatenate((ui_train, ui_valid), axis=0)
--            uv_train = np.concatenate((uv_train, uv_valid), axis=0)
--            ci_train = np.concatenate((ci_train, ci_valid), axis=0)
--            cv_train = np.concatenate((cv_train, cv_valid), axis=0)
--            ai_train = np.concatenate((ai_train, ai_valid), axis=0)
--            av_train = np.concatenate((av_train, av_valid), axis=0)
--            y_train = np.concatenate((y_train, y_valid), axis=0)
--
--            for epoch in range(100):
--                self.shuffle_in_unison_scary(ui_train, uv_train, ci_train, cv_train, ai_train, av_train, y_train)
--                total_batch = int(len(y_train) / self.batch_size)
--                for i in range(total_batch):
--                    ui_batch, uv_batch, ci_batch, cv_batch, ai_batch, av_batch, y_batch = self.get_batch(ui_train, uv_train, ci_train, cv_train, ai_train, av_train, y_train, self.batch_size, i)
--                    self.fit_on_batch(ui_batch, uv_batch, ci_batch, cv_batch, ai_batch, av_batch, y_batch)
--                train_result, train_deep, train_f1 = self.evaluate(ui_train, uv_train, ci_train, cv_train, ai_train, av_train, y_train)
--                if abs(train_result - best_train_score) < 0.001 or \
--                    (self.greater_is_better and train_result > best_train_score) or \
--                    ((not self.greater_is_better) and train_result < best_train_score):
--                    break
--        """
+@@ -327,7 +279,7 @@ class CFIN():
+                     ((not self.greater_is_better) and train_result < best_train_score):
+                     break
+         """
 -        save_path = self.saver.save(sess, "my_model/CFIN")
--        print("Save to path: ", save_path)
--        return save_path
-+        return best_epoch
++        save_path = self.saver.save(self.sess, "my_model/CFIN")   # changed: self.sess, the original `sess` is undefined (NameError)
+         print("Save to path: ", save_path)
+         return save_path
          
-     def training_termination(self, valid_result, early_stopping_round):
-         if len(valid_result) > early_stopping_round:
-@@ -345,67 +270,17 @@ class CFIN():
+@@ -345,67 +297,17 @@ class CFIN():
                      return True    
          return False
  
@@ -605,7 +552,10 @@ index 01e8a27..b735ac9 100644
 -        return y_deep,y_rate
 -    def get_attn(self, ui, uv, ci, cv, ai, av):
 -        dummy_y = [1] * len(ui)
--        batch_index = 0
++    # changed: get_feats and get_attn of the original (never called) are removed
++    def predict(self, ai, av):
++        dummy_y = [1] * len(ai)
+         batch_index = 0
 -        ui_batch, uv_batch, ci_batch, cv_batch, ai_batch, av_batch ,y_batch = self.get_batch(ui, uv, ci, cv, ai, av, dummy_y, self.batch_size, batch_index)
 -        attn_weight = None
 -        uca_weight = None
@@ -636,10 +586,7 @@ index 01e8a27..b735ac9 100644
 -   
 -    def predict(self, ui, uv, ci, cv, ai, av):
 -        dummy_y = [1] * len(ui)
-+    # changed: get_feats and get_attn of the original (never called) are removed
-+    def predict(self, ai, av):
-+        dummy_y = [1] * len(ai)
-         batch_index = 0
+-        batch_index = 0
 -        ui_batch, uv_batch, ci_batch, cv_batch, ai_batch, av_batch ,y_batch = self.get_batch(ui, uv, ci, cv, ai, av, dummy_y, self.batch_size, batch_index)
 +        ai_batch, av_batch, y_batch = self.get_batch(ai, av, dummy_y, self.batch_size, batch_index)
          y_pred = None
@@ -658,7 +605,7 @@ index 01e8a27..b735ac9 100644
                           self.label: y_batch,
                           self.train_phase: False}
              y_deep,batch_out = self.sess.run([self.y_deep,self.out], feed_dict=feed_dict)
-@@ -416,11 +291,10 @@ class CFIN():
+@@ -416,11 +318,10 @@ class CFIN():
  
              batch_index += 1
              

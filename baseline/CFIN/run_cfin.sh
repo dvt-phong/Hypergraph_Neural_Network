@@ -33,11 +33,11 @@ cd "$HERE/dropout_prediction"
 
 case "$STAGE" in
 smoke)
-    mkdir -p "$OUT/smoke"
+    mkdir -p my_model "$OUT/smoke"
     "$PY" main.py --seed 1 --x-dir "$X_DIR" --max-epoch 1 --smoke-rows 4000 --out-dir "$OUT/smoke" 2>&1 | tee "$OUT/smoke/main.log"
     ;;
 full)
-    mkdir -p "$OUT"
+    mkdir -p my_model "$OUT"
     for seed in $SEEDS; do
         "$PY" main.py --seed "$seed" --x-dir "$X_DIR" --out-dir "$OUT" 2>&1 | tee "$OUT/main_seed$seed.log"
     done
