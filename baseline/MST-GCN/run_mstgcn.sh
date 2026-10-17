@@ -20,8 +20,8 @@ SEEDS="${SEEDS:-1 11 111 1111 11111}"
 PY="${PY:-python}"
 case "$PY" in */*) PY="$(cd "$(dirname "$PY")" && pwd)/$(basename "$PY")";; esac   # path -> absolute (we cd below)
 STAGE="${1:-full}"
-# Original defaults (hidden 128, 2 layers, lr 1e-4, batch 256, dropout 0.3); at most 3 x 8 epochs.
-ARGS=(--dataset xuetangx --raw_dir "$X_DIR" --x_dir "$X_DIR" --num_epochs 24 --patience 5)
+# Original defaults (hidden 128, 2 layers, lr 1e-4, batch 256, dropout 0.3, 8 epochs); last epoch scored.
+ARGS=(--dataset xuetangx --raw_dir "$X_DIR" --x_dir "$X_DIR")
 
 # 1. Original code at the pinned commit, plus our changes. setup always resets the clone to the
 #    commit and applies the current patch, so a clone left from an older patch is never used.

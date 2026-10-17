@@ -77,12 +77,15 @@ Mỗi kịch bản chỉ đổi một yếu tố so với mô hình chính M; m�
 | Tỉ lệ dropout | train 0.758, validation 0.760, test 0.758 (dropout là lớp đa số; AUPRC ngẫu nhiên ≈ 0.758) |
 | Đặc trưng X59 | chỉ log activity: 35 số đếm theo ngày, tổng sự kiện, số object và 22 action, `x = (log(1 + c) − μ_train)/σ_train`, μ, σ chỉ tính trên train của seed. Không dùng demographic người học và thông tin khóa học |
 | Graph (transductive, như HGNN gốc, SIG-Net, MST-GCN) | một hypergraph H trên mọi enrollment train + val + test |
-| Train | full-batch: forward trên toàn H, BCE chỉ trên nút train; Adam, tối đa 1000 epoch, early stopping theo val AUC (mỗi 5 epoch, patience 40); trọng số tốt nhất giữ trong RAM |
+| Train | full-batch: forward trên toàn H, BCE chỉ trên nút train; Adam (lr 1e-3, weight decay 1e-5), dropout 0.3, hidden 128, tối đa 1000 epoch, early stopping theo val AUC (mỗi epoch, patience 200); trọng số tốt nhất giữ trong RAM |
 | Đánh giá | nạp trọng số tốt nhất, một forward trên H ở chế độ eval, đọc xác suất ở nút val và test (như HGNN+ / DHG), ngưỡng 0.5 |
 | Lặp | 5 seed (1, 11, 111, 1111, 11111); seed vừa chia train/val vừa khởi tạo mô hình (như DP-SCL); báo cáo mean ± std. Mọi baseline dùng cùng split và cùng X59 |
 
 So với các bài tham khảo (đọc từ code gốc): SIG-Net và MST-GCN không có validation, lấy
 epoch cuối, ngưỡng 0.5; CA-TFHN in kết quả test mỗi epoch.
+
+Baseline giữ siêu tham số của tác giả, kể cả số epoch cố định (MST-GCN 8, CA-TFHN 15, CFIN 27)
+và chấm epoch cuối; chỉ seed, split và X59 là chung với M (docs/PLAN_FAIR_SETTINGS.md).
 
 ## Hyperedge
 

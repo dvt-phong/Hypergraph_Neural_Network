@@ -101,11 +101,11 @@ SCENARIOS_ALL = ("M", "A1", "A2", "A3", "A4", "W1", "L1", "H")
 THRESHOLD = 0.5  # p >= 0.5 -> predicted dropout
 TRAIN = {
     "hidden_dim": 128,
-    "dropout": 0.5,
+    "dropout": 0.3,
     "learning_rate": 1e-3,
-    "weight_decay": 5e-4,
+    "weight_decay": 1e-5,
     "family_weight_lr": 0.05,
     "epochs": 1000,
-    "eval_every": 5,
-    "patience": 40,
+    "eval_every": 1,
+    "patience": 200,
 }

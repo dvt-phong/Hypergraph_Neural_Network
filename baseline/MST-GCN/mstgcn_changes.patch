@@ -1,5 +1,5 @@
 diff --git a/MST-GCN/src_xuet/main.py b/MST-GCN/src_xuet/main.py
-index ac9aad7..f265476 100644
+index ac9aad7..b0597cd 100644
 --- a/MST-GCN/src_xuet/main.py
 +++ b/MST-GCN/src_xuet/main.py
 @@ -60,9 +60,11 @@ def main(args):
@@ -27,28 +27,26 @@ index ac9aad7..f265476 100644
          )
          
      else:
-@@ -113,8 +116,15 @@ if __name__ == "__main__":
+@@ -113,8 +116,13 @@ if __name__ == "__main__":
      # ==========================================
      # 2. [关键修改] 随机种子 (用于 T-test)
      # ==========================================
 -    parser.add_argument("--seed", type=int, default=0, 
 +    parser.add_argument("--seed", type=int, default=0,
                          help="Random seed for reproducibility. Run 0-4 for Statistical Test.")
-+    # changed: data folders, split of the seed (--seed is also the split seed), output and early stopping
++    # changed: data folders, split of the seed (--seed is also the split seed) and output
 +    parser.add_argument("--raw_dir", type=str, default='data/processed/simple', help="folder of events.csv")
 +    parser.add_argument("--cache_dir", type=str, default='data/xuetangx/cache')
 +    parser.add_argument("--x_dir", type=str, default='data/processed/simple', help="folder of x59_s<seed>.npz")
 +    parser.add_argument("--out_dir", type=str, default='outputs')
-+    parser.add_argument("--patience", type=int, default=5,
-+                        help="Stop after this many epochs without a better validation AUC.")
  
      # ==========================================
      # 3. 模型选择与架构参数
 diff --git a/MST-GCN/src_xuet/trainer.py b/MST-GCN/src_xuet/trainer.py
-index 9e10af9..158a78e 100644
+index 9e10af9..13a57ae 100644
 --- a/MST-GCN/src_xuet/trainer.py
 +++ b/MST-GCN/src_xuet/trainer.py
-@@ -7,15 +7,24 @@ import dgl
+@@ -7,15 +7,23 @@ import dgl
  from torch.optim import Adam
  from model import *
  from utils import collate_data
@@ -57,7 +55,6 @@ index 9e10af9..158a78e 100644
  from tqdm import tqdm
  from torch.utils.data import DataLoader, SubsetRandomSampler
  import random
-+import copy
 +import csv
 +import time
  import matplotlib.pyplot as plt
@@ -74,7 +71,7 @@ index 9e10af9..158a78e 100644
  
  def eval(model, test_dataloader, device):
      model.eval()
-@@ -184,7 +193,24 @@ def visualize_tsne(model, test_dataloader, device, logger, save_path):
+@@ -184,7 +192,24 @@ def visualize_tsne(model, test_dataloader, device, logger, save_path):
      plt.close()
  
  
@@ -99,7 +96,7 @@ index 9e10af9..158a78e 100644
      dgl.random.seed(args.seed)
      torch.manual_seed(args.seed)
      np.random.seed(args.seed)
-@@ -206,12 +232,15 @@ def train(args, dataloader, logger):
+@@ -206,13 +231,14 @@ def train(args, dataloader, logger):
      optimizer = Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
      loss_fn = nn.BCELoss().to(device)
      
@@ -108,19 +105,19 @@ index 9e10af9..158a78e 100644
 -    train_dl = DataLoader(dataloader, collate_fn=collate_data, sampler=SubsetRandomSampler(indices[:split]), batch_size=args.batch_size)
 -    test_dl = DataLoader(dataloader, collate_fn=collate_data, sampler=SubsetRandomSampler(indices[split:]), batch_size=args.batch_size)
 -    
+-    losses, gate_stability = [], []
 +    # changed: train / validation / test of the seed (the original took the first 80% of the merged
 +    # train + test rows as train and the rest as test); validation and test in a fixed order
 +    indices = list(dataloader.split_index['train'])
 +    train_dl = DataLoader(dataloader, collate_fn=collate_data, sampler=SubsetRandomSampler(indices), batch_size=args.batch_size)
 +    eval_dl = {name: DataLoader(dataloader, collate_fn=collate_data, sampler=list(dataloader.split_index[name]), batch_size=args.batch_size)
 +               for name in ('validation', 'test')}
-+
-     losses, gate_stability = [], []
-+    best_auc, best_epoch, best_state, stale = -1.0, 0, None, 0
  
++    losses, gate_stability = [], []
      for e in range(1, args.num_epochs + 1):
          model.train()
-@@ -224,22 +253,48 @@ def train(args, dataloader, logger):
+         epoch_l, epoch_g = 0., []
+@@ -224,22 +250,41 @@ def train(args, dataloader, logger):
              epoch_l += loss.item() * preds.shape[0]
              if gates is not None: epoch_g.append(gates.mean().item())
  
@@ -145,25 +142,18 @@ index 9e10af9..158a78e 100644
 -    visualize_gate_distribution(model, test_dl, device, logger, f"{args.log_dir}/gate_plot.png")
 -    visualize_activity_gate_correlation(model, test_dl, device, logger, f"{args.log_dir}/correlation_plot.png")
 \ No newline at end of file
-+        # changed: validation AUC after every epoch, keep the best weights, stop after args.patience
-+        # epochs without a better one (the original trained a fixed 8 epochs and scored test once)
++        # changed: validation AUC after every epoch, printed only (as the original, a fixed
++        # args.num_epochs = 8 epochs and the last epoch is scored)
 +        prob, label = predict(model, eval_dl['validation'], device)
 +        val_auc = roc_auc_score(label, prob)
-+        if val_auc > best_auc:                                           # best = argmax_epoch AUC_val
-+            best_auc, best_epoch, best_state, stale = val_auc, e, copy.deepcopy(model.state_dict()), 0
-+        else:
-+            stale += 1
-+        logger.info(f"Epoch {e}: Loss {avg_l:.4f}, Gate {avg_g:.4f}, valid-auc {val_auc:.4f} (best {best_auc:.4f} at epoch {best_epoch})")
-+        if stale >= args.patience:
-+            break
-+    model.load_state_dict(best_state)
++        logger.info(f"Epoch {e}: Loss {avg_l:.4f}, Gate {avg_g:.4f}, valid-auc {val_auc:.4f}")
 +
-+    # changed: score validation and test once with the best weights; write predictions and AUC,
++    # changed: score validation and test once with the weights of the last epoch; write predictions and AUC,
 +    # precision, recall, F1 like baseline/ML (the stability, t-SNE, gate and correlation plots of the
 +    # original are not drawn)
 +    os.makedirs(args.out_dir, exist_ok=True)
 +    row = {"time": time.strftime("%Y-%m-%d %H:%M:%S"), "model": "MST-GCN", "seed": args.seed,
-+           "best_epoch": best_epoch, "epochs_run": e}
++           "best_epoch": e, "epochs_run": e}
 +    for name, prefix in (('validation', 'val'), ('test', 'test')):
 +        prob, label = predict(model, eval_dl[name], device)
 +        enroll_ids = [dataloader.id_to_enroll[int(i)] for i in dataloader.split_index[name]]
