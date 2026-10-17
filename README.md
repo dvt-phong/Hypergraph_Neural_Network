@@ -73,13 +73,13 @@ Mỗi kịch bản chỉ đổi một yếu tố so với mô hình chính M; m�
 | Mục | Cách làm |
 |---|---|
 | Dữ liệu | XuetangX (CFIN, Feng et al., 2019); node = enrollment; đặc trưng = 35 ngày đầu của khóa |
-| Chia | test chính thức giữ nguyên (67,699); train chính thức → 80% train (126,354) / 20% validation (31,589), xáo bằng seed của lần chạy |
-| Tỉ lệ dropout | train 0.758, validation 0.760, test 0.758 (dropout là lớp đa số; AUPRC ngẫu nhiên ≈ 0.758) |
+| Chia | gộp train và test chính thức (225,642); mỗi seed chia lại 60% train (135,384) / 10% validation (22,565) / 30% test (67,693), phân tầng theo nhãn (như DP-SCL, docs/PLAN_SEED_SPLIT.md) |
+| Tỉ lệ dropout | 0.758 ở cả train, validation, test của mọi seed (phân tầng; dropout là lớp đa số; AUPRC ngẫu nhiên ≈ 0.758) |
 | Đặc trưng X59 | chỉ log activity: 35 số đếm theo ngày, tổng sự kiện, số object và 22 action, `x = (log(1 + c) − μ_train)/σ_train`, μ, σ chỉ tính trên train của seed. Không dùng demographic người học và thông tin khóa học |
 | Graph (transductive, như HGNN gốc, SIG-Net, MST-GCN) | một hypergraph H trên mọi enrollment train + val + test |
 | Train | full-batch: forward trên toàn H, BCE chỉ trên nút train; Adam (lr 1e-3, weight decay 1e-5), dropout 0.3, hidden 128, tối đa 1000 epoch, early stopping theo val AUC (mỗi epoch, patience 200); trọng số tốt nhất giữ trong RAM |
 | Đánh giá | nạp trọng số tốt nhất, một forward trên H ở chế độ eval, đọc xác suất ở nút val và test (như HGNN+ / DHG), ngưỡng 0.5 |
-| Lặp | 5 seed (1, 11, 111, 1111, 11111); seed vừa chia train/val vừa khởi tạo mô hình (như DP-SCL); báo cáo mean ± std. Mọi baseline dùng cùng split và cùng X59 |
+| Lặp | 5 seed (1, 11, 111, 1111, 11111); seed vừa chia train/val/test vừa khởi tạo mô hình (như DP-SCL); báo cáo mean ± std. Mọi baseline dùng cùng split và cùng X59 |
 
 So với các bài tham khảo (đọc từ code gốc): SIG-Net và MST-GCN không có validation, lấy
 epoch cuối, ngưỡng 0.5; CA-TFHN in kết quả test mỗi epoch.
@@ -96,7 +96,7 @@ và chấm epoch cuối; chỉ seed, split và X59 là chung với M (docs/PLAN_
 | User ("any", như SIG-Net, MST-GCN) | `e_U(l) = {v : user(v) = l}`: mọi enrollment của người học (train, val, test) | 64,672 | 94.5% |
 | Self-loop | `{v}` | N = 225,642 | 100% |
 
-H gồm 225,642 node (mỗi seed: train 126,354, val 31,589, test 67,699) và 3,222,033 membership (chưa kể
+H gồm 225,642 node (mỗi seed: train 135,384, val 22,565, test 67,693) và 3,222,033 membership (chưa kể
 self-loop). Hyperedge có ít hơn 2 thành viên bị bỏ (self-loop đã bao). Hyperedge chỉ dựa trên
 khóa học, object và người học.
 

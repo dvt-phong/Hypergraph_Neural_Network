@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 # Project paths and experiment seeds.
-# Seed s splits the official train into train / validation and initialises the model.
+# Seed s splits every labeled enrollment into train / validation / test and initialises the model.
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw" / "xuetangx"
 PROCESSED = ROOT / "data" / "processed" / "simple"
@@ -24,7 +24,11 @@ DOWNLOAD_FILES = {
 
 # Used by 2_preprocess.py.
 SPLITS = ("train", "validation", "test")
-TRAIN_RATIO = 0.80          # official train -> 80% train, 20% validation
+# Every labeled enrollment (official train + official test) -> 60% train, 10% validation, 30% test,
+# stratified by label, with the seed (as DP-SCL).
+TRAIN_RATIO = 0.60
+VALIDATION_RATIO = 0.10
+TEST_RATIO = 0.30
 OBSERVATION_DAYS = 35
 ACTION_GROUPS = {
     "video": (

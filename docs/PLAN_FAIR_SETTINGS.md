@@ -6,7 +6,7 @@ Ngày: 2026-10-17 (bản 2, thay bản "một bộ siêu tham số chung"). Em �
 
 | Mục | Quyết định |
 |---|---|
-| Thống nhất cho mọi mô hình | feature X59 (`x59_s{seed}.npz`), 5 seed 1, 11, 111, 1111, 11111 (seed chia train/val và khởi tạo), official test cố định, 4 chỉ số AUC / precision / recall / F1 ở ngưỡng 0.5, báo cáo mean ± std |
+| Thống nhất cho mọi mô hình | feature X59 (`x59_s{seed}.npz`), 5 seed 1, 11, 111, 1111, 11111 (seed chia train/val/test 60/10/30 phân tầng và khởi tạo, docs/PLAN_SEED_SPLIT.md), 4 chỉ số AUC / precision / recall / F1 ở ngưỡng 0.5, báo cáo mean ± std |
 | Siêu tham số của baseline | giữ đúng giá trị của tác giả, kể cả số epoch cố định; chấm epoch cuối |
 | Siêu tham số của M | của em, chọn theo val AUC (mục 3) |
 
