@@ -179,10 +179,18 @@ index 9e10af9..13a57ae 100644
 +        writer.writerow({k: (f"{v:.6f}" if isinstance(v, float) else v) for k, v in row.items()})
 \ No newline at end of file
 diff --git a/MST-GCN/src_xuet/xuetangx_graph_builder.py b/MST-GCN/src_xuet/xuetangx_graph_builder.py
-index 19ffcb2..737cd25 100644
+index 19ffcb2..ca33d25 100644
 --- a/MST-GCN/src_xuet/xuetangx_graph_builder.py
 +++ b/MST-GCN/src_xuet/xuetangx_graph_builder.py
-@@ -71,15 +71,22 @@ class XuetangXGraph(DGLDataset):
+@@ -5,7 +5,6 @@ import dgl
+ import torch
+ from dgl.data import DGLDataset
+ from dgl import save_graphs, load_graphs
+-from sklearn.preprocessing import StandardScaler
+ from tqdm import tqdm
+ import warnings
+ import pickle
+@@ -71,15 +70,22 @@ class XuetangXGraph(DGLDataset):
      """
      XuetangX 数据集的高性能构建类，已修复为构建 DGL 异构图并使用 Log 聚合特征。
      """
@@ -191,8 +199,8 @@ index 19ffcb2..737cd25 100644
          self.subset_ratio = subset_ratio
          self.window_size = 35  # Dh = 35 days
 -        
-+        # changed (docs/PLAN_X59.md): raw_dir holds events.csv of the main model M; the graph and the
-+        # object / course features do not depend on the seed, so they are cached once; apply_split()
++        # changed (docs/PLAN_X59.md): raw_dir holds events.csv of the main model M; the graph (with zero
++        # object / course features) does not depend on the seed, so it is cached once; apply_split()
 +        # reads x59_s<seed>.npz: the train / validation / test of the seed and X59 as the enrollment
 +        # feature (the same input as M).
 +        self.split_path = split_path
@@ -208,7 +216,7 @@ index 19ffcb2..737cd25 100644
  
      # ***************************************************************
      # 核心修复：process - 异构图构建和特征工程
-@@ -148,7 +155,10 @@ class XuetangXGraph(DGLDataset):
+@@ -148,7 +154,10 @@ class XuetangXGraph(DGLDataset):
              ('course', 'c_contains_o', 'object'): (torch.tensor(dst_c_dgl), torch.tensor(src_o_dgl))
          }
  
@@ -220,10 +228,12 @@ index 19ffcb2..737cd25 100644
          print(f"Heterogeneous Graph built: {self.graph}")
          
          # =================================================
-@@ -158,27 +168,10 @@ class XuetangXGraph(DGLDataset):
+@@ -156,56 +165,20 @@ class XuetangXGraph(DGLDataset):
+         # =================================================
+         print("[4/5] Building Node Features from Log Data...")
          
-         scaler = StandardScaler()
-         
+-        scaler = StandardScaler()
+-        
 -        # (A) Enrollment Features: 行为时间序列 + 注册实例聚合特征
 -        act_matrix = logs.groupby(['enroll_id', 'day']).size().unstack(fill_value=0)
 -        act_matrix = act_matrix.reindex(enroll_ids, fill_value=0)
@@ -245,22 +255,50 @@ index 19ffcb2..737cd25 100644
 -        enroll_agg_feat_scaled = scaler.fit_transform(enroll_agg_feat)
 -        enroll_feat = np.hstack([act_values, enroll_agg_feat_scaled])
 -        
+-        # (B) Course Features: 课程宏观行为聚合特征
+-        course_behavior = logs.groupby('course_id').agg(
+-            total_actions=('enroll_id', 'size'),
+-            num_enrollments=('enroll_id', 'nunique'),
+-            num_users=('username', 'nunique'),
+-        ).reset_index()
+-        
+-        course_behavior['density'] = course_behavior['total_actions'] / course_behavior['num_enrollments']
+-        
+-        courses_feat = courses.merge(course_behavior, on='course_id', how='left').fillna(0)
+-        courses_feat = courses_feat.set_index('course_id').reindex(course_ids)
+-        
+-        crs_feat_cols = [c for c in courses_feat.columns if c not in ['start', 'course_id']]
+-        crs_vec = courses_feat[crs_feat_cols].values
+-        
+-        crs_vec_scaled = scaler.fit_transform(crs_vec)
+-        self.num_course_feats = crs_vec_scaled.shape[1]
+-        
+-        # (C) Object Features: 对象行为分布特征
+-        obj_action_dist = pd.crosstab(logs['object'], logs['action']).reset_index()
+-        obj_action_dist = obj_action_dist.set_index('object').reindex(object_ids).fillna(0)
+-        obj_vec_scaled = scaler.fit_transform(obj_action_dist.values)
+-        
 +        # (A) Enrollment Features
 +        # changed: X59 of x59_s<seed>.npz, set in apply_split() (the original built the same 59
 +        # columns here: 35 daily counts, total actions, unique objects, 22 action counts)
 +
-         # (B) Course Features: 课程宏观行为聚合特征
-         course_behavior = logs.groupby('course_id').agg(
-             total_actions=('enroll_id', 'size'),
-@@ -203,7 +196,6 @@ class XuetangXGraph(DGLDataset):
-         obj_vec_scaled = scaler.fit_transform(obj_action_dist.values)
-         
++        # (B), (C) changed (docs/PLAN_X59_ONLY_BASELINES.md): X59 only. Course and object nodes have no
++        # feature of their own: 0 with the original 4 course columns (total_actions, num_enrollments,
++        # num_users, density) and 22 object columns (count of every action on the object)
++        crs_vec = np.zeros((len(course_ids), 4))
++        self.num_course_feats = crs_vec.shape[1]
++        obj_vec = np.zeros((len(object_ids), logs['action'].nunique()))
++
          # (D) 将特征分配给异构图的节点 (关键修复点)
 -        self.graph.nodes['enrollment'].data['feature'] = torch.tensor(enroll_feat, dtype=torch.float32)
-         self.graph.nodes['object'].data['feature'] = torch.tensor(obj_vec_scaled, dtype=torch.float32)
-         self.graph.nodes['course'].data['feature'] = torch.tensor(crs_vec_scaled, dtype=torch.float32)
+-        self.graph.nodes['object'].data['feature'] = torch.tensor(obj_vec_scaled, dtype=torch.float32)
+-        self.graph.nodes['course'].data['feature'] = torch.tensor(crs_vec_scaled, dtype=torch.float32)
++        self.graph.nodes['object'].data['feature'] = torch.tensor(obj_vec, dtype=torch.float32)
++        self.graph.nodes['course'].data['feature'] = torch.tensor(crs_vec, dtype=torch.float32)
          
-@@ -239,46 +231,25 @@ class XuetangXGraph(DGLDataset):
+         # 标签只针对 'enrollment' 节点
+         truth_sorted = truth_train.set_index('enroll_id').reindex(enroll_ids)
+@@ -239,46 +212,25 @@ class XuetangXGraph(DGLDataset):
          加载真实数据，并执行关键的数据完整性修复 (仅推断必需的 course start time)。
          """
          path = self.raw_dir
@@ -277,12 +315,13 @@ index 19ffcb2..737cd25 100644
 -        if os.path.exists(os.path.join(path, 'test_truth.csv')):
 -            truth_test = pd.read_csv(os.path.join(path, 'test_truth.csv'))
 -            truth_train = pd.concat([truth_train, truth_test], ignore_index=True)
- 
+-
 -        # Enrichment: 从 Logs 补充 username 和 course_id
 -        print("Enriching Truth data with metadata from Logs...")
 -        enroll_meta = logs[['enroll_id', 'username', 'course_id']].drop_duplicates(subset=['enroll_id'])
 -        truth_train = truth_train.merge(enroll_meta, on='enroll_id', how='left')
 -        truth_train = truth_train.dropna(subset=['username', 'course_id'])
++
 +        # changed: events.csv of the main model M (every labeled enrollment, 22 actions, course days
 +        # 0-34, day = course_day); an enrollment with no event has one row with an empty action, so
 +        # it is kept in truth_train (the original dropped it with dropna) but not in logs
@@ -318,7 +357,7 @@ index 19ffcb2..737cd25 100644
  
          return logs, users, courses, truth_train
  
-@@ -287,6 +258,22 @@ class XuetangXGraph(DGLDataset):
+@@ -287,6 +239,22 @@ class XuetangXGraph(DGLDataset):
      # 其他函数
      # ***************************************************************
  

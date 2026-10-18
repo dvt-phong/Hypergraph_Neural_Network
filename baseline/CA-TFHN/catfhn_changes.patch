@@ -334,7 +334,7 @@ index c332ac8..bcc4856 100644
 +with open(os.path.join(input_dir, 'StrongClassmatesGraph.pkl'), 'wb') as f:   # changed: 'wb' was inside os.path.join
      pkl.dump(graph, f)
 diff --git a/src/linkprediction/linkprediction_models.py b/src/linkprediction/linkprediction_models.py
-index 141aa64..6c2f69f 100644
+index 141aa64..e5af634 100644
 --- a/src/linkprediction/linkprediction_models.py
 +++ b/src/linkprediction/linkprediction_models.py
 @@ -1,4 +1,6 @@
@@ -344,7 +344,7 @@ index 141aa64..6c2f69f 100644
  import torch
  import torch.nn.functional as F
  import torch_geometric.transforms as T
-@@ -11,39 +13,43 @@ from torch_geometric.data import HeteroData
+@@ -11,39 +13,40 @@ from torch_geometric.data import HeteroData
  from torch_geometric.nn import to_hetero, SAGEConv
  from torch_geometric.loader import LinkNeighborLoader, NeighborLoader
  from sklearn.metrics import roc_auc_score
@@ -382,19 +382,17 @@ index 141aa64..6c2f69f 100644
 -user_std = StandardScaler()
 -user_feat_std = user_std.fit_transform(user_feat)
 -user_feat = torch.from_numpy(user_feat_std).to(torch.float)
-+# changed (docs/PLAN_X59.md): activity only. The user feature is the mean X59 of the user's
-+# enrollments and the course feature the mean X59 of the course's enrollments (the original used age,
-+# gender, education, cluster, user_enroll_num and course_enroll_num, category with a scaler); X59 is
-+# already z-scored on the train rows, so there is no scaler. groupby(sort=False) keeps the order of
-+# first appearance, as drop_duplicates in the original and in 3_mapping.py.
-+x_columns = ['x%d' % i for i in range(59)]
-+train = pd.read_csv(os.path.join(input_data_dir, 'train_feat_35_final.csv'))[['username', 'course_id'] + x_columns]
-+valid = pd.read_csv(os.path.join(input_data_dir, 'validation_feat_35_final.csv'))[['username', 'course_id'] + x_columns]
-+test = pd.read_csv(os.path.join(input_data_dir, 'test_feat_35_final.csv'))[['username', 'course_id'] + x_columns]
++# changed (docs/PLAN_X59_ONLY_BASELINES.md): X59 only. User and course nodes have no feature of their
++# own: 0 with the authors' 5 / 2 columns (the original used age, gender, education, cluster,
++# user_enroll_num and course_enroll_num, category with a scaler); the EncoderModel still learns an ID
++# embedding per user and per course. unique() keeps the order of first appearance, as drop_duplicates
++# in the original and in 3_mapping.py.
++train = pd.read_csv(os.path.join(input_data_dir, 'train_feat_35_final.csv'))[['username', 'course_id']]
++valid = pd.read_csv(os.path.join(input_data_dir, 'validation_feat_35_final.csv'))[['username', 'course_id']]
++test = pd.read_csv(os.path.join(input_data_dir, 'test_feat_35_final.csv'))[['username', 'course_id']]
 +all_log = pd.concat([train, valid, test])
-+user_feat = all_log.groupby('username', sort=False)[x_columns].mean()       # mean X59 per user
-+unique_user_id = user_feat.index.to_numpy()
-+user_feat = torch.from_numpy(user_feat.to_numpy()).to(torch.float)
++unique_user_id = all_log['username'].unique()
++user_feat = torch.zeros((len(unique_user_id), 5))                           # no user feature
  unique_user_id_df = pd.DataFrame(data={'username': unique_user_id, 'user_graph_id': pd.RangeIndex(len(unique_user_id))})
  username_graph_dict = dict()
  for i in range(len(unique_user_id_df)):
@@ -406,13 +404,12 @@ index 141aa64..6c2f69f 100644
 -course_std = StandardScaler()
 -course_feat_std = course_std.fit_transform(course_feat)
 -course_feat = torch.from_numpy(course_feat_std).to(torch.float)
-+course_feat = all_log.groupby('course_id', sort=False)[x_columns].mean()   # mean X59 per course
-+unique_course_id = course_feat.index.to_numpy()
-+course_feat = torch.from_numpy(course_feat.to_numpy()).to(torch.float)
++unique_course_id = all_log['course_id'].unique()
++course_feat = torch.zeros((len(unique_course_id), 2))                       # no course feature
  unique_course_id_df = pd.DataFrame(
      data={'course_id': unique_course_id, 'course_graph_id': pd.RangeIndex(len(unique_course_id))})
  course_graph_dict = dict()
-@@ -85,12 +91,14 @@ edge_label = train_data['user', 'enroll', 'course'].edge_label
+@@ -85,12 +88,14 @@ edge_label = train_data['user', 'enroll', 'course'].edge_label
  edge_label_index_val = val_data['user', 'enroll', 'course'].edge_label_index
  edge_label_val = val_data['user', 'enroll', 'course'].edge_label
  
@@ -428,17 +425,6 @@ index 141aa64..6c2f69f 100644
      batch_size=256,
      shuffle=True,
  )
-@@ -167,8 +175,8 @@ param_dict = dict({
-     'hidden_features1': 32,
-     'output_features1': 16,
-     'heads': 1,
--    'user_features_len': 5,
--    'course_features_len': 2,
-+    'user_features_len': 59,    # changed: was 5 (user context)
-+    'course_features_len': 59,  # changed: was 2 (course context)
-     'graph_hidden_features': 16
- })
- 
 diff --git a/src/models.py b/src/models.py
 index 4a01cf1..343caa2 100644
 --- a/src/models.py

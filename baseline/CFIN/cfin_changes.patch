@@ -1,8 +1,8 @@
 diff --git a/main.py b/main.py
-index 4369652..849261b 100644
+index 4369652..b7dc119 100644
 --- a/main.py
 +++ b/main.py
-@@ -1,39 +1,60 @@
+@@ -1,152 +1,172 @@
  import os
 -from sklearn.metrics import roc_auc_score
 -import sys
@@ -27,12 +27,29 @@ index 4369652..849261b 100644
 -    act_feats = pkl.load(open('act_feats.pkl', 'rb'))
 -    all_feat = pd.concat([train_feat, test_feat])
 -    all_feat_u_mean = all_feat.groupby('username').mean()[act_feats]
+-    all_feat_u_mean.columns = [x+'#user#mean' for x in all_feat_u_mean.columns]
+-    all_feat_u_max = all_feat.groupby('username').max()[act_feats]
+-    all_feat_u_max.columns = [x+'#user#max' for x in all_feat_u_max.columns]
+-
+-    all_feat = pd.merge(all_feat, all_feat_u_mean, right_index=True, left_on='username')
+-    all_feat = pd.merge(all_feat, all_feat_u_max, right_index=True, left_on='username')
+-
+-    all_feat_c_mean = all_feat.groupby('course_id').mean()[act_feats]
+-    all_feat_c_mean.columns = [x+'#course#mean' for x in all_feat_c_mean.columns] 
+-
+-    all_feat_c_max = all_feat.groupby('course_id').max()[act_feats]
+-    all_feat_c_max.columns = [x+'#course#max' for x in all_feat_c_max.columns]
+-
+-    all_feat = pd.merge(all_feat, all_feat_c_mean, right_index=True, left_on='course_id')
+-    all_feat = pd.merge(all_feat, all_feat_c_max, right_index=True, left_on='course_id')
+-    
 +# Changed from the original (protocol of docs/PLAN_X59.md):
 +# - input: X59 of the main model M (x59_s<seed>.npz, log activity only); the user context (age,
 +#   gender, education, cluster, user_enroll_num) and the course context (category,
 +#   course_enroll_num) are not used, so the model has no context branch (model.py);
-+#   feat_augment is kept: every X59 column also gets its mean / max over the enrollments of the
-+#   same user and of the same course;
++#   feat_augment (mean / max of every column over the same user and the same course) is replaced by
++#   feat_x59_only: the 4 user / course fields of every group are 0, so the model sees X59 alone
++#   (docs/PLAN_X59_ONLY_BASELINES.md);
 +# - three splits (train / validation / test of the seed) instead of train / test; --seed only picks
 +#   the split: the model keeps the original random_seed 12345 and numpy is not seeded (as the original);
 +# - the rest of the model is the original, including its batch norm (built outside tf.cond, so every
@@ -55,37 +72,19 @@ index 4369652..849261b 100644
 +    "test_auc", "test_precision", "test_recall", "test_f1", "minutes",
 +)
 +
-+def feat_augment(train_feat, valid_feat, test_feat):
-+    all_feat = pd.concat([train_feat, valid_feat, test_feat])
-+    all_feat_u_mean = all_feat.groupby('username')[act_feat_basic].mean()
-     all_feat_u_mean.columns = [x+'#user#mean' for x in all_feat_u_mean.columns]
--    all_feat_u_max = all_feat.groupby('username').max()[act_feats]
-+    all_feat_u_max = all_feat.groupby('username')[act_feat_basic].max()
-     all_feat_u_max.columns = [x+'#user#max' for x in all_feat_u_max.columns]
- 
-     all_feat = pd.merge(all_feat, all_feat_u_mean, right_index=True, left_on='username')
-     all_feat = pd.merge(all_feat, all_feat_u_max, right_index=True, left_on='username')
- 
--    all_feat_c_mean = all_feat.groupby('course_id').mean()[act_feats]
--    all_feat_c_mean.columns = [x+'#course#mean' for x in all_feat_c_mean.columns] 
-+    all_feat_c_mean = all_feat.groupby('course_id')[act_feat_basic].mean()
-+    all_feat_c_mean.columns = [x+'#course#mean' for x in all_feat_c_mean.columns]
- 
--    all_feat_c_max = all_feat.groupby('course_id').max()[act_feats]
-+    all_feat_c_max = all_feat.groupby('course_id')[act_feat_basic].max()
-     all_feat_c_max.columns = [x+'#course#max' for x in all_feat_c_max.columns]
- 
-     all_feat = pd.merge(all_feat, all_feat_c_mean, right_index=True, left_on='course_id')
-     all_feat = pd.merge(all_feat, all_feat_c_max, right_index=True, left_on='course_id')
--    
-+
++# changed: X59 only. model.py reads every feature as a group of 5 fields (conv kernel 5, stride 5):
++# [x_j, user mean, user max, course mean, course max] in the original feat_augment; here the 4 user /
++# course fields are 0, so every group is [x_j, 0, 0, 0, 0] and the model sees X59 alone.
++def feat_x59_only(train_feat, valid_feat, test_feat):
      act_feat = []
++    zero_feat = []
      for f in act_feat_basic:
          act_feat.append(f)
-@@ -42,111 +63,121 @@ def feat_augment(train_feat, test_feat):
-         act_feat.append(f+'#course#mean')
-         act_feat.append(f+'#course#max')
- 
+-        act_feat.append(f+'#user#mean')
+-        act_feat.append(f+'#user#max')
+-        act_feat.append(f+'#course#mean')
+-        act_feat.append(f+'#course#max')
+-
 -    return all_feat.loc[train_feat.index], all_feat.loc[test_feat.index], act_feat
 -
 -def dataparse(train, test, num_feat, cat_feat):
@@ -153,26 +152,14 @@ index 4369652..849261b 100644
 -    
 -    y_train = np.asarray(dfTrain_a['truth'], dtype=int)
 -    y_test = np.asarray(dfTest_a['truth'], dtype=int)
--    model = CFIN(**params)
--   
--    # generate valid set
--    train_num = len(y_train)
--    indices = np.arange(train_num)
--    np.random.shuffle(indices)
--    split_ = int(0.8*train_num)
--    ui_train_, ui_valid = ui_train[indices][:split_],ui_train[indices[split_:]]
--    uv_train_, uv_valid = uv_train[indices][:split_],uv_train[indices[split_:]]
--    ci_train_, ci_valid = ci_train[indices][:split_],ci_train[indices[split_:]]
--    cv_train_, cv_valid = cv_train[indices][:split_],cv_train[indices[split_:]]
--    ai_train_, ai_valid = ai_train[indices][:split_],ai_train[indices[split_:]]
--    av_train_, av_valid = av_train[indices[:split_]],av_train[indices[split_:]]
--    y_train_, y_valid = y_train[indices[:split_]], y_train[indices[split_:]] 
--
--    # model selection
--    """
--    best_epoch = model.fit(ui_train_, uv_train_, ci_train_, cv_train_, ai_train_, av_train_, y_train_, ui_valid, uv_valid, ci_valid, cv_valid, ai_valid, av_valid, y_valid)
--    params['epoch'] = best_epoch
-+    return all_feat.loc[train_feat.index], all_feat.loc[valid_feat.index], all_feat.loc[test_feat.index], act_feat
++        for suffix in ['#user#mean', '#user#max', '#course#mean', '#course#max']:
++            act_feat.append(f + suffix)
++            zero_feat.append(f + suffix)
++    frames = []
++    for df in [train_feat, valid_feat, test_feat]:
++        zeros = pd.DataFrame(0.0, index=df.index, columns=zero_feat)
++        frames.append(pd.concat([df, zeros], axis=1))
++    return frames[0], frames[1], frames[2], act_feat
 +
 +
 +# X59, truth, username and course_id of train / validation / test of one seed (index = enroll_id).
@@ -244,6 +231,25 @@ index 4369652..849261b 100644
 +    params["a_feat_size"] = len(act_feat)
 +    params["a_field_size"] = len(act_feat)
      model = CFIN(**params)
+-   
+-    # generate valid set
+-    train_num = len(y_train)
+-    indices = np.arange(train_num)
+-    np.random.shuffle(indices)
+-    split_ = int(0.8*train_num)
+-    ui_train_, ui_valid = ui_train[indices][:split_],ui_train[indices[split_:]]
+-    uv_train_, uv_valid = uv_train[indices][:split_],uv_train[indices[split_:]]
+-    ci_train_, ci_valid = ci_train[indices][:split_],ci_train[indices[split_:]]
+-    cv_train_, cv_valid = cv_train[indices][:split_],cv_train[indices[split_:]]
+-    ai_train_, ai_valid = ai_train[indices][:split_],ai_train[indices[split_:]]
+-    av_train_, av_valid = av_train[indices[:split_]],av_train[indices[split_:]]
+-    y_train_, y_valid = y_train[indices[:split_]], y_train[indices[split_:]] 
+-
+-    # model selection
+-    """
+-    best_epoch = model.fit(ui_train_, uv_train_, ci_train_, cv_train_, ai_train_, av_train_, y_train_, ui_valid, uv_valid, ci_valid, cv_valid, ai_valid, av_valid, y_valid)
+-    params['epoch'] = best_epoch
+-    model = CFIN(**params)
 -    """ 
 -    # prediction results on test set
 -    
@@ -286,7 +292,7 @@ index 4369652..849261b 100644
 -dfTrain_u, dfTest_u, dfTrain_c, dfTest_c, dfTrain_a, dfTest_a = load_data()
 -dfTrain_a, dfTest_a, act_feat = feat_augment(dfTrain_a, dfTest_a)
 +frames = load_data(arguments.x_dir, arguments.seed, arguments.smoke_rows)
-+dfTrain_a, dfValid_a, dfTest_a, act_feat = feat_augment(frames[0], frames[1], frames[2])
++dfTrain_a, dfValid_a, dfTest_a, act_feat = feat_x59_only(frames[0], frames[1], frames[2])
  
  params = {
      "embedding_size": 32,
@@ -299,7 +305,7 @@ index 4369652..849261b 100644
      "activation": tf.nn.relu,
      "epoch": 27,
      "batch_size": 32,
-@@ -161,5 +192,4 @@ params = {
+@@ -161,5 +181,4 @@ params = {
      "random_seed": 12345
  }
  
