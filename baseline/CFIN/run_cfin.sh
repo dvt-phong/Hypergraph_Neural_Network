@@ -8,12 +8,18 @@
 #   bash baseline/CFIN/run_cfin.sh setup      # clone, reset to the pinned commit, apply the patch (rerun after git pull)
 #   bash baseline/CFIN/run_cfin.sh smoke      # seed 1, 1 epoch on the first 4,000 rows of every split
 #   bash baseline/CFIN/run_cfin.sh full       # 5 seeds -> outputs/baselines/CFIN/
+# OULAD (X55 of baseline/new_dataset/OULAD): DATASET=oulad bash baseline/CFIN/run_cfin.sh smoke|full
+#   -> outputs/oulad/baselines/CFIN/
 # Windows (local .venv): PY=baseline/CFIN/.venv/Scripts/python.exe bash baseline/CFIN/run_cfin.sh ...
 set -eo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-X_DIR="$ROOT/data/processed/simple"
-OUT="$ROOT/outputs/baselines/CFIN"
+DATASET="${DATASET:-xuetangx}"                       # xuetangx or oulad (docs/PLAN_OULAD_M_BASELINE.md)
+if [ "$DATASET" = "oulad" ]; then
+    X_DIR="$ROOT/data/processed/oulad"; X_NAME=x55; OUT="$ROOT/outputs/oulad/baselines/CFIN"
+else
+    X_DIR="$ROOT/data/processed/simple"; X_NAME=x59; OUT="$ROOT/outputs/baselines/CFIN"
+fi
 SEEDS="${SEEDS:-1 11 111 1111 11111}"
 PY="${PY:-python}"
 case "$PY" in */*) PY="$(cd "$(dirname "$PY")" && pwd)/$(basename "$PY")";; esac   # path -> absolute (we cd below)
@@ -29,17 +35,17 @@ if [ "$STAGE" = "setup" ] || [ ! -d "$HERE/dropout_prediction" ]; then
     [ "$STAGE" = "setup" ] && exit 0
 fi
 cd "$HERE/dropout_prediction"
-[ -f "$X_DIR/x59_s1.npz" ] || { echo "Missing $X_DIR/x59_s1.npz; run src/2_preprocess.py and src/3_features.py first"; exit 1; }
+[ -f "$X_DIR/${X_NAME}_s1.npz" ] || { echo "Missing $X_DIR/${X_NAME}_s1.npz; run 2_preprocess.py and 3_features.py first"; exit 1; }
 
 case "$STAGE" in
 smoke)
     mkdir -p my_model "$OUT/smoke"
-    "$PY" main.py --seed 1 --x-dir "$X_DIR" --max-epoch 1 --smoke-rows 4000 --out-dir "$OUT/smoke" 2>&1 | tee "$OUT/smoke/main.log"
+    "$PY" main.py --seed 1 --x-dir "$X_DIR" --x-name "$X_NAME" --max-epoch 1 --smoke-rows 4000 --out-dir "$OUT/smoke" 2>&1 | tee "$OUT/smoke/main.log"
     ;;
 full)
     mkdir -p my_model "$OUT"
     for seed in $SEEDS; do
-        "$PY" main.py --seed "$seed" --x-dir "$X_DIR" --out-dir "$OUT" 2>&1 | tee "$OUT/main_seed$seed.log"
+        "$PY" main.py --seed "$seed" --x-dir "$X_DIR" --x-name "$X_NAME" --out-dir "$OUT" 2>&1 | tee "$OUT/main_seed$seed.log"
     done
     ;;
 *)

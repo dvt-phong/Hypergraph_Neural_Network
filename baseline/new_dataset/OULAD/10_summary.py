@@ -1,4 +1,4 @@
-# 10. Summarize outputs/oulad/summary.csv, outputs/oulad/ket_qua.xlsx
+# 10. Summarize outputs/summary.csv, outputs/ket_qua.xlsx
 
 import sys
 from importlib import import_module
@@ -48,7 +48,6 @@ def summarize():
                 row[name] = "✓"
             else:
                 row[name] = "✗"
-        row["features"] = group["features"].iloc[-1]
         row["hgnn_layers"] = group["hgnn_layers"].iloc[-1]
         if bool(group["use_mlp"].iloc[-1]):
             row["mlp"] = "✓"

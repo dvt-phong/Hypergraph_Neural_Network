@@ -9,19 +9,24 @@
 #   bash baseline/MST-GCN/run_mstgcn.sh features   # rebuild the graph cache (it does not depend on the seed)
 #   bash baseline/MST-GCN/run_mstgcn.sh smoke      # seed 1, 1 epoch on a 1% subset (own cache)
 #   bash baseline/MST-GCN/run_mstgcn.sh full       # 5 seeds -> outputs/baselines/MST-GCN/
+# OULAD (events.csv and X55 of baseline/new_dataset/OULAD): DATASET=oulad bash baseline/MST-GCN/run_mstgcn.sh
+#   features|smoke|full -> code/cache/oulad/, outputs/oulad/baselines/MST-GCN/
 set -eo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-X_DIR="$ROOT/data/processed/simple"
-OUT="$ROOT/outputs/baselines/MST-GCN"
 CODE="$HERE/code"
-CACHE="$CODE/cache"
+DATASET="${DATASET:-xuetangx}"                       # xuetangx or oulad (docs/PLAN_OULAD_M_BASELINE.md)
+if [ "$DATASET" = "oulad" ]; then
+    X_DIR="$ROOT/data/processed/oulad"; X_NAME=x55; OUT="$ROOT/outputs/oulad/baselines/MST-GCN"; CACHE="$CODE/cache/oulad"
+else
+    X_DIR="$ROOT/data/processed/simple"; X_NAME=x59; OUT="$ROOT/outputs/baselines/MST-GCN"; CACHE="$CODE/cache"
+fi
 SEEDS="${SEEDS:-1 11 111 1111 11111}"
 PY="${PY:-python}"
 case "$PY" in */*) PY="$(cd "$(dirname "$PY")" && pwd)/$(basename "$PY")";; esac   # path -> absolute (we cd below)
 STAGE="${1:-full}"
 # Original defaults (hidden 128, 2 layers, lr 1e-4, batch 256, dropout 0.3, 8 epochs); last epoch scored.
-ARGS=(--dataset xuetangx --raw_dir "$X_DIR" --x_dir "$X_DIR")
+ARGS=(--dataset xuetangx --raw_dir "$X_DIR" --x_dir "$X_DIR" --x_name "$X_NAME")   # code path of src_xuet, also for OULAD
 
 # 1. Original code at the pinned commit, plus our changes. setup always resets the clone to the
 #    commit and applies the current patch, so a clone left from an older patch is never used.
@@ -32,7 +37,7 @@ if [ "$STAGE" = "setup" ] || [ ! -d "$CODE" ]; then
     [ "$STAGE" = "setup" ] && exit 0
 fi
 cd "$CODE/MST-GCN/src_xuet"
-[ -f "$X_DIR/x59_s1.npz" ] || { echo "Missing $X_DIR/x59_s1.npz; run src/2_preprocess.py and src/3_features.py first"; exit 1; }
+[ -f "$X_DIR/${X_NAME}_s1.npz" ] || { echo "Missing $X_DIR/${X_NAME}_s1.npz; run 2_preprocess.py and 3_features.py first"; exit 1; }
 
 case "$STAGE" in
 features)
@@ -40,7 +45,7 @@ features)
     mkdir -p "$CACHE/full" "$OUT"
     "$PY" -c "
 from xuetangx_graph_builder import XuetangXGraph
-XuetangXGraph(raw_dir='$X_DIR', save_dir='$CACHE/full', split_path='$X_DIR/x59_s1.npz')
+XuetangXGraph(raw_dir='$X_DIR', save_dir='$CACHE/full', split_path='$X_DIR/${X_NAME}_s1.npz')
 " 2>&1 | tee "$CACHE/full/features.log"
     ;;
 smoke)

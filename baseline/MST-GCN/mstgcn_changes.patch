@@ -1,5 +1,5 @@
 diff --git a/MST-GCN/src_xuet/main.py b/MST-GCN/src_xuet/main.py
-index ac9aad7..b0597cd 100644
+index ac9aad7..277a130 100644
 --- a/MST-GCN/src_xuet/main.py
 +++ b/MST-GCN/src_xuet/main.py
 @@ -60,9 +60,11 @@ def main(args):
@@ -23,11 +23,11 @@ index ac9aad7..b0597cd 100644
              subset_ratio=args.subset_ratio,
 -            force_reload=False  # 如果修改了构图逻辑，请改为 True 或手动删除 cache 文件夹
 +            force_reload=False,  # 如果修改了构图逻辑，请改为 True 或手动删除 cache 文件夹
-+            split_path=os.path.join(args.x_dir, f"x59_s{args.seed}.npz")
++            split_path=os.path.join(args.x_dir, f"{args.x_name}_s{args.seed}.npz")
          )
          
      else:
-@@ -113,8 +116,13 @@ if __name__ == "__main__":
+@@ -113,8 +116,14 @@ if __name__ == "__main__":
      # ==========================================
      # 2. [关键修改] 随机种子 (用于 T-test)
      # ==========================================
@@ -38,6 +38,7 @@ index ac9aad7..b0597cd 100644
 +    parser.add_argument("--raw_dir", type=str, default='data/processed/simple', help="folder of events.csv")
 +    parser.add_argument("--cache_dir", type=str, default='data/xuetangx/cache')
 +    parser.add_argument("--x_dir", type=str, default='data/processed/simple', help="folder of x59_s<seed>.npz")
++    parser.add_argument("--x_name", type=str, default='x59', help="x59 (XuetangX) or x55 (OULAD)")
 +    parser.add_argument("--out_dir", type=str, default='outputs')
  
      # ==========================================

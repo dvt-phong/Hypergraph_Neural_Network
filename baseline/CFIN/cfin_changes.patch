@@ -1,8 +1,8 @@
 diff --git a/main.py b/main.py
-index 4369652..b7dc119 100644
+index 4369652..ae97b0f 100644
 --- a/main.py
 +++ b/main.py
-@@ -1,152 +1,172 @@
+@@ -1,152 +1,174 @@
  import os
 -from sklearn.metrics import roc_auc_score
 -import sys
@@ -44,7 +44,8 @@ index 4369652..b7dc119 100644
 -    all_feat = pd.merge(all_feat, all_feat_c_max, right_index=True, left_on='course_id')
 -    
 +# Changed from the original (protocol of docs/PLAN_X59.md):
-+# - input: X59 of the main model M (x59_s<seed>.npz, log activity only); the user context (age,
++# - input: X59 of the main model M (x59_s<seed>.npz, log activity only; OULAD: X55, --x-name x55,
++#   docs/PLAN_OULAD_M_BASELINE.md); the user context (age,
 +#   gender, education, cluster, user_enroll_num) and the course context (category,
 +#   course_enroll_num) are not used, so the model has no context branch (model.py);
 +#   feat_augment (mean / max of every column over the same user and the same course) is replaced by
@@ -62,8 +63,6 @@ index 4369652..b7dc119 100644
 +
 +os.environ.setdefault('CUDA_VISIBLE_DEVICES', '2,4')   # original forces '2,4'; an outside value now wins
 +SPLITS = ['train', 'validation', 'test']
-+FEATURE_COUNT = 59
-+act_feat_basic = ['x%d' % i for i in range(FEATURE_COUNT)]
 +THRESHOLD = 0.5                              # ŷ = 1[p ≥ 0.5], as the original evaluate() and M
 +METRICS = ("auc", "precision", "recall", "f1")
 +RESULT_COLUMNS = (
@@ -75,7 +74,7 @@ index 4369652..b7dc119 100644
 +# changed: X59 only. model.py reads every feature as a group of 5 fields (conv kernel 5, stride 5):
 +# [x_j, user mean, user max, course mean, course max] in the original feat_augment; here the 4 user /
 +# course fields are 0, so every group is [x_j, 0, 0, 0, 0] and the model sees X59 alone.
-+def feat_x59_only(train_feat, valid_feat, test_feat):
++def feat_x59_only(train_feat, valid_feat, test_feat, act_feat_basic):
      act_feat = []
 +    zero_feat = []
      for f in act_feat_basic:
@@ -162,9 +161,11 @@ index 4369652..b7dc119 100644
 +    return frames[0], frames[1], frames[2], act_feat
 +
 +
-+# X59, truth, username and course_id of train / validation / test of one seed (index = enroll_id).
-+def load_data(x_dir, seed, smoke_rows=0):
-+    data = np.load(os.path.join(x_dir, 'x59_s%d.npz' % seed))
++# X59, truth, username and course_id of train / validation / test of one seed (index = enroll_id),
++# and the column names x0, x1, ... (59 for XuetangX, 55 for OULAD).
++def load_data(x_dir, x_name, seed, smoke_rows=0):
++    data = np.load(os.path.join(x_dir, '%s_s%d.npz' % (x_name, seed)))
++    act_feat_basic = ['x%d' % i for i in range(data['X'].shape[1])]
 +    frames = []
 +    for split in SPLITS:
 +        rows = data['split'] == split
@@ -175,7 +176,7 @@ index 4369652..b7dc119 100644
 +        if smoke_rows > 0:
 +            df = df.iloc[:smoke_rows]
 +        frames.append(df)
-+    return frames
++    return frames, act_feat_basic
 +
 +
 +# AUC, precision, recall and F1 of the dropout class (label 1) at THRESHOLD, as baseline/ML.
@@ -282,6 +283,7 @@ index 4369652..b7dc119 100644
 +parser = argparse.ArgumentParser(description="CFIN (activity only) on X59 of one seed, 27 epochs as the original.")
 +parser.add_argument('--seed', type=int, default=1, help='split seed (x59_s<seed>.npz)')
 +parser.add_argument('--x-dir', default=os.path.join('..', '..', '..', 'data', 'processed', 'simple'))
++parser.add_argument('--x-name', default='x59', help='x59 (XuetangX) or x55 (OULAD)')
 +parser.add_argument('--max-epoch', type=int, default=None, help='epochs (default: params["epoch"] = 27 of the original)')
 +parser.add_argument('--smoke-rows', type=int, default=0, help='use only the first N rows of every split')
 +parser.add_argument('--out-dir', default=os.path.join('..', '..', '..', 'outputs', 'baselines', 'CFIN'))
@@ -291,8 +293,8 @@ index 4369652..b7dc119 100644
  # load data
 -dfTrain_u, dfTest_u, dfTrain_c, dfTest_c, dfTrain_a, dfTest_a = load_data()
 -dfTrain_a, dfTest_a, act_feat = feat_augment(dfTrain_a, dfTest_a)
-+frames = load_data(arguments.x_dir, arguments.seed, arguments.smoke_rows)
-+dfTrain_a, dfValid_a, dfTest_a, act_feat = feat_x59_only(frames[0], frames[1], frames[2])
++frames, act_feat_basic = load_data(arguments.x_dir, arguments.x_name, arguments.seed, arguments.smoke_rows)
++dfTrain_a, dfValid_a, dfTest_a, act_feat = feat_x59_only(frames[0], frames[1], frames[2], act_feat_basic)
  
  params = {
      "embedding_size": 32,
@@ -305,7 +307,7 @@ index 4369652..b7dc119 100644
      "activation": tf.nn.relu,
      "epoch": 27,
      "batch_size": 32,
-@@ -161,5 +181,4 @@ params = {
+@@ -161,5 +183,4 @@ params = {
      "random_seed": 12345
  }
  

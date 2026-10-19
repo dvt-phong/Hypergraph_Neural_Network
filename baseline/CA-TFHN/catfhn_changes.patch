@@ -1,8 +1,8 @@
 diff --git a/src/dataprocess/1_process_user_contextual_features.py b/src/dataprocess/1_process_user_contextual_features.py
-index 7e6916d..143d810 100644
+index 7e6916d..23dcc74 100644
 --- a/src/dataprocess/1_process_user_contextual_features.py
 +++ b/src/dataprocess/1_process_user_contextual_features.py
-@@ -1,87 +1,27 @@
+@@ -1,87 +1,29 @@
 -import math
 +import argparse
  import os
@@ -96,6 +96,7 @@ index 7e6916d..143d810 100644
 +# user / course context (age, gender, education, cluster, enroll numbers, category) here; now every
 +# enrollment gets X59 of the main model M (x59_s<seed>.npz, folder CATFHN_X): train / validation /
 +# test of the seed, username, course_id, truth and the 59 columns x0..x58. Outputs go to s<seed>/.
++# OULAD (docs/PLAN_OULAD_M_BASELINE.md): CATFHN_X_NAME=x55 reads x55_s<seed>.npz (55 columns x0..x54).
 +parser = argparse.ArgumentParser()
 +parser.add_argument('--split-seed', type=int, required=True)
 +arguments = parser.parse_args()
@@ -103,7 +104,8 @@ index 7e6916d..143d810 100644
 +output_data_dir = os.path.join(os.environ.get('CATFHN_DATA', '../../datastore'), 's%d' % arguments.split_seed)
 +os.makedirs(output_data_dir, exist_ok=True)
 +
-+data = np.load(os.path.join(x_dir, 'x59_s%d.npz' % arguments.split_seed))
++x_name = os.environ.get('CATFHN_X_NAME', 'x59')
++data = np.load(os.path.join(x_dir, '%s_s%d.npz' % (x_name, arguments.split_seed)))
 +x_columns = ['x%d' % i for i in range(data['X'].shape[1])]
 +for split in ['train', 'validation', 'test']:
 +    rows = data['split'] == split
@@ -242,7 +244,7 @@ index afc8da7..f3adbdd 100644
      pkl.dump(Sim_Graph, f)
 \ No newline at end of file
 diff --git a/src/graphgeneration/1_graph_addition_information.py b/src/graphgeneration/1_graph_addition_information.py
-index c332ac8..bcc4856 100644
+index c332ac8..750e768 100644
 --- a/src/graphgeneration/1_graph_addition_information.py
 +++ b/src/graphgeneration/1_graph_addition_information.py
 @@ -1,3 +1,4 @@
@@ -276,7 +278,7 @@ index c332ac8..bcc4856 100644
  
  mapping_graph_log = pd.read_csv(os.path.join(input_dir, 'graph_mapping.csv'))
  
-@@ -24,46 +29,18 @@ all_log = all_log.sort_values('record_graph_id')
+@@ -24,46 +29,20 @@ all_log = all_log.sort_values('record_graph_id')
  del all_log['username_y']
  del all_log['course_id_y']
  
@@ -309,8 +311,10 @@ index c332ac8..bcc4856 100644
 +# org_context: X59 (59 columns) instead of the user context (age, gender, education, cluster,
 +# user_enroll_num) and the mean course context (course_enroll_num, category) of the original (7).
 +# seq_feat: the 35 daily event counts of X59 as 35 days x 1 activity instead of 35 days x 22 action
-+# counts (model: activity_num = 1).
-+x_columns = ['x%d' % i for i in range(59)]
++# counts (model: activity_num = 1). OULAD: X55 (55 columns), the first 35 are also the daily counts.
++x_columns = []
++while 'x%d' % len(x_columns) in all_log.columns:                    # x0, x1, ... (59 or 55 columns)
++    x_columns.append('x%d' % len(x_columns))
 +graph.org_context = torch.from_numpy(all_log[x_columns].values).to(torch.float)
  sta_day = 35
 -video_action = ['seek_video', 'play_video', 'pause_video', 'stop_video', 'load_video']
@@ -439,7 +443,7 @@ index 4a01cf1..343caa2 100644
              else:
                  lstm_input = torch.cat((lstm_input, x), dim=1)
 diff --git a/train.py b/train.py
-index 768b97d..1dcd831 100644
+index 768b97d..aaeb40a 100644
 --- a/train.py
 +++ b/train.py
 @@ -1,6 +1,9 @@
@@ -452,7 +456,7 @@ index 768b97d..1dcd831 100644
  import torch
  import numpy as np
  
-@@ -8,26 +11,60 @@ from torch import optim
+@@ -8,26 +11,61 @@ from torch import optim
  from src.models import *
  from torch_geometric.loader import NeighborLoader
  from tqdm import tqdm
@@ -460,7 +464,8 @@ index 768b97d..1dcd831 100644
 +from sklearn.metrics import roc_auc_score, precision_recall_fscore_support
 +
 +# Changed from the original (protocol of docs/PLAN_X59.md, the model is unchanged):
-+# - activity only: the input of every enrollment is X59 of the main model M; org_context = X59 (59
++# - activity only: the input of every enrollment is X59 of the main model M (OULAD: X55, so
++#   org_context_feat_len = 55, read from the graph); org_context = X59 (59
 +#   columns, was 7 context columns), seq_feat = the 35 daily event counts of X59 (activity_num 1,
 +#   was 22 action counts), so lstm_input_features = (7 + 1)·(1 + 1) = 16 (was (7 + 1)·(22 + 1) = 184);
 +# - the graph of one seed (datastore/s<seed>/StrongClassmatesGraph.pkl) with train / val / test
@@ -517,7 +522,7 @@ index 768b97d..1dcd831 100644
  graph = graph.to(device)
  
  # create graph loader
-@@ -39,24 +76,31 @@ train_loader = NeighborLoader(
+@@ -39,24 +77,31 @@ train_loader = NeighborLoader(
      shuffle=True
  )
  
@@ -550,7 +555,7 @@ index 768b97d..1dcd831 100644
 +    'activity_num': 1, 'sta_day': 35, 'week_count': 5, 'select_count': 5,                # changed: was 22 actions
      # Context-Embedding
 -    'org_context_feat_len': 7, 'enhanced_context_feat_len': 32, 'context_each_embed': 16, 'context_all_len': 16,
-+    'org_context_feat_len': 59, 'enhanced_context_feat_len': 32, 'context_each_embed': 16, 'context_all_len': 16,   # changed: was 7
++    'org_context_feat_len': graph.org_context.shape[1], 'enhanced_context_feat_len': 32, 'context_each_embed': 16, 'context_all_len': 16,   # changed: was 7
      # GraphSage
      'input_features': 16, 'hidden_features': 32, 'output_features': 16,
      # LSTM of first block in TFHN
@@ -559,7 +564,7 @@ index 768b97d..1dcd831 100644
      # Self-Attention of first block in TFHN
      'num_attention_heads': 1, 'attention_features': 64,
      # LSTM2 of second block in TFHN
-@@ -68,17 +112,71 @@ param_dict = dict({
+@@ -68,17 +113,71 @@ param_dict = dict({
      # DNN
      'dnn_input_f1': 16, 'dnn_hidden_f1': 16, 'dnn_hidden_f2': 8, 'dnn_hidden_f3': 4, 'dnn_output': 1
  })
@@ -639,7 +644,7 @@ index 768b97d..1dcd831 100644
          optimizer.zero_grad()
          pred = model(sub_graph)
          batch_size = sub_graph['batch_size']
-@@ -88,31 +186,44 @@ for epoch in range(epoch_num):
+@@ -88,31 +187,44 @@ for epoch in range(epoch_num):
          optimizer.step()
          total_loss += float(loss) * pred.numel()
          total_examples += pred.numel()

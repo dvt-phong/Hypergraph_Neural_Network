@@ -2,6 +2,7 @@
 #
 #   python baseline/summary.py                    # fixed threshold 0.5, as src/9_train.py of M (default)
 #   python baseline/summary.py --threshold val    # threshold chosen on validation (max F1)
+#   python baseline/summary.py --results-dir outputs/oulad/baselines --x-dir data/processed/oulad --x-name x55   # OULAD
 #
 # Every metric is computed from the saved predictions outputs/baselines/<model>/seed<s>_{validation,
 # test}.csv (split, enroll_id, label, prob), so no model is rerun:
@@ -21,7 +22,7 @@ import pandas as pd
 from sklearn.metrics import precision_recall_curve, precision_recall_fscore_support, roc_auc_score
 
 ROOT = Path(__file__).resolve().parents[1]
-MODELS = ("LR", "SVM", "CFIN", "CA-TFHN", "MST-GCN")
+MODELS = ("LR", "SVM", "XGBoost", "CFIN", "CA-TFHN", "MST-GCN")
 SEEDS = (1, 11, 111, 1111, 11111)
 METRICS = ("auc", "precision", "recall", "f1")
 
@@ -63,6 +64,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Mean ± std of the baselines over the seeds.")
     parser.add_argument("--results-dir", type=Path, default=ROOT / "outputs" / "baselines")
     parser.add_argument("--x-dir", type=Path, default=ROOT / "data" / "processed" / "simple")
+    parser.add_argument("--x-name", default="x59", help="x59 (XuetangX) or x55 (OULAD)")
     parser.add_argument("--threshold", default="0.5",
                         help="threshold for precision/recall/F1: a number (default 0.5, as M) or 'val' "
                              "(best validation F1 per seed)")
@@ -87,7 +89,7 @@ if __name__ == "__main__":
                 continue
             test = pd.read_csv(test_path)
             validation = pd.read_csv(validation_path)
-            for problem in check_test_file(test, arguments.x_dir / f"x59_s{seed}.npz"):
+            for problem in check_test_file(test, arguments.x_dir / f"{arguments.x_name}_s{seed}.npz"):
                 problems.append(f"seed {seed}: {problem}")
             if arguments.threshold == "val":
                 threshold = best_f1_threshold(validation["label"].to_numpy(), validation["prob"].to_numpy())

@@ -1,6 +1,7 @@
 # Baseline - Logistic Regression
 #
 #   python baseline/ML/LR.py
+#   python baseline/ML/LR.py --x-dir data/processed/oulad --x-name x55 --output-dir outputs/oulad/baselines/LR
 #
 # Input: X59 of the main model M (data/processed/simple/x59_s{seed}.npz, written by
 # src/3_features.py): same features and same train / validation / test as M for every seed.
@@ -40,8 +41,8 @@ def log(scope, message):
 
 
 # X, label and enroll_id of train / validation / test of one seed
-def load_splits(x_dir, seed):
-    data = np.load(Path(x_dir) / f"x59_s{seed}.npz")
+def load_splits(x_dir, x_name, seed):
+    data = np.load(Path(x_dir) / f"{x_name}_s{seed}.npz")
     splits = {}
     for name in SPLITS:
         rows = data["split"] == name
@@ -163,14 +164,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LR trained by SGD on X59, alpha and epoch on validation AUC.")
     parser.add_argument("--seeds", type=int, nargs="+", default=list(SEEDS))
     parser.add_argument("--x-dir", default=X_DIR, help="folder with x59_s{seed}.npz")
+    parser.add_argument("--x-name", default="x59", help="x59 (XuetangX) or x55 (OULAD)")
     parser.add_argument("--output-dir", default=OUTPUT_DIR, help="folder for results.csv and predictions")
     arguments = parser.parse_args()
 
     for seed in arguments.seeds:
-        splits = load_splits(arguments.x_dir, seed)
+        splits = load_splits(arguments.x_dir, arguments.x_name, seed)
         counts = []
         for name in SPLITS:
             counts.append(f"{name}={len(splits[name]['y']):,}")
-        log("setup", f"seed {seed}: X59, " + ", ".join(counts))
+        log("setup", f"seed {seed}: {arguments.x_name}, " + ", ".join(counts))
         run_one_seed(seed, splits, Path(arguments.output_dir))
     log("done", f"results and predictions in {arguments.output_dir}")
