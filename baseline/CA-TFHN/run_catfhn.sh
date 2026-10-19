@@ -11,6 +11,8 @@
 #   bash baseline/CA-TFHN/run_catfhn.sh full       # 5 seeds -> outputs/baselines/CA-TFHN/
 # OULAD (X55 of baseline/new_dataset/OULAD): DATASET=oulad bash baseline/CA-TFHN/run_catfhn.sh features|smoke|full
 #   -> code/datastore/oulad/s<seed>/, outputs/oulad/baselines/CA-TFHN/
+#   OULAD trains 103 epochs instead of 15: the same number of updates as the authors' 15 epochs on
+#   XuetangX (15 x 529 batches / 77 batches = 103; docs/PLAN_CATFHN_OULAD_v2.md).
 set -eo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
@@ -18,8 +20,10 @@ CODE="$HERE/code"
 DATASET="${DATASET:-xuetangx}"                       # xuetangx or oulad (docs/PLAN_OULAD_M_BASELINE.md)
 if [ "$DATASET" = "oulad" ]; then
     X_DIR="$ROOT/data/processed/oulad"; X_NAME=x55; OUT="$ROOT/outputs/oulad/baselines/CA-TFHN"; DATA="$CODE/datastore/oulad"
+    EPOCHS=103                                       # round(15 · 529 / 77): the updates of 15 epochs on XuetangX
 else
     X_DIR="$ROOT/data/processed/simple"; X_NAME=x59; OUT="$ROOT/outputs/baselines/CA-TFHN"; DATA="$CODE/datastore"
+    EPOCHS=15                                        # the authors' 15 epochs
 fi
 SEEDS="${SEEDS:-1 11 111 1111 11111}"
 PY="${PY:-python}"
@@ -60,7 +64,7 @@ smoke)
 full)
     mkdir -p "$OUT"
     for seed in $SEEDS; do
-        "$PY" train.py -r "$seed" -indir "$DATA" -outdir "$OUT" 2>&1 | tee "$OUT/train_seed$seed.log"
+        "$PY" train.py -r "$seed" -e "$EPOCHS" -indir "$DATA" -outdir "$OUT" 2>&1 | tee "$OUT/train_seed$seed.log"
     done
     ;;
 *)
