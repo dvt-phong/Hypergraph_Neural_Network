@@ -1,5 +1,7 @@
 # Run the original CA-TFHN code (github.com/codeds27/CA-TFHN, commit f8ef659) on X59, activity only
 # (docs/PLAN_X59.md). The changes to the original are in catfhn_changes.patch.
+# X only: the link-prediction context (user / course ID embeddings) is set to 0 in train.py
+# (docs/PLAN_CATFHN_CONTEXT.md).
 #
 # Environment (Linux server, Python 3.9, versions of the original README):
 #   conda create -n catfhn python=3.9 -y && conda activate catfhn

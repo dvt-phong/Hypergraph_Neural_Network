@@ -443,7 +443,7 @@ index 4a01cf1..343caa2 100644
              else:
                  lstm_input = torch.cat((lstm_input, x), dim=1)
 diff --git a/train.py b/train.py
-index 768b97d..aaeb40a 100644
+index 768b97d..f34beda 100644
 --- a/train.py
 +++ b/train.py
 @@ -1,6 +1,9 @@
@@ -456,7 +456,7 @@ index 768b97d..aaeb40a 100644
  import torch
  import numpy as np
  
-@@ -8,26 +11,61 @@ from torch import optim
+@@ -8,26 +11,66 @@ from torch import optim
  from src.models import *
  from torch_geometric.loader import NeighborLoader
  from tqdm import tqdm
@@ -483,6 +483,10 @@ index 768b97d..aaeb40a 100644
 +#   4/4 units of the last layer); then the gradient is 0, only the output bias learns and the AUC
 +#   stays 0.5. Checked twice: at initialisation (every classifier ReLU layer needs a unit > 0 on the
 +#   first validation batch) and after epoch 1 (the validation p must not be constant: std ≥ 1e-6).
++# - X only (docs/PLAN_CATFHN_CONTEXT.md): enhanced_context is set to 0 (32 columns kept). It is the
++#   link-prediction embedding learned per user ID and per course ID from who enrolled in which course
++#   (all presentations, later ones too), so it carries the course identity and the learner's future
++#   enrollments, which X does not have. The strong-classmates graph is kept.
  
  myparser = argparse.ArgumentParser(description='optional parameters')
 -myparser.add_argument('-indir', type=str, help='input dir (default: current dir)', default='.')
@@ -518,11 +522,12 @@ index 768b97d..aaeb40a 100644
  # load the graph
  with open(os.path.join(input_dir, 'StrongClassmatesGraph.pkl'), 'rb') as f:
      graph = pickle.load(f)
++graph.enhanced_context = torch.zeros_like(graph.enhanced_context)   # changed: X only, no ID-embedding context
 +graph.num_nodes = len(graph.labels)          # not max(edge_index) + 1, which misses trailing isolated nodes
  graph = graph.to(device)
  
  # create graph loader
-@@ -39,24 +77,31 @@ train_loader = NeighborLoader(
+@@ -39,24 +82,31 @@ train_loader = NeighborLoader(
      shuffle=True
  )
  
@@ -564,7 +569,7 @@ index 768b97d..aaeb40a 100644
      # Self-Attention of first block in TFHN
      'num_attention_heads': 1, 'attention_features': 64,
      # LSTM2 of second block in TFHN
-@@ -68,17 +113,71 @@ param_dict = dict({
+@@ -68,17 +118,71 @@ param_dict = dict({
      # DNN
      'dnn_input_f1': 16, 'dnn_hidden_f1': 16, 'dnn_hidden_f2': 8, 'dnn_hidden_f3': 4, 'dnn_output': 1
  })
@@ -644,7 +649,7 @@ index 768b97d..aaeb40a 100644
          optimizer.zero_grad()
          pred = model(sub_graph)
          batch_size = sub_graph['batch_size']
-@@ -88,31 +187,44 @@ for epoch in range(epoch_num):
+@@ -88,31 +192,44 @@ for epoch in range(epoch_num):
          optimizer.step()
          total_loss += float(loss) * pred.numel()
          total_examples += pred.numel()
