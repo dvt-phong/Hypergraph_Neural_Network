@@ -1,12 +1,6 @@
 # 3. Build the node feature matrix X59 (log activity only) of every seed
 # - MST-GCN https://github.com/wudongze9/MST-GCN (the 59 enrollment features)
 # - CFIN https://github.com/wzfhaha/dropout_prediction (log1p before the z-score)
-#
-# X59 = [35 daily event counts | total events | distinct objects | 22 action counts]
-# x = (log(1 + c) − μ_train) / σ_train, μ and σ from the train rows of the seed.
-# Output data/processed/simple/x59_s{seed}.npz, one row per node (row = node_id):
-#   enroll_id, user_id, course_id, label, split ("train" / "validation" / "test"), X [N, 59]
-# Every model (M and every baseline) reads this file.
 
 import argparse
 from importlib import import_module

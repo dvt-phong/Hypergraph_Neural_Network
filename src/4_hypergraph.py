@@ -1,7 +1,6 @@
 # 4. Build one hypergraph H over every enrollment (train + validation + test of every seed)
 # - HGNN https://github.com/iMoonLab/HGNN
 # - MST-GCN https://github.com/wudongze9/MST-GCN
-# H does not depend on the seed: the seed only says which nodes are train / validation / test.
 
 import argparse
 import time

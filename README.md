@@ -1,138 +1,163 @@
-# XuetangX dropout prediction with a hypergraph neural network
+# Hypergraph Neural Network for MOOC Dropout Prediction
 
-Project nghiên cứu dự đoán dropout trên XuetangX. Mỗi enrollment là một node. Các
-enrollment cùng khóa học (Course), cùng dùng một video/bài tập/forum (Object) và của
-cùng một người học (User) được nối bằng hyperedge; mỗi node có thêm một self-loop.
+This project predicts whether a learner drops out of a MOOC course from the learner's activity
+log in the first 35 days. Each enrollment (one learner in one course) is a node of a hypergraph.
+Enrollments that share a course, a learning object or a learner are linked by hyperedges, so
+every prediction can use both the enrollment's own activity and the activity of related
+enrollments.
 
-Mô hình có hai nhánh, đọc chung bởi một classifier tuyến tính:
+The main dataset is XuetangX (Feng et al., 2019). The same pipeline also runs on OULAD.
 
-- **Nhánh graph** (`6_hgnn.py`): HGNN 2 lớp theo `HGNN_embedding` của Feng et al. (2019),
-  với một trọng số học được cho mỗi loại hyperedge (`W`, ý tưởng nhóm hyperedge của HGNN+).
-- **Nhánh MLP** (`7_mlp.py`): chỉ đặc trưng riêng của node, không lan truyền.
+## Model
 
-Sơ đồ: [docs/assets/hypergraph-neural-network-v4.png](docs/assets/hypergraph-neural-network-v4.png).
+![Model architecture](docs/assets/Hypergraph%20Final.png)
 
-## Các file
+**Nodes.** One node per enrollment. Its features X59 come only from the activity log:
+35 daily event counts, the total number of events, the number of distinct objects used and
+22 action counts. Every count c becomes `x = (log(1 + c) − μ_train) / σ_train`, with μ and σ
+computed on the training nodes only.
 
-| Bước | File | Việc |
-|---|---|---|
-| 0 | `src/0_config.py` | Đường dẫn, seed, bố cục cột X59, loại hyperedge, siêu tham số train |
-| 1 | `src/1_download.py` | Tải 2 file raw (prediction_data, course_info) |
-| 2 | `src/2_preprocess.py` | Giữ sự kiện ngày 0–34 của mọi enrollment → `events.csv`; split của mỗi seed → `splits/s{seed}.csv` |
-| 3 | `src/3_features.py` | X59 (chỉ log activity, như MST-GCN: 35 ngày + tổng sự kiện + số object + 22 action), log1p + z-score trên train của mỗi seed → `x59_s{seed}.npz`, file input chung của M và mọi baseline |
-| 4 | `src/4_hypergraph.py` | Dựng một hypergraph H (Course, Object, User) trên mọi enrollment → `hypergraph.npz`, chạy 1 lần (không phụ thuộc seed) |
-| 5 | `src/5_graph_data.py` | Đọc H và `x59_s{seed}.npz` của một seed, áp kịch bản, trả chỉ số train / val / test |
-| 6 | `src/6_hgnn.py` | Nhánh graph: lan truyền HGNN, 2 lớp |
-| 7 | `src/7_mlp.py` | Nhánh MLP |
-| 8 | `src/8_model.py` | Ghép 2 nhánh: `logit = [z_g ‖ z_s]·u + b` |
-| 9 | `src/9_train.py` | Với mỗi seed: chạy các kịch bản, early stopping theo val AUC, chấm val/test ở 0.5, ghi `outputs/results.csv` |
-| 10 | `src/10_summary.py` | `results.csv` → `outputs/summary.csv` + `outputs/ket_qua.xlsx` (mean ± std, Δ so với M) |
-| | `scripts/run_tmux.sh` | Chạy 9 + 10 trong tmux trên server |
+**Hyperedges.** Four families, built once over every enrollment (train, validation and test):
 
-Plan hiện tại: [docs/PLAN_X59.md](docs/PLAN_X59.md). Bản cũ có kịch bản, checkpoint, DeLong và
-các script báo cáo nằm ở git tag `before-simple`; bản có HSL và các baseline rời nằm ở tag `full-hsl`.
-
-## Chạy
-
-```powershell
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe src/1_download.py
-.\.venv\Scripts\python.exe src/2_preprocess.py
-.\.venv\Scripts\python.exe src/3_features.py
-.\.venv\Scripts\python.exe src/4_hypergraph.py
-.\.venv\Scripts\python.exe src/9_train.py --scenario M --seeds 1 11 111 1111 11111
-.\.venv\Scripts\python.exe src/10_summary.py
-```
-
-Chạy một phần: `--scenario M A4 H`. Chạy thử nhanh: `--scenario all --seeds 1 --epochs 10`.
-Baseline (LR, SVM, CFIN, MST-GCN, CA-TFHN) đọc cùng `x59_s{seed}.npz`: lệnh ở [docs/PLAN_X59.md](docs/PLAN_X59.md).
-Trên server: `bash scripts/run_tmux.sh --scenario M --seeds 1 11 111 1111 11111` (ablation: `--scenario all`).
-
-Siêu tham số nằm trong `TRAIN`, kịch bản nằm trong `SCENARIOS` của `src/0_config.py`. Dòng lệnh
-chỉ đổi được `--scenario`, `--seeds`, `--epochs`, `--eval-every`, `--patience`, `--device`.
-
-## Kịch bản
-
-Mỗi kịch bản chỉ đổi một yếu tố so với mô hình chính M; mọi kịch bản dùng X59.
-`--scenario all` chạy 8 kịch bản đầu × 5 seed = 40 lần; X1 chỉ chạy khi gọi tên.
-
-| Mã | Course | Object | User | Self-loop | Layer HGNN | MLP | Học W |
-|---|---|---|---|---|---|---|---|
-| **M** | ✓ | ✓ | ✓ | ✓ | 2 | ✓ | ✓ |
-| A1 | **✗** | ✓ | ✓ | ✓ | 2 | ✓ | ✓ |
-| A2 | ✓ | **✗** | ✓ | ✓ | 2 | ✓ | ✓ |
-| A3 | ✓ | ✓ | **✗** | ✓ | 2 | ✓ | ✓ |
-| A4 | ✓ | ✓ | ✓ | **✗** | 2 | ✓ | ✓ |
-| W1 | ✓ | ✓ | ✓ | ✓ | 2 | ✓ | **✗** (W = I cố định) |
-| L1 | ✓ | ✓ | ✓ | ✓ | **1** | ✓ | ✓ |
-| H | ✓ | ✓ | ✓ | ✓ | 2 | **✗** | ✓ |
-| X1 (tùy chọn) | ✗ | ✗ | ✗ | ✓ | 2 | ✓ | ✓ |
-
-## Giao thức
-
-| Mục | Cách làm |
+| Family | Hyperedge |
 |---|---|
-| Dữ liệu | XuetangX (CFIN, Feng et al., 2019); node = enrollment; đặc trưng = 35 ngày đầu của khóa |
-| Chia | gộp train và test chính thức (225,642); mỗi seed chia lại 60% train (135,384) / 10% validation (22,565) / 30% test (67,693), phân tầng theo nhãn (như DP-SCL, docs/PLAN_SEED_SPLIT.md) |
-| Tỉ lệ dropout | 0.758 ở cả train, validation, test của mọi seed (phân tầng; dropout là lớp đa số; AUPRC ngẫu nhiên ≈ 0.758) |
-| Đặc trưng X59 | chỉ log activity: 35 số đếm theo ngày, tổng sự kiện, số object và 22 action, `x = (log(1 + c) − μ_train)/σ_train`, μ, σ chỉ tính trên train của seed. Không dùng demographic người học và thông tin khóa học |
-| Graph (transductive, như HGNN gốc, SIG-Net, MST-GCN) | một hypergraph H trên mọi enrollment train + val + test |
-| Train | full-batch: forward trên toàn H, BCE chỉ trên nút train; Adam (lr 1e-3, weight decay 1e-5), dropout 0.3, hidden 128, tối đa 1000 epoch, early stopping theo val AUC (mỗi epoch, patience 200); trọng số tốt nhất giữ trong RAM |
-| Đánh giá | nạp trọng số tốt nhất, một forward trên H ở chế độ eval, đọc xác suất ở nút val và test (như HGNN+ / DHG), ngưỡng 0.5 |
-| Lặp | 5 seed (1, 11, 111, 1111, 11111); seed vừa chia train/val/test vừa khởi tạo mô hình (như DP-SCL); báo cáo mean ± std. Mọi baseline dùng cùng split và cùng X59 |
+| Course | all enrollments of the same course |
+| Object | all enrollments that used the same video, problem or forum thread in days 0–34 |
+| User | all enrollments of the same learner |
+| Self-loop | one hyperedge `{v}` per node |
 
-So với các bài tham khảo (đọc từ code gốc): SIG-Net và MST-GCN không có validation, lấy
-epoch cuối, ngưỡng 0.5; CA-TFHN in kết quả test mỗi epoch.
+**Two branches.**
 
-Baseline giữ siêu tham số của tác giả, kể cả số epoch cố định (MST-GCN 8, CA-TFHN 15, CFIN 27)
-và chấm epoch cuối; chỉ seed, split và X59 là chung với M (docs/PLAN_FAIR_SETTINGS.md).
+- *Hypergraph branch*: a 2-layer HGNN (Feng et al., 2019) on the incidence matrix H. Each
+  hyperedge family has one learnable weight, so the model learns how much each kind of
+  relation matters.
+- *Self branch*: an MLP on the node's own features, with no propagation.
 
-## Hyperedge
-
-| Loại | Định nghĩa | Số trong H | % node có |
-|---|---|---|---|
-| Course | `e_C(c) = {v : course(v) = c}` | 247 | 100% |
-| Object | `e_O(o) = {v : v dùng video/bài tập/forum o trong ngày 0–34}` | 22,421 | 88.4% |
-| User ("any", như SIG-Net, MST-GCN) | `e_U(l) = {v : user(v) = l}`: mọi enrollment của người học (train, val, test) | 64,672 | 94.5% |
-| Self-loop | `{v}` | N = 225,642 | 100% |
-
-H gồm 225,642 node (mỗi seed: train 135,384, val 22,565, test 67,693) và 3,222,033 membership (chưa kể
-self-loop). Hyperedge có ít hơn 2 thành viên bị bỏ (self-loop đã bao). Hyperedge chỉ dựa trên
-khóa học, object và người học.
-
-## Công thức
-
-Ký hiệu: H ∈ {0,1}^{N×E}, `h(v,e) = 1` khi v ∈ e; `w_e = softplus(θ_f(e))`, một θ cho mỗi
-loại; `δ(e) = |e|`; `d(v) = Σ_e h(v,e)·w_e`.
+The two embeddings are concatenated and a linear classifier outputs the dropout probability.
+The loss is binary cross-entropy on the training nodes.
 
 ```
-G     = Dv^-1/2 · H · W · De^-1 · Hᵀ · Dv^-1/2                (Feng et al., 2019, Eq. 10)
-Z1    = ReLU( G · (X·Θ1 + b1) )
-Z_g   = ReLU( G · (Dropout(Z1)·Θ2 + b2) )                     (HGNN_embedding)
-Z_s   = ReLU( Dropout(ReLU(X·A1 + c1))·A2 + c2 )              (MLP)
-logit = [Z_g ‖ Z_s]·u + b,   p = σ(logit)
-L     = −(1/|V_train|)·Σ_{v∈V_train} [y·log p + (1 − y)·log(1 − p)]
+G      = Dv^-1/2 · H · W · De^-1 · Hᵀ · Dv^-1/2,   W = diag(softplus(θ_family))
+Z1     = ReLU(G · (X·Θ1 + b1))
+Z      = ReLU(G · (Dropout(Z1)·Θ2 + b2))                    hypergraph embedding
+Z_self = ReLU(Dropout(ReLU(X·A1 + c1))·A2 + c2)             self embedding
+p      = σ([Z ‖ Z_self]·u + b)
+L_BCE  = −(1/|V_train|) Σ_{v ∈ V_train} [y·log p + (1 − y)·log(1 − p)]
 ```
 
-G tính trên toàn H (N = mọi enrollment train + val + test). Tổng trong L chỉ chạy trên nút
-train; xác suất của nút val/test đọc từ cùng một forward ở chế độ eval.
+Training is full-batch and transductive: the forward pass runs over the whole hypergraph and the
+loss uses only training nodes. Validation AUC selects the best epoch; test nodes are scored with
+those weights at threshold 0.5.
 
-## Kết quả
+## Project layout
 
-`outputs/results.csv`, mỗi (kịch bản, seed) một dòng, ghi ngay khi chạy xong:
-
-| Nhóm | Cột |
+| File | Purpose |
 |---|---|
-| Nhận dạng | time, scenario, seed |
-| Kịch bản | families, hgnn_layers, use_mlp, learn_w |
-| Siêu tham số | epochs, eval_every, patience, hidden_dim, dropout, learning_rate, weight_decay |
-| Dừng | best_epoch, epochs_run |
-| Validation | val_auc, val_auprc, val_f1 |
-| Test | test_auc, test_auprc, test_accuracy, test_precision, test_recall, test_f1 |
-| W học được | w_course, w_object, w_user, w_self_loop (trống nếu kịch bản không dùng loại đó) |
-| Thời gian | minutes |
+| `src/0_config.py` | Paths, seeds, feature layout, hyperedge families, scenarios, training hyperparameters |
+| `src/1_download.py` | Download the raw XuetangX files |
+| `src/2_preprocess.py` | Keep events of days 0–34; write the train / validation / test split of every seed |
+| `src/3_features.py` | Build X59 for every seed → `x59_s{seed}.npz` (shared by the model and all baselines) |
+| `src/4_hypergraph.py` | Build the hypergraph H once → `hypergraph.npz` |
+| `src/5_graph_data.py` | Load H and the features of one seed, apply a scenario |
+| `src/6_hgnn.py`, `src/7_mlp.py`, `src/8_model.py` | Hypergraph branch, self branch, full model |
+| `src/9_train.py` | Train and evaluate → `outputs/results.csv` |
+| `src/10_summary.py` | Mean ± std over seeds → `outputs/summary.csv`, `outputs/ket_qua.xlsx` |
+| `scripts/run_tmux.sh` | Run training and summary in a detached tmux session on a server |
+| `baseline/` | LR, SVM, XGBoost, CFIN, MST-GCN, CA-TFHN, and the OULAD pipeline |
 
-`src/10_summary.py` gom theo kịch bản, theo thứ tự trong `SCENARIOS` (mean ± std; một (kịch bản,
-seed) chạy nhiều lần thì lấy dòng mới nhất). Bảng có các cột ✓/✗, `delta_test_auc_vs_M` (AUC test
-trung bình của kịch bản − của M) và tỉ lệ `w_f / Σ w` (chỉ tỉ lệ giữa các w có nghĩa: nhân mọi w
-với cùng một hằng số thì G không đổi).
+## Setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+A pinned GPU environment is also provided: `conda env create -f environment-gpu.yml`.
+
+## Run on XuetangX
+
+```bash
+python src/1_download.py
+python src/2_preprocess.py
+python src/3_features.py
+python src/4_hypergraph.py
+python src/9_train.py --scenario M --seeds 1 11 111 1111 11111
+python src/10_summary.py
+```
+
+Each seed (1, 11, 111, 1111, 11111) splits all labeled enrollments into 60% train, 10% validation
+and 30% test, stratified by label, and initialises the model. Results are reported as mean ± std
+over the five seeds.
+
+Options of `src/9_train.py`: `--scenario`, `--seeds`, `--epochs`, `--eval-every`, `--patience`,
+`--device {auto,cpu,cuda}`. A quick test: `python src/9_train.py --scenario M --seeds 1 --epochs 10`.
+
+On a server, the same run inside tmux:
+
+```bash
+bash scripts/run_tmux.sh --scenario M --seeds 1 11 111 1111 11111
+```
+
+### Ablations
+
+`--scenario all` runs the main model M and its ablations; each changes one component of M.
+
+| Scenario | Change from M |
+|---|---|
+| M | Course + Object + User + self-loop, 2 HGNN layers, MLP branch, learned W |
+| A1 / A2 / A3 / A4 | drop Course / Object / User / self-loop hyperedges |
+| W1 | fixed W = I (as the original HGNN) |
+| L1 | 1 HGNN layer |
+| H | no MLP branch (hypergraph only) |
+| X1 (optional, run by name) | self-loops only, no neighbours |
+
+## Baselines
+
+Every baseline reads the same `x59_s{seed}.npz` (same features, same split per seed). Run them
+after `src/3_features.py`.
+
+```bash
+python baseline/ML/LR.py
+python baseline/ML/SVM.py
+python baseline/ML/XGBoost.py
+
+bash baseline/CFIN/run_cfin.sh setup && bash baseline/CFIN/run_cfin.sh full
+bash baseline/MST-GCN/run_mstgcn.sh setup && bash baseline/MST-GCN/run_mstgcn.sh features && bash baseline/MST-GCN/run_mstgcn.sh full
+bash baseline/CA-TFHN/run_catfhn.sh setup && bash baseline/CA-TFHN/run_catfhn.sh features && bash baseline/CA-TFHN/run_catfhn.sh full
+
+python baseline/summary.py
+```
+
+CFIN, MST-GCN and CA-TFHN use the authors' original code at a pinned commit plus a small patch
+(`*_changes.patch`). `setup` clones the code and applies the patch. Each one needs its own
+environment; see the header of its `run_*.sh` and its `requirements.txt`.
+
+## Run on OULAD
+
+The OULAD pipeline (X55 features) lives in `baseline/new_dataset/OULAD/` and mirrors `src/`:
+
+```bash
+python baseline/new_dataset/OULAD/1_download.py
+python baseline/new_dataset/OULAD/2_preprocess.py
+python baseline/new_dataset/OULAD/3_features.py
+python baseline/new_dataset/OULAD/4_hypergraph.py
+python baseline/new_dataset/OULAD/9_train.py --scenario M --seeds 1 11 111 1111 11111
+python baseline/new_dataset/OULAD/10_summary.py
+```
+
+Baselines on OULAD:
+
+```bash
+python baseline/ML/LR.py --x-dir data/processed/oulad --x-name x55 --output-dir outputs/oulad/baselines/LR
+DATASET=oulad bash baseline/CFIN/run_cfin.sh full
+python baseline/summary.py --results-dir outputs/oulad/baselines --x-dir data/processed/oulad --x-name x55
+```
+
+SVM and XGBoost take the same arguments as LR; MST-GCN and CA-TFHN take `DATASET=oulad` as CFIN.
+
+## References
+
+- Feng, Y., You, H., Zhang, Z., Ji, R., & Gao, Y. (2019). Hypergraph Neural Networks. AAAI.
+- Feng, W., Tang, J., & Liu, T. X. (2019). Understanding Dropouts in MOOCs. AAAI. (XuetangX, CFIN)
+- Kuzilek, J., Hlosta, M., & Wolff, A. (2017). Open University Learning Analytics Dataset. Scientific Data.
