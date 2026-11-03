@@ -35,8 +35,11 @@ SCENARIOS="M H A1 A2 A3 A4 W1"
 STAMP="$(date +%d-%m-%Y_%H-%M)"
 SESSION="${SESSION:-ablation_${STAMP//-/}}"
 
-# Quote every argument so it reaches 9_train.py unchanged.
-printf -v ARGUMENTS " %q" "$@"
+# Quote every argument so it reaches 9_train.py unchanged (none given -> empty, not '').
+ARGUMENTS=""
+if [[ $# -gt 0 ]]; then
+    printf -v ARGUMENTS " %q" "$@"
+fi
 
 # One command per dataset: train every scenario, summarize, all printed to the log.
 COMMANDS=""
