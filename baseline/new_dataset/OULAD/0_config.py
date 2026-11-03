@@ -11,7 +11,6 @@ ROOT = Path(__file__).resolve().parents[3]
 RAW = ROOT / "data" / "raw" / "oulad"
 PROCESSED = ROOT / "data" / "processed" / "oulad"
 OUTPUTS = ROOT / "outputs" / "oulad"
-RESULTS_CSV = OUTPUTS / "results.csv"
 SEEDS = (1, 11, 111, 1111, 11111)
 
 

@@ -63,6 +63,7 @@ those weights at threshold 0.5.
 | `src/9_train.py` | Train and evaluate → `outputs/results.csv` |
 | `src/10_summary.py` | Mean ± std over seeds → `outputs/summary.csv`, `outputs/ket_qua.xlsx` |
 | `scripts/run_tmux.sh` | Run training and summary in a detached tmux session on a server |
+| `scripts/run_ablation.sh` | Run the ablation study on OULAD and XuetangX in a detached tmux session |
 | `baseline/` | LR, SVM, XGBoost, CFIN, MST-GCN, CA-TFHN, and the OULAD pipeline |
 
 ## Setup
@@ -98,3 +99,23 @@ On a server, the same run inside tmux:
 ```bash
 bash scripts/run_tmux.sh --scenario M --seeds 1 11 111 1111 11111
 ```
+
+## Ablation
+
+| Code | Scenario |
+|---|---|
+| M | Full model |
+| H | w/o MLP branch |
+| A1 | w/o Course hyperedge |
+| A2 | w/o Object hyperedge |
+| A3 | w/o User hyperedge |
+| A4 | w/o self-loop |
+| W1 | w/o adaptive weight (W = I) |
+
+```bash
+bash scripts/run_ablation.sh
+```
+
+The script trains every scenario with the five seeds on OULAD and then XuetangX. Results,
+summary and log of each dataset go to `outputs/ABLATION/<dataset>/`
+(`results.csv`, `summary.csv`, `ket_qua.xlsx`, `logs/`).

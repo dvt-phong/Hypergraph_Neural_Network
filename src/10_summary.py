@@ -1,7 +1,9 @@
 # 10. Summarize outputs/summary.csv, outputs/ket_qua.xlsx
 
+import argparse
 import sys
 from importlib import import_module
+from pathlib import Path
 
 import pandas as pd
 
@@ -14,8 +16,8 @@ COMPONENTS = ("course", "object", "user", "self_loop")
 
 
 # Read results.csv and write summary.csv and ket_qua.xlsx (one row per scenario, mean ± std).
-def summarize():
-    runs = pd.read_csv(config.RESULTS_CSV)
+def summarize(results_dir):
+    runs = pd.read_csv(results_dir / "results.csv")
     runs = runs.drop_duplicates(["scenario", "seed"], keep="last")
 
     order = {}
@@ -88,14 +90,18 @@ def summarize():
                        (summary["test_auc_mean"] - reference).round(4))
     summary = summary.drop(columns="test_auc_mean")
 
-    summary.to_csv(config.OUTPUTS / "summary.csv", index=False, encoding="utf-8-sig")   # BOM: Excel shows "±", "✓"
-    with pd.ExcelWriter(config.OUTPUTS / "ket_qua.xlsx") as writer:
+    summary.to_csv(results_dir / "summary.csv", index=False, encoding="utf-8-sig")   # BOM: Excel shows "±", "✓"
+    with pd.ExcelWriter(results_dir / "ket_qua.xlsx") as writer:
         summary.to_excel(writer, sheet_name="Tong_hop", index=False)
         runs.to_excel(writer, sheet_name="Tung_seed", index=False)
     print(summary.drop(columns="description").to_string(index=False))
-    print(f"Saved {config.OUTPUTS / 'summary.csv'} and {config.OUTPUTS / 'ket_qua.xlsx'}")
+    print(f"Saved {results_dir / 'summary.csv'} and {results_dir / 'ket_qua.xlsx'}")
 
 
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")   # print "±" and "✓" also on a Windows console
-    summarize()
+    parser = argparse.ArgumentParser(description="Mean ± std over seeds of results.csv.")
+    parser.add_argument("--results-dir", default=config.OUTPUTS,
+                        help="folder of results.csv (e.g. outputs/ABLATION/xuetangx)")
+    arguments = parser.parse_args()
+    summarize(Path(arguments.results_dir))

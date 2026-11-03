@@ -9,7 +9,6 @@ ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw" / "xuetangx"
 PROCESSED = ROOT / "data" / "processed" / "simple"
 OUTPUTS = ROOT / "outputs"
-RESULTS_CSV = OUTPUTS / "results.csv"
 SEEDS = (1, 11, 111, 1111, 11111)
 
 

@@ -7,6 +7,7 @@ import csv
 import random
 import time
 from importlib import import_module
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -82,11 +83,11 @@ def predict(model, x, graph, index):
     return probabilities.cpu().numpy()
 
 
-# Append one row to outputs/results.csv (header written when the file is new).
-def append_result(row):
-    config.OUTPUTS.mkdir(parents=True, exist_ok=True)
-    is_new = not config.RESULTS_CSV.exists()
-    with open(config.RESULTS_CSV, "a", newline="", encoding="utf-8") as output:
+# Append one row to results.csv (header written when the file is new).
+def append_result(row, results_csv):
+    results_csv.parent.mkdir(parents=True, exist_ok=True)
+    is_new = not results_csv.exists()
+    with open(results_csv, "a", newline="", encoding="utf-8") as output:
         writer = csv.DictWriter(output, fieldnames=RESULT_COLUMNS)
         if is_new:
             writer.writeheader()
@@ -99,11 +100,11 @@ def append_result(row):
             else:
                 text_row[name] = value
         writer.writerow(text_row)
-    log("result", f"appended to {config.RESULTS_CSV}")
+    log("result", f"appended to {results_csv}")
 
 
 # Train
-def train_one_seed(code, seed, settings, data, device):
+def train_one_seed(code, seed, settings, data, device, results_csv):
     started_at = time.perf_counter()
     scenario = config.SCENARIOS[code]
     set_seed(seed)
@@ -204,7 +205,7 @@ def train_one_seed(code, seed, settings, data, device):
     for name in weights:
         row[name] = weights[name]
     row["minutes"] = (time.perf_counter() - started_at) / 60
-    append_result(row)
+    append_result(row, results_csv)
 
 
 # Scenario codes to run: --scenario all -> config.SCENARIOS_ALL; otherwise the given codes, checked.
@@ -234,6 +235,8 @@ if __name__ == "__main__":
     parser.add_argument("--patience", type=int, default=config.TRAIN["patience"])
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--output-dir", default=config.PROCESSED)
+    parser.add_argument("--results-dir", default=config.OUTPUTS,
+                        help="folder of results.csv (e.g. outputs/ABLATION/xuetangx)")
     arguments = parser.parse_args()
 
     codes = scenario_codes(arguments.scenario)
@@ -242,6 +245,7 @@ if __name__ == "__main__":
     settings["eval_every"] = arguments.eval_every
     settings["patience"] = arguments.patience
     device = resolve_device(arguments.device)
+    results_csv = Path(arguments.results_dir) / "results.csv"
     log("setup", f"device={device}, scenarios={codes}, seeds={arguments.seeds}, settings={settings}")
 
     # Seed by seed: the seed gives the train / validation split and the model initialisation.
@@ -259,4 +263,4 @@ if __name__ == "__main__":
             log("scenario", f"{code}: families={families_text}, hgnn_layers={scenario['hgnn_layers']}, "
                             f"use_mlp={scenario['use_mlp']}, learn_w={scenario['learn_w']}")
             data = graph_data.apply_scenario(loaded, scenario)
-            train_one_seed(code, seed, settings, data, device)
+            train_one_seed(code, seed, settings, data, device, results_csv)
