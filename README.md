@@ -119,3 +119,21 @@ bash scripts/run_ablation.sh
 The script trains every scenario with the five seeds on OULAD and then XuetangX. Results,
 summary and log of each dataset go to `outputs/ABLATION/<dataset>/`
 (`results.csv`, `summary.csv`, `ket_qua.xlsx`, `logs/`).
+
+Extra scenarios (`docs/PLAN_EXTRA_EXPERIMENTS.md`) are chosen with `SCENARIOS` and appended to
+the same `results.csv`:
+
+| Code | Scenario |
+|---|---|
+| P0 | MLP-only: no HGNN branch |
+| S1 | M on a shuffled H: node ids permuted within each family, hyperedge sizes and d(v) kept |
+| C1 | Course + self-loop only |
+| O1 | Object + self-loop only |
+| U1 | User + self-loop only |
+| L1 | HGNN with 1 layer |
+| L3 | HGNN with 3 layers |
+
+```bash
+SCENARIOS="P0 S1" bash scripts/run_ablation.sh
+SCENARIOS="C1 O1 U1 L1 L3" bash scripts/run_ablation.sh
+```

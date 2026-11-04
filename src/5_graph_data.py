@@ -44,8 +44,25 @@ def add_self_loops(graph):
     return new_graph
 
 
-# Keep the hyperedge families of one scenario
-def apply_scenario(data, scenario):
+# Shuffled incidence: permute the node ids of the memberships of each family, so every hyperedge
+# keeps its size δ(e) and every node keeps its number of hyperedges per family (same d(v)).
+def shuffle_members(graph, seed):
+    rng = np.random.default_rng(seed)
+    membership_family = graph["edge_family"][graph["edge_ids"]]          # family of every (v, e) pair
+    node_ids = graph["node_ids"].copy()
+    for family in range(len(config.EDGE_FAMILIES)):
+        if config.EDGE_FAMILIES[family] == "self_loop":
+            continue
+        positions = np.flatnonzero(membership_family == family)
+        node_ids[positions] = rng.permutation(node_ids[positions])
+
+    new_graph = dict(graph)
+    new_graph["node_ids"] = node_ids
+    return new_graph
+
+
+# Keep the hyperedge families of one scenario (shuffled with the seed when the scenario asks)
+def apply_scenario(data, scenario, seed):
     families = scenario["families"]
 
     kept_families = []
@@ -76,6 +93,8 @@ def apply_scenario(data, scenario):
         "edge_ids": new_edge_id[kept_edge_ids],
         "edge_family": graph["edge_family"][keep_edge],
     }
+    if scenario["shuffle"]:
+        scenario_graph = shuffle_members(scenario_graph, seed)
     if "self_loop" in families:
         scenario_graph = add_self_loops(scenario_graph)
 

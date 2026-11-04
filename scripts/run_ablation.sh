@@ -7,12 +7,19 @@
 #   A1  w/o Course hyperedge            W1  w/o adaptive weight (W = I)
 #   A2  w/o Object hyperedge
 #
+# Extra scenarios (docs/PLAN_EXTRA_EXPERIMENTS.md), chosen with SCENARIOS:
+#   P0  MLP-only (no HGNN branch)       C1  Course-only (+ self-loop)
+#   S1  M on a shuffled H               O1  Object-only (+ self-loop)
+#   L1  HGNN with 1 layer               U1  User-only (+ self-loop)
+#   L3  HGNN with 3 layers
+#
 #   bash scripts/run_ablation.sh
 #   bash scripts/run_ablation.sh --seeds 1 --epochs 10     (quick test; arguments go to 9_train.py)
+#   SCENARIOS="P0 S1" bash scripts/run_ablation.sh         (other scenarios, same results.csv)
 #   PYTHON=/path/to/python bash scripts/run_ablation.sh    (default: .venv, else python3)
 #
 # Output of each dataset in outputs/ABLATION/<dataset>/: results.csv (one row per scenario and
-# seed), summary.csv and ket_qua.xlsx (mean ± std), logs/<dd-mm-yyyy_HH-MM>.log.
+# seed, new runs appended), summary.csv and ket_qua.xlsx (mean ± std), logs/<dd-mm-yyyy_HH-MM>.log.
 
 set -euo pipefail
 
@@ -31,7 +38,7 @@ if [[ -z "$PYTHON" ]]; then
     fi
 fi
 
-SCENARIOS="M H A1 A2 A3 A4 W1"
+SCENARIOS="${SCENARIOS:-M H A1 A2 A3 A4 W1}"
 STAMP="$(date +%d-%m-%Y_%H-%M)"
 SESSION="${SESSION:-ablation_${STAMP//-/}}"
 

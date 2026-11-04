@@ -79,9 +79,11 @@ EDGE_FAMILIES = ("course", "object", "user", "self_loop")
 
 
 # Used by 9_train.py and 10_summary.py
-def scenario(description, families=EDGE_FAMILIES, hgnn_layers=2, use_mlp=True, learn_w=True):
+def scenario(description, families=EDGE_FAMILIES, hgnn_layers=2, use_mlp=True, learn_w=True,
+             use_hgnn=True, shuffle=False):
     return {"description": description, "families": tuple(families),
-            "hgnn_layers": hgnn_layers, "use_mlp": use_mlp, "learn_w": learn_w}
+            "hgnn_layers": hgnn_layers, "use_mlp": use_mlp, "learn_w": learn_w,
+            "use_hgnn": use_hgnn, "shuffle": shuffle}
 
 
 SCENARIOS = {
@@ -93,6 +95,14 @@ SCENARIOS = {
     "W1": scenario("M không học W (W = I cố định, như HGNN gốc)", learn_w=False),
     "L1": scenario("M với HGNN 1 layer", hgnn_layers=1),
     "H":  scenario("M bỏ nhánh MLP, chỉ còn hypergraph", use_mlp=False),
+    "P0": scenario("MLP-only: bỏ nhánh HGNN, chỉ còn nhánh MLP", families=(), hgnn_layers=0,
+                   learn_w=False, use_hgnn=False),
+    "S1": scenario("M với H xáo trộn: hoán vị thành viên trong từng họ, giữ kích thước siêu cạnh",
+                   shuffle=True),
+    "C1": scenario("Chỉ Course (+ self-loop)", families=("course", "self_loop")),
+    "O1": scenario("Chỉ Object (+ self-loop)", families=("object", "self_loop")),
+    "U1": scenario("Chỉ User (+ self-loop)", families=("user", "self_loop")),
+    "L3": scenario("M với HGNN 3 layer", hgnn_layers=3),
     # Optional, not part of "all": no neighbours at all (G = I, the HGNN branch becomes an MLP).
     "X1": scenario("Tùy chọn: chỉ self-loop, không có hàng xóm", families=("self_loop",)),
 }

@@ -120,9 +120,11 @@ def train_one_seed(code, seed, settings, data, device, results_csv):
 
     model = DropoutModel(x.shape[1], settings["hidden_dim"], settings["dropout"],
                          hgnn_layers=scenario["hgnn_layers"], use_mlp=scenario["use_mlp"],
-                         learn_w=scenario["learn_w"])
+                         learn_w=scenario["learn_w"], use_hgnn=scenario["use_hgnn"])
     model = model.to(device)
-    family_logits = model.hgnn.family_logits
+    family_logits = None
+    if model.hgnn is not None:
+        family_logits = model.hgnn.family_logits
 
     # Every weight except the family weights W: Θ, A, u.
     other_parameters = []
@@ -261,6 +263,7 @@ if __name__ == "__main__":
             scenario = config.SCENARIOS[code]   # the Vietnamese description is not logged (Windows console)
             families_text = "+".join(scenario["families"])
             log("scenario", f"{code}: families={families_text}, hgnn_layers={scenario['hgnn_layers']}, "
-                            f"use_mlp={scenario['use_mlp']}, learn_w={scenario['learn_w']}")
-            data = graph_data.apply_scenario(loaded, scenario)
+                            f"use_mlp={scenario['use_mlp']}, learn_w={scenario['learn_w']}, "
+                            f"use_hgnn={scenario['use_hgnn']}, shuffle={scenario['shuffle']}")
+            data = graph_data.apply_scenario(loaded, scenario, seed)
             train_one_seed(code, seed, settings, data, device, results_csv)

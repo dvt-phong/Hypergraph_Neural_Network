@@ -37,13 +37,17 @@ def prepare_graph(graph, device):
 class HGNNEncoder(nn.Module):
     def __init__(self, input_dim, hidden_dim, dropout, layers=2, learn_w=True):
         super().__init__()
-        if layers not in (1, 2):
-            raise ValueError("layers must be 1 or 2")
+        if layers not in (1, 2, 3):
+            raise ValueError("layers must be 1, 2 or 3")
         self.layer1 = nn.Linear(input_dim, hidden_dim)                       # Θ1, b1
-        if layers == 2:
-            self.layer2 = nn.Linear(hidden_dim, hidden_dim)                  # Θ2, b2 (2 layers only)
+        if layers >= 2:
+            self.layer2 = nn.Linear(hidden_dim, hidden_dim)                  # Θ2, b2 (2 or 3 layers)
         else:
             self.layer2 = None
+        if layers == 3:
+            self.layer3 = nn.Linear(hidden_dim, hidden_dim)                  # Θ3, b3 (3 layers only)
+        else:
+            self.layer3 = None
         self.dropout = dropout
         self.learn_w = learn_w
         logits = torch.full((len(config.EDGE_FAMILIES),), INITIAL_FAMILY_LOGIT)   # θ_f, one per hyperedge family
@@ -73,4 +77,9 @@ class HGNNEncoder(nn.Module):
             return z                                                     # 1 layer: Z_g = Z1
         z = F.dropout(z, self.dropout, self.training)                    # only while training
         h = self.layer2(z)                                               # Z1·Θ2 + b2
-        return F.relu(self.propagate(h, graph, w))                       # Z_g = ReLU(G·(Z1·Θ2 + b2))
+        z = F.relu(self.propagate(h, graph, w))                          # Z2 = ReLU(G·(Z1·Θ2 + b2))
+        if self.layer3 is None:
+            return z                                                     # 2 layers: Z_g = Z2
+        z = F.dropout(z, self.dropout, self.training)                    # only while training
+        h = self.layer3(z)                                               # Z2·Θ3 + b3
+        return F.relu(self.propagate(h, graph, w))                       # Z_g = ReLU(G·(Z2·Θ3 + b3))
