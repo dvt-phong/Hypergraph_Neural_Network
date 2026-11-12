@@ -132,6 +132,7 @@ the same `results.csv`:
 | U1 | User + self-loop only |
 | L1 | HGNN with 1 layer |
 | L3 | HGNN with 3 layers |
+| UC | M with a causal User hyperedge: node v only receives from enrollments of the same learner with start ≤ start(v) (XuetangX only) |
 
 ```bash
 SCENARIOS="P0 S1" bash scripts/run_ablation.sh

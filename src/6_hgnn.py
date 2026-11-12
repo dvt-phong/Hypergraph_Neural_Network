@@ -22,13 +22,23 @@ def prepare_graph(graph, device):
     edge_family = torch.as_tensor(graph["edge_family"], dtype=torch.int64, device=device)
     num_nodes = int(graph["num_nodes"])
     num_edges = len(edge_family)
-    ones = torch.ones(len(node_ids), device=device)                       
+    ones = torch.ones(len(node_ids), device=device)
+    H = torch.sparse_coo_tensor(torch.stack([node_ids, edge_ids]), ones,
+                                (num_nodes, num_edges), check_invariants=True).coalesce()
+    # Directed hyperedges (causal User): every member sends, only the members with receives=True
+    # get the message. Undirected graph: H_in is H itself.
+    H_in = H
+    if "receives" in graph and not graph["receives"].all():
+        receives = torch.as_tensor(graph["receives"], dtype=torch.bool, device=device)
+        H_in = torch.sparse_coo_tensor(torch.stack([node_ids[receives], edge_ids[receives]]),
+                                       ones[receives], (num_nodes, num_edges),
+                                       check_invariants=True).coalesce()
     return {
-        "H": torch.sparse_coo_tensor(torch.stack([node_ids, edge_ids]), ones,
-                                     (num_nodes, num_edges), check_invariants=True).coalesce(),
+        "H": H,
+        "H_in": H_in,
         "H_T": torch.sparse_coo_tensor(torch.stack([edge_ids, node_ids]), ones,
                                        (num_edges, num_nodes), check_invariants=True).coalesce(),
-        "edge_size": torch.bincount(edge_ids, minlength=num_edges).float(),  
+        "edge_size": torch.bincount(edge_ids, minlength=num_edges).float(),
         "edge_family": edge_family,
     }
 
@@ -67,7 +77,12 @@ class HGNNEncoder(nn.Module):
         edge_x = torch.sparse.mm(graph["H_T"], x * node_scale)           # Σ_{u∈e} d(u)^-1/2·x_u
         edge_scale = (w / graph["edge_size"]).unsqueeze(1)               # w_e/δ(e), [E] -> [E, 1]
         edge_x = edge_x * edge_scale                                     # m_e = (w_e/δ(e))·Σ_{u∈e} d(u)^-1/2·x_u
-        return torch.sparse.mm(graph["H"], edge_x) * node_scale          # x'_v = d(v)^-1/2·Σ_e h(v,e)·m_e
+        if graph["H_in"] is graph["H"]:
+            return torch.sparse.mm(graph["H"], edge_x) * node_scale      # x'_v = d(v)^-1/2·Σ_e h(v,e)·m_e
+        # Directed: d(u) counts the hyperedges u sends to, d_in(v) the ones v receives from.
+        in_degree = torch.sparse.mm(graph["H_in"], w.unsqueeze(1))       # d_in(v) = Σ_e h_in(v,e)·w_e
+        in_scale = in_degree.clamp_min(1e-6).rsqrt()                     # d_in(v)^-1/2
+        return torch.sparse.mm(graph["H_in"], edge_x) * in_scale         # x'_v = d_in(v)^-1/2·Σ_e h_in(v,e)·m_e
 
     def forward(self, x, graph):
         w = self.family_weights()[graph["edge_family"]]                   # w_e = w_f(e)

@@ -80,10 +80,10 @@ EDGE_FAMILIES = ("course", "object", "user", "self_loop")
 
 # Used by 9_train.py and 10_summary.py
 def scenario(description, families=EDGE_FAMILIES, hgnn_layers=2, use_mlp=True, learn_w=True,
-             use_hgnn=True, shuffle=False):
+             use_hgnn=True, shuffle=False, causal_user=False):
     return {"description": description, "families": tuple(families),
             "hgnn_layers": hgnn_layers, "use_mlp": use_mlp, "learn_w": learn_w,
-            "use_hgnn": use_hgnn, "shuffle": shuffle}
+            "use_hgnn": use_hgnn, "shuffle": shuffle, "causal_user": causal_user}
 
 
 SCENARIOS = {
@@ -103,6 +103,8 @@ SCENARIOS = {
     "O1": scenario("Chỉ Object (+ self-loop)", families=("object", "self_loop")),
     "U1": scenario("Chỉ User (+ self-loop)", families=("user", "self_loop")),
     "L3": scenario("M với HGNN 3 layer", hgnn_layers=3),
+    "UC": scenario("M với User nhân quả: node v chỉ nhận từ enrollment cùng người học có "
+                   "start ≤ start(v) (δ = 0, có hướng)", causal_user=True),
     # Optional, not part of "all": no neighbours at all (G = I, the HGNN branch becomes an MLP).
     "X1": scenario("Tùy chọn: chỉ self-loop, không có hàng xóm", families=("self_loop",)),
 }

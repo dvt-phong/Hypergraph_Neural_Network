@@ -264,6 +264,7 @@ if __name__ == "__main__":
             families_text = "+".join(scenario["families"])
             log("scenario", f"{code}: families={families_text}, hgnn_layers={scenario['hgnn_layers']}, "
                             f"use_mlp={scenario['use_mlp']}, learn_w={scenario['learn_w']}, "
-                            f"use_hgnn={scenario['use_hgnn']}, shuffle={scenario['shuffle']}")
+                            f"use_hgnn={scenario['use_hgnn']}, shuffle={scenario['shuffle']}, "
+                            f"causal_user={scenario['causal_user']}")
             data = graph_data.apply_scenario(loaded, scenario, seed)
             train_one_seed(code, seed, settings, data, device, results_csv)
